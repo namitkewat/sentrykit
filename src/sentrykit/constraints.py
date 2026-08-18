@@ -50,7 +50,7 @@ def _compiled(pattern: str) -> re.Pattern[str] | None:
         compiled: re.Pattern[str] | None = re.compile(pattern)
     except re.error as exc:
         _LOGGER.error(
-            "argument constraint pattern is not a valid regular expression",
+            "Argument constraint pattern is not a valid regular expression",
             extra={"pattern": pattern, "error": str(exc)},
         )
         compiled = None
