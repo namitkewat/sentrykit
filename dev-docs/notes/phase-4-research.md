@@ -268,3 +268,70 @@ enforcement path (§1, §3) runs the identical gate on dispatch, so a caller tha
 manifest and invokes a hidden tool directly is refused just the same. Both halves are
 asserted together in the same test, because a filter that is *also* the enforcement would be
 a security hole the moment a client skipped `tools/list`.
+
+---
+
+## 10. The one that changes a deliverable: a model cannot omit a schema-required argument
+
+Found while integrating, and measured on **both** agent boundaries independently. Each
+framework validates the caller's proposal against the tool's advertised JSON schema *before*
+dispatch, so a parameter that is `required` in that schema never reaches sentrykit at all:
+
+```
+strict_tool(region: str, limit: int)               required = ['region', 'limit']
+  call with {}  -> isError=True, "2 validation errors ... Field required"
+                   the tool body was never entered
+
+lenient_tool(region: str | None = None, limit: int | None = None)
+                                                   required = None
+  call with {}  -> isError=False, body entered with region=None, limit=None
+```
+
+Pydantic-AI behaves identically: a proposal of `{}` for a required parameter comes back to the
+model as a `Field required` retry and never reaches the governor. Rewriting
+`ToolDefinition.parameters_json_schema` from `prepare` does **not** help — it changes what the
+model is *shown*, not the validator, which is built from the registered signature.
+
+> **Consequence.** *Per-principal default injection is unreachable from an agent boundary for
+> any parameter declared without a Python-level default* — which is exactly how the web
+> examples declare the parameters whose value must come from policy. Left alone, the Phase 4
+> acceptance criterion "an entitled tool call runs with filtered args **+ injected defaults**"
+> would only be satisfiable by calling the protected function directly, bypassing the very
+> boundary the phase exists to demonstrate.
+
+### This is the same problem the web providers already solved, one layer out
+
+The FastAPI example does not protect its route. It declares
+`list_orders(region: str | None = None, limit: int | None = None)` and forwards **only the
+parameters the caller actually supplied** to the protected `search_orders`:
+
+```python
+proposed: dict[str, object] = {}
+if region is not None:
+    proposed["region"] = region
+...
+return search_orders(**proposed)
+```
+
+An absent argument has to be *expressible at the boundary*, and on an agent boundary the
+boundary **is** the tool signature. So the fix is the same shape: the registered tool is a thin
+shim whose parameters are optional, and the protected callable sits behind it.
+
+Hand-rolling that shim per tool is the wrong answer — it has to satisfy two competing
+introspections at once:
+
+* `inspect.signature` must report the **shim's** parameters, so the framework advertises the
+  optional schema; and
+* `governed_meta` must reach the **protected** callable, or the manifest filter reads the tool
+  as ungoverned and shows it to everybody — silently breaking ADR-017.
+
+Both are satisfiable together, because `inspect.signature` stops unwrapping at an object
+carrying its own `__signature__`: a shim that sets **both** `__wrapped__` and `__signature__`
+advertises itself and still resolves to the protected callable. That is precisely the pair
+`tool_adapter` already sets on the Pydantic-AI side (§5), so the mechanism is not new — only
+its second use is.
+
+> **Decision.** `integrations/tools.py` grows one framework-free helper that builds that shim,
+> so both providers and both examples share it, and `governed_meta` unwraps the whole
+> `__wrapped__` chain rather than a single hop (an adapter around a shim around a protected
+> callable is two hops on the Pydantic-AI side). Recorded as ADR-019.
