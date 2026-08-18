@@ -9,9 +9,18 @@ Start with the [quickstart](quickstart.md) for a working example in six steps, t
 [concepts](concepts.md) for the pipeline, the two kinds of failure, and why nested
 relationships are Cedar's job rather than your application's.
 
-**Status.** The framework-agnostic core is implemented: `@protect`, ambient context, the
-Cedar gate, argument filtering, default injection, validation, and the `_authz` envelope — as
-are the [pluggable stores](plugins.md) and the [audit log](audit.md), and the
-[FastAPI and Flask providers](web-frameworks.md) with runnable example apps. The agent
-providers and the shipped policy pack land in the later phases described in
-`dev-docs/implementation.md`; [agent tooling](agents.md) is still a placeholder.
+## What is here
+
+| | |
+| --- | --- |
+| **One decorator** | `@protect` gates the call, filters the arguments the caller proposed, injects the defaults policy supplies, and validates the result — for sync and async callables alike. See [concepts](concepts.md). |
+| **Two worlds** | [FastAPI and Flask](web-frameworks.md) on the web side; [MCP tool servers and Pydantic-AI](agents.md) on the agent side, where a tool is also *hidden* from a principal who could not invoke it. Four runnable example apps. |
+| **A policy pack** | Eight domain-neutral [patterns](policies.md#the-shipped-policy-pack) — RBAC, groups, ownership, delegation, expiry, break-the-glass, separation-of-duties, JIT elevation — shipped as data and composed through the same union as your own policy directory. |
+| **An audit trail** | One masked, hash-chained [record per decision](audit.md) and per admin mutation, pinned to the exact policy logic that produced it. The yearly report is a query, not an afternoon of reading logs. |
+| **A command line** | `sentrykit policy validate`, `grant` / `revoke`, and `audit-report` — with the admin surface governed by the very policy it administers. |
+| **Plugins everywhere** | Policy sources, grant stores, audit sinks and framework providers are all [Protocol + DSN + entry point](plugins.md), so a third-party backend is indistinguishable from a built-in. |
+
+**Status.** Everything above is implemented and tested. This is a pre-1.0 library: the public
+API is typed, documented and covered, but it has not yet been through a release cycle, and
+the durable WORM audit backends (S3 Object Lock, Iceberg) described in
+`dev-docs/architecture.md` are a Protocol away rather than shipped.

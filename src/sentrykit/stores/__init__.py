@@ -43,6 +43,7 @@ if TYPE_CHECKING:  # pragma: no cover - the type checker resolves what __getattr
         CompositePolicySource,
     )
     from sentrykit.stores.filesystem import FilesystemPolicySource
+    from sentrykit.stores.jsonfile import JsonFileGrantStore
     from sentrykit.stores.jsonl import JsonlAuditSink
     from sentrykit.stores.memory import (
         InMemoryAuditSink,
@@ -65,6 +66,7 @@ __all__ = [
     "InMemoryAuditSink",
     "InMemoryGrantStore",
     "InMemoryTokenVault",
+    "JsonFileGrantStore",
     "JsonlAuditSink",
     "NullAuditSink",
     "PolicyBundle",
@@ -81,6 +83,7 @@ _LAZY: Final[dict[str, str]] = {
     "InMemoryAuditSink": "sentrykit.stores.memory",
     "InMemoryGrantStore": "sentrykit.stores.memory",
     "InMemoryTokenVault": "sentrykit.stores.memory",
+    "JsonFileGrantStore": "sentrykit.stores.jsonfile",
     "JsonlAuditSink": "sentrykit.stores.jsonl",
 }
 """Backend name to the module that defines it, imported on first access."""

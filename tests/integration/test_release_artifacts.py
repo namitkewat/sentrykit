@@ -36,7 +36,7 @@ PACK_IN_WHEEL = "sentrykit/policy/pack"
 
 EXPECTED_ENTRY_POINTS = {
     "sentrykit.policy_sources": {"file", "pack"},
-    "sentrykit.grant_stores": {"memory"},
+    "sentrykit.grant_stores": {"jsonfile", "memory"},
     "sentrykit.audit_sinks": {"jsonl", "memory"},
     "sentrykit.context_providers": {"fastapi", "flask", "fastmcp", "pydantic-ai"},
 }

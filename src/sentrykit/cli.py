@@ -605,6 +605,23 @@ def _report_refusal(exc: SentrykitError) -> int:
                 f"  determining policies: {', '.join(envelope.determining_policies)}",
                 file=sys.stderr,
             )
+        else:
+            # No determining policy means nothing permitted it, which is a default deny —
+            # and the overwhelmingly likely cause is that no policy for the admin actions
+            # has been written yet. The shipped pack deliberately contains none: a permit
+            # for the action that hands out authority is not something a library gets to
+            # ship on your behalf. Saying so here saves an operator staring at an empty
+            # list wondering which rule refused them.
+            print(
+                # ASCII only: this goes to a terminal, and a cp1252 console renders an
+                # em-dash as a replacement character. Every other line the CLI prints is
+                # already ASCII, and a test keeps it that way.
+                "  no policy permitted this action. The shipped pack does not include one "
+                "for the admin actions, by design. Write a permit for "
+                f"{GRANT_ACTION} / {REVOKE_ACTION} on {ADMIN_RESOURCE} and point --policy "
+                "at it. See docs/policies.md, 'Administering grants'.",
+                file=sys.stderr,
+            )
     print("The grant store was not touched.", file=sys.stderr)
     return EXIT_FAILED
 

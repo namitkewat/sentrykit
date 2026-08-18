@@ -155,8 +155,9 @@ with JsonlAuditSink("./var/audit.jsonl") as sink:
 ```
 
 This is **detection, not prevention**. Preventing a rewrite is the storage layer's job — S3
-Object Lock, WORM media — and Phase 5 adds those backends. The chain is what tells you the
-prevention failed.
+Object Lock, WORM media — and no such backend ships today. Write one against the `AuditSink`
+Protocol and the core will not be able to tell it from the built-ins; see
+[plugins](plugins.md). The chain is what tells you the prevention failed.
 
 ### The JSONL sink is single-writer, by design
 
@@ -173,6 +174,95 @@ record hash differently per platform. See ADR-013.
 `fsync` costs about 3.7 ms per record against 0.007 ms for a flush, so it is opt-in
 (`jsonl://path?fsync=true`). A flush already survives process death; only a machine crash
 loses it.
+
+## The yearly report is a query
+
+The point of a structured, queryable decision log is that the audit report is not an
+afternoon of reading it. `sentrykit audit-report` windows the sink and writes markdown:
+
+```bash
+sentrykit audit-report --from 2026-01-01 --to 2026-12-31     --out audit.md --sink jsonl://./var/audit.jsonl
+```
+
+With `--sink` omitted it uses `SENTRYKIT_AUDIT_SINK`; with `--out` omitted it writes to
+stdout. `--principal`, `--action` and `--top` narrow it further.
+
+Markdown rather than PDF, deliberately: it is diffable, it renders in every forge and doc
+site, and it costs no dependency. Run it through whatever converter you already have if a PDF
+is what your auditor wants.
+
+### `--to` includes the day you named
+
+`AuditWindow` bounds are **half-open** — `start` inclusive, `end` exclusive — so adjacent
+windows tile a log without counting a record twice. But an operator writing `--to 2026-12-31`
+means "including that day", so a **bare date** is nudged one day forward. A value carrying a
+time is used exactly, because someone who wrote one meant it. The report heading echoes what
+you typed; the header line under it states the bound that was actually queried, marked
+exclusive.
+
+### It aggregates by outcome, not by allow/deny
+
+```markdown
+## Outcomes
+
+| Outcome | Count |
+| --- | ---: |
+| allowed | 4 |
+| denied | 3 |
+```
+
+`allow`/`deny` is the wrong axis for a report. It folds six materially different refusals —
+`denied`, `no-valid-arguments`, `default-unavailable`, `validation-failed`,
+`arguments-rejected`, `engine-error` — into one bucket, and both admin mutations (`granted`,
+`revoked`) into the other. An auditor asking "how often did a call fail validation" could
+never get that back out. Mutations get their own section for the same reason.
+
+The report also counts **determining policies**, which is the column that answers *which rule
+is actually doing the work*, and **obligations raised**, which is how you check that
+`notify:secops` was discharged as often as it was demanded.
+
+### Tamper evidence in the report
+
+```markdown
+## Tamper evidence
+
+- Records whose own hash recomputes: 7 of 7.
+- Chain: intact across the window.
+```
+
+Two different claims, because a filter changes what is provable. Re-hashing each record
+individually is always meaningful. The **chain** is only checked when the window applies no
+identity filter: with `--principal` set, the matched records are a non-contiguous slice of the
+chain, and a break there would mean "filtered", not "tampered". In that case the report says
+the chain was not checked rather than reporting a break it cannot interpret.
+
+### Building a report in-process
+
+`build_report` is pure — no sink, no clock — so a report over a known set of records is
+exactly assertable:
+
+```python
+from datetime import UTC, datetime
+
+from sentrykit import AuditWindow
+from sentrykit.cli import build_report, render_markdown
+
+window = AuditWindow(start=datetime(2026, 1, 1, tzinfo=UTC),
+                     end=datetime(2027, 1, 1, tzinfo=UTC))
+report = build_report(sink.query(window), window=window, sink=sink.name)
+
+report.by_outcome        # {'allowed': 4, 'denied': 3}
+report.by_policy         # {'rbac-required-role': 3, 'break-the-glass': 1, ...}
+document = render_markdown(report)
+```
+
+## Admin mutations are audited too
+
+A grant is as auditable as the call it later permits, so `AuditTrail.record_mutation` writes
+one record per change, with `kind="mutation"` and `outcome` of `granted` or `revoked`. The
+`sentrykit grant` and `sentrykit revoke` commands go through the governed path, so an allowed
+mutation leaves **two** records — the decision that permitted it, then the mutation itself —
+and a refused one leaves the refusal alone. See [policies](policies.md#administering-grants).
 
 ## When the sink is down
 

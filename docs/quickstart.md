@@ -215,7 +215,49 @@ override_action("tool.search_orders", arg_handling="strict")
 | `redaction` | bool | Mask sensitive values before they leave the engine |
 | `envelope_on_success` | bool | Attach an envelope to successful calls |
 
+## Skip step 1 entirely
+
+The policy above is the kind every project writes for itself. The common *shapes* — a role
+the resource requires, ownership, a group hierarchy, a delegation, a break-the-glass — ship
+with the library, expressed only in authorization vocabulary so they carry no domain of their
+own:
+
+```python
+install(policy_source="pack://", entities=[
+    Entity(EntityRef("Role", "support")),
+    Entity(EntityRef("Resource", "orders"),
+           attributes={"required_role": EntityRef("Role", "support")}),
+])
+```
+
+`Role::"support"` is now what the resource requires, and anyone the grant store puts in that
+role may act on it — with no policy written at all. Union the pack with your own directory
+when you need both:
+
+```python
+install(policy_source=["pack://", "file://./policies"])
+```
+
+See [the shipped policy pack](policies.md#the-shipped-policy-pack) for all eight patterns and
+the data each one reads.
+
+## Check it before you ship it
+
+```bash
+sentrykit policy validate ./policies
+```
+
+Type-checks every `*.cedar` file against your `*.cedarschema`, groups the errors by the
+policy's `@id`, and warns about formatting drift without rewriting anything. It exits
+non-zero on a failure, so it belongs in CI — a policy set that cannot possibly permit
+anything otherwise deploys cleanly and denies every request for the life of the process.
+
+With no directory it validates the shipped pack, which is a quick way to confirm an install.
+
 ## Next
 
 - [Concepts](concepts.md) — the pipeline, the two failure kinds, and why the caller proposes
   but the policy decides.
+- [Policies & patterns](policies.md) — the shipped pack, grants as data, and administering
+  them.
+- [Audit & compliance](audit.md) — what a record contains, and the report that queries them.

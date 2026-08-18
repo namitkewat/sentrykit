@@ -53,6 +53,7 @@ file = "sentrykit.stores.filesystem:FilesystemPolicySource"
 pack = "sentrykit.policy.loader:PackPolicySource"
 
 [project.entry-points."sentrykit.grant_stores"]
+jsonfile = "sentrykit.stores.jsonfile:JsonFileGrantStore"
 memory = "sentrykit.stores.memory:InMemoryGrantStore"
 
 [project.entry-points."sentrykit.audit_sinks"]

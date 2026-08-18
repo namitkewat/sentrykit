@@ -19,7 +19,7 @@ rather than a property.
 | Kind | Protocol | Entry-point group | Ships with |
 | --- | --- | --- | --- |
 | Policy source | `PolicySource` | `sentrykit.policy_sources` | `file`, `pack` |
-| Grant store | `GrantStore` | `sentrykit.grant_stores` | `memory` |
+| Grant store | `GrantStore` | `sentrykit.grant_stores` | `jsonfile`, `memory` |
 | Audit sink | `AuditSink` | `sentrykit.audit_sinks` | `jsonl`, `memory` |
 | Context provider | `ContextProvider` | `sentrykit.context_providers` | `fastapi`, `flask` |
 
@@ -37,6 +37,7 @@ The scheme selects the backend; everything after it is that backend's business.
 "pack://rbac,ownership"                  # ... just those two patterns
 "file://./policies?validate=false"       # skip schema type-checking at load
 "jsonl://./var/audit.jsonl?fsync=true"   # durable append-only log
+"jsonfile://./var/grants.json"           # durable grant store, shared across processes
 "memory://"                              # in-process grant store
 "memory://tenant-a"                      # ... with a namespace, for routed composites
 ```
@@ -154,6 +155,7 @@ without uninstalling the package that provides it.
 from sentrykit import available
 
 available("audit_sink")     # ('jsonl', 'memory')
+available("grant_store")    # ('jsonfile', 'memory')
 available("policy_source")  # ('file', 'pack')
 ```
 

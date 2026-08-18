@@ -35,6 +35,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
+from sentrykit import cli
 from sentrykit.cedar import Entity, EntityRef
 from sentrykit.cli import ADMIN_RESOURCE, EXIT_FAILED, EXIT_OK, build_parser, main
 from sentrykit.constraints import ArgumentConstraint
@@ -859,3 +860,33 @@ def test_the_module_entry_point_reaches_the_same_main() -> None:
 
     assert completed.returncode == 0, completed.stderr
     assert completed.stdout.startswith("sentrykit ")
+
+
+@pytest.mark.unit
+def test_every_line_the_cli_prints_is_ascii() -> None:
+    """A cp1252 console renders anything else as a replacement character.
+
+    The audit *report* is a file and may hold whatever markdown wants; this is about the
+    lines that go to a terminal. Asserted structurally rather than by eye, because the
+    tempting characters -- an em-dash, a curly quote -- are exactly the ones that look
+    right in a source file and wrong in a Windows console.
+    """
+    import ast
+    from pathlib import Path
+
+    source = Path(cli.__file__).read_text(encoding="utf-8")
+    offenders: list[tuple[int, str]] = []
+    for node in ast.walk(ast.parse(source)):
+        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)):
+            continue
+        if node.func.id != "print":
+            continue
+        for inner in ast.walk(node):
+            if (
+                isinstance(inner, ast.Constant)
+                and isinstance(inner.value, str)
+                and any(ord(character) > 127 for character in inner.value)
+            ):
+                offenders.append((inner.lineno, inner.value))
+
+    assert offenders == []
