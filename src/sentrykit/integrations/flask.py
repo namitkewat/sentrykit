@@ -42,9 +42,17 @@ the shape this provider is built for.
 
 from __future__ import annotations
 
-from flask import Blueprint, Flask, Request, Response
+from flask import Blueprint, Flask, Request, Response, g, has_app_context, jsonify
+from flask import request as current_request
 
-from sentrykit.integrations.base import BaseContextProvider
+from sentrykit.context import ContextScope
+from sentrykit.errors import ConfigurationError, SentrykitError
+from sentrykit.integrations.base import (
+    DEFAULT_PRINCIPAL_HEADER,
+    DEFAULT_REQUEST_ID_HEADER,
+    STATUS_BY_ERROR,
+    BaseContextProvider,
+)
 from sentrykit.registry import DSN, register_context_provider
 
 __all__ = [
@@ -70,7 +78,7 @@ class FlaskProvider(BaseContextProvider[Request]):
 
     Construction is inherited from :class:`~sentrykit.integrations.base.BaseContextProvider`;
     see there for ``identify``, ``grants``, ``environment`` and the header options. This class
-    supplies only the four framework seams.
+    supplies only the four framework seams plus the two Flask hooks.
     """
 
     @classmethod
@@ -89,31 +97,62 @@ class FlaskProvider(BaseContextProvider[Request]):
         Returns:
             The provider.
         """
-        raise NotImplementedError
+        # ``or`` rather than the option's own default, so ``?header=`` with an empty value
+        # falls back to the shipped header instead of wiring a provider that reads ``""``.
+        return cls(
+            principal_header=dsn.option("header") or DEFAULT_PRINCIPAL_HEADER,
+            request_id_header=dsn.option("request_id_header") or DEFAULT_REQUEST_ID_HEADER,
+        )
 
     @property
     def name(self) -> str:
         """``flask``."""
-        raise NotImplementedError
+        return "flask"
 
     def narrow(self, request: object) -> Request:
-        """Check that ``request`` is a Flask request.
+        """Check that ``request`` is a Flask request, unwrapping the request-local proxy.
+
+        Inside a request, ``flask.request`` is a :class:`werkzeug.local.LocalProxy`, not a
+        :class:`flask.Request`. The proxy forwards ``__class__``, so ``isinstance`` alone
+        would accept it and quietly hand the *proxy* to the application's ``identify``
+        callback — an object whose attribute lookups fail the moment the request context is
+        gone. It is unwrapped here instead, so ``identify`` and ``environment`` always receive
+        the real request and may keep it.
 
         Args:
-            request: The object the boundary handed over.
+            request: The object the boundary handed over — a request or a proxy to one.
 
         Returns:
-            The same object, typed.
+            The underlying request, typed.
 
         Raises:
             ConfigurationError: If it is not a Flask request — which means this provider was
                 wired to the wrong framework.
         """
-        raise NotImplementedError
+        unwrap = getattr(request, "_get_current_object", None)
+        if callable(unwrap):
+            try:
+                request = unwrap()
+            except RuntimeError as exc:
+                raise ConfigurationError(
+                    "the flask context provider was handed a request-local proxy bound to no "
+                    "request; establish() belongs in a before_request hook"
+                ) from exc
+        if isinstance(request, Request):
+            return request
+        actual = type(request)
+        raise ConfigurationError(
+            "the flask context provider expects a flask.Request but was given a "
+            f"{actual.__module__}.{actual.__qualname__}; it is wired to the wrong framework"
+        )
 
     def read_header(self, request: Request, name: str) -> str | None:
         """Read one header from a Flask request. Werkzeug's headers are case-insensitive."""
-        raise NotImplementedError
+        # Bound to an annotated local rather than returned directly, so the module still
+        # type-checks in the default environment where flask is absent and every symbol
+        # imported from it is ``Any``.
+        value: str | None = request.headers.get(name)
+        return value
 
     def render_error(self, error: Exception) -> tuple[Response, int]:
         """Render a sentrykit refusal as a JSON response carrying the ``_authz`` envelope.
@@ -125,7 +164,9 @@ class FlaskProvider(BaseContextProvider[Request]):
             ``(response, status)`` — the pair Flask accepts from an error handler, at the
             status :func:`~sentrykit.integrations.base.status_for` maps the error to.
         """
-        raise NotImplementedError
+        status, body = self.error_response(error)
+        # ``jsonify`` needs an application context; an error handler always runs inside one.
+        return jsonify(body), status
 
     def before_request(self) -> None:
         """Establish ambient context for the current request, parking the scope on ``g``.
@@ -135,20 +176,72 @@ class FlaskProvider(BaseContextProvider[Request]):
         a request itself, because refusing is the decorator's job and an unauthenticated caller
         may well be hitting a route that is not protected at all.
         """
-        raise NotImplementedError
+        # Parked even when it is ``None`` (an unauthenticated caller establishes no scope), so
+        # ``g`` records that this hook ran rather than leaving teardown to guess.
+        setattr(g, SCOPE_KEY, self.establish(current_request))
 
     def teardown_request(self, error: BaseException | None = None) -> None:
         """Release the context established for the current request.
 
         Registered as a ``teardown_request`` hook, and total: a request whose
         ``before_request`` never ran, or ran and raised, has no scope on ``g``, and that is a
-        no-op rather than a ``KeyError``.
+        no-op rather than a ``KeyError``. It tolerates being called with no application context
+        at all, so a host driving the hooks by hand cannot turn a missing context into a
+        teardown exception that masks the real one.
 
         Args:
             error: The exception that ended the request, or ``None``. Accepted because Flask
-                passes it; the release is the same either way.
+                passes it; the release is the same either way, since
+                :meth:`~sentrykit.integrations.base.BaseContextProvider.release` is what makes
+                the *next* request safe and that is owed regardless of how this one ended.
         """
-        raise NotImplementedError
+        scope: ContextScope | None = None
+        if has_app_context():
+            parked = g.pop(SCOPE_KEY, None)
+            if isinstance(parked, ContextScope):
+                scope = parked
+        # ``release`` is total and does not raise: it clears the context outright when there is
+        # no scope, and :func:`sentrykit.context._restore` downgrades an unusable token to a
+        # clear rather than letting it escape. Nothing here can mask ``error``.
+        self.release(scope)
+
+
+def _effective_provider(provider: FlaskProvider | None) -> FlaskProvider:
+    """Resolve the provider the Flask hooks should be bound to.
+
+    The one place the defaulting rule lives, so :func:`install_error_handlers`,
+    :func:`protect_app` and :func:`protect_blueprint` cannot drift apart.
+
+    Unlike the ASGI side, resolution happens at *wiring* time rather than per request: Flask's
+    hooks are registered as bound methods, and a hook that re-resolved the provider on every
+    request could establish with one and release with another. The cost is a documented
+    ordering — ``install(context_provider=...)`` before ``protect_app(...)`` — and it buys
+    nothing to defer, because the grant store is already resolved lazily by
+    :attr:`~sentrykit.integrations.base.BaseContextProvider.grants`.
+
+    A governor wired to some *other* framework's provider is ignored rather than treated as an
+    error, since a process may legitimately serve a WSGI app beside an ASGI one. The fallback
+    is a bare header-identifying provider, which fails closed for any caller who sends no
+    header.
+
+    Args:
+        provider: An explicitly supplied provider, or ``None``.
+
+    Returns:
+        The explicit provider, the installed governor's when it is a :class:`FlaskProvider`, or
+        a freshly built default.
+    """
+    if provider is not None:
+        return provider
+    # Imported in the body rather than at module scope: the engine pulls in the whole decision
+    # path, and a framework adapter should not dictate the library's import order.
+    from sentrykit.engine import current_governor
+
+    governor = current_governor()
+    wired = governor.context_provider if governor is not None else None
+    if isinstance(wired, FlaskProvider):
+        return wired
+    return FlaskProvider()
 
 
 def install_error_handlers(
@@ -165,7 +258,14 @@ def install_error_handlers(
         target: The application or blueprint to register on.
         provider: The provider whose :meth:`FlaskProvider.render_error` builds the response.
     """
-    raise NotImplementedError
+    resolved = _effective_provider(provider)
+    # ``SentrykitError`` is already a key of the mapping; naming it again is a harmless
+    # re-registration of the same handler and keeps the catch-all explicit at the call site.
+    for error_type in (*STATUS_BY_ERROR, SentrykitError):
+        # Flask registers handlers for ``Exception`` subclasses only; the mapping is keyed by
+        # ``BaseException`` so a future entry could in principle be neither.
+        if issubclass(error_type, Exception):
+            target.register_error_handler(error_type, resolved.render_error)
 
 
 def protect_app(app: Flask, *, provider: FlaskProvider | None = None) -> FlaskProvider:
@@ -178,12 +278,20 @@ def protect_app(app: Flask, *, provider: FlaskProvider | None = None) -> FlaskPr
         app: The application.
         provider: The provider to use. Defaults to the one wired into the installed governor by
             ``install(context_provider=...)``, and failing that to a header-identifying
-            :class:`FlaskProvider`.
+            :class:`FlaskProvider`. Call ``install()`` first if you want it picked up — see
+            :func:`_effective_provider` for why the default is resolved here and not per
+            request.
 
     Returns:
         The provider that was wired, so a caller can hold on to it.
     """
-    raise NotImplementedError
+    resolved = _effective_provider(provider)
+    # Bound methods: ``before_request`` takes no arguments and ``teardown_request`` takes the
+    # exception, which is exactly what Flask passes each hook.
+    app.before_request(resolved.before_request)
+    app.teardown_request(resolved.teardown_request)
+    install_error_handlers(app, resolved)
+    return resolved
 
 
 def protect_blueprint(
@@ -204,4 +312,8 @@ def protect_blueprint(
     Returns:
         The provider that was wired.
     """
-    raise NotImplementedError
+    resolved = _effective_provider(provider)
+    blueprint.before_request(resolved.before_request)
+    blueprint.teardown_request(resolved.teardown_request)
+    install_error_handlers(blueprint, resolved)
+    return resolved
