@@ -30,16 +30,34 @@ class NoContext(SentrykitError):
 
 
 class AuthzDenied(SentrykitError):
-    """Raised when the coarse Cedar gate denies the invocation."""
+    """Raised when the coarse Cedar gate denies the invocation.
 
-    def __init__(self, action: str, resource: str | None, determining_policies: list[str]) -> None:
+    ``engine_errors`` separates the two ways a call can fail to be authorized. A plain
+    denial has none: a policy said no, or no policy said yes. A denial carrying engine
+    errors means Cedar could not evaluate cleanly -- an unparseable policy, a missing
+    attribute -- and ``fail_mode="closed"`` turned that failure into a refusal. Operators
+    need to tell those apart, because the second is a bug in the policy set, not a correctly
+    enforced boundary.
+    """
+
+    def __init__(
+        self,
+        action: str,
+        resource: str | None,
+        determining_policies: list[str],
+        engine_errors: list[str] | None = None,
+    ) -> None:
         self.action = action
         self.resource = resource
         self.determining_policies = determining_policies
-        super().__init__(
+        self.engine_errors = engine_errors or []
+        detail = (
             f"denied: action={action!r} resource={resource!r} "
             f"determining_policies={determining_policies}"
         )
+        if self.engine_errors:
+            detail += f" engine_errors={self.engine_errors}"
+        super().__init__(detail)
 
 
 class ArgumentRejected(SentrykitError):
