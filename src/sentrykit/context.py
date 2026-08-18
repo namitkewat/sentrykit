@@ -19,16 +19,20 @@ live. Three rules follow from that, and they are load-bearing:
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
+from contextvars import ContextVar, Token, copy_context
 from datetime import datetime
-from types import TracebackType
-from typing import Literal, ParamSpec, TypeVar
+from types import MappingProxyType, TracebackType
+from typing import Final, Literal, ParamSpec, TypeVar
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from sentrykit.cedar import EntityRef
 from sentrykit.constraints import ConstraintSet
+from sentrykit.envelope import set_last_envelope
+from sentrykit.errors import NoContext
 
 __all__ = [
     "Channel",
@@ -46,12 +50,53 @@ __all__ = [
 
 P = ParamSpec("P")
 T = TypeVar("T")
+V = TypeVar("V")
+
+_logger: Final = logging.getLogger("sentrykit.context")
 
 Channel = Literal["http", "agent", "internal"]
 """Where the invocation came from. Policies can condition on it via ``context.channel``."""
 
 WILDCARD_ACTION: str = "*"
 """Key under which a :class:`Principal` may carry constraints that apply to every action."""
+
+_DEFAULT_CHANNEL: Final = "internal"
+"""Channel assumed when a provider established none — a plain in-process call."""
+
+_EMPTY_ENVIRONMENT: Final[Mapping[str, object]] = MappingProxyType({})
+"""The environment seen before anything is established.
+
+A read-only proxy rather than a plain ``dict``, so a caller that pokes at the ambient
+environment cannot mutate the default that every other context starts from.
+"""
+
+_principal_var: ContextVar[Principal | None] = ContextVar("sentrykit_principal", default=None)
+_environment_var: ContextVar[Mapping[str, object]] = ContextVar(
+    "sentrykit_environment", default=_EMPTY_ENVIRONMENT
+)
+
+
+def _restore(variable: ContextVar[V], token: Token[V], empty: V) -> None:
+    """Reset one context variable, clearing it outright if its token belongs elsewhere.
+
+    A scope reset from a different ``Context`` than the one that established it — a provider
+    whose teardown hook runs on another task — cannot use its token. Leaving the
+    establishment in place would be failing *open*, so the variable is cleared instead and
+    the anomaly is logged.
+
+    Args:
+        variable: The context variable to restore.
+        token: The token captured when the variable was set.
+        empty: The value meaning "nothing established", used when the token is unusable.
+    """
+    try:
+        variable.reset(token)
+    except ValueError:
+        variable.set(empty)
+        _logger.warning(
+            "Context scope for %s was reset outside its originating context; cleared instead",
+            variable.name,
+        )
 
 
 class Principal(BaseModel):
@@ -91,11 +136,18 @@ class Principal(BaseModel):
     @property
     def uid(self) -> EntityRef:
         """This principal as a Cedar entity reference."""
-        raise NotImplementedError
+        return EntityRef(self.type, self.id)
 
     def all_parents(self) -> tuple[EntityRef, ...]:
         """Every parent edge — :attr:`roles` expanded to ``Role::"..."`` plus :attr:`parents`."""
-        raise NotImplementedError
+        # A dict keyed by the reference deduplicates while preserving first-seen order, so a
+        # role also listed explicitly in ``parents`` produces one edge rather than two.
+        edges: dict[EntityRef, None] = {}
+        for role in self.roles:
+            edges.setdefault(EntityRef("Role", role), None)
+        for parent in self.parents:
+            edges.setdefault(parent, None)
+        return tuple(edges)
 
     def constraints_for(self, action: EntityRef) -> ConstraintSet:
         """Resolve the argument constraints that apply to ``action``.
@@ -110,7 +162,14 @@ class Principal(BaseModel):
         Returns:
             The merged constraint set, empty when nothing applies.
         """
-        raise NotImplementedError
+        resolved = ConstraintSet()
+        if not self.constraints:
+            return resolved
+        for key in (WILDCARD_ACTION, action.id, str(action)):
+            layer = self.constraints.get(key)
+            if layer is not None:
+                resolved = resolved.merged_with(layer)
+        return resolved
 
 
 class Invocation(BaseModel):
@@ -146,12 +205,13 @@ class Invocation(BaseModel):
     @property
     def channel(self) -> str:
         """The channel from :attr:`environment`, defaulting to ``internal``."""
-        raise NotImplementedError
+        return str(self.environment.get("channel", _DEFAULT_CHANNEL))
 
     @property
     def now(self) -> datetime | None:
         """The decision timestamp from :attr:`environment`, if one was established."""
-        raise NotImplementedError
+        established = self.environment.get("now")
+        return established if isinstance(established, datetime) else None
 
 
 class ContextScope:
@@ -169,16 +229,42 @@ class ContextScope:
         ```
     """
 
+    __slots__ = ("_environment_token", "_principal_token", "_reset")
+
+    def __init__(
+        self,
+        principal_token: Token[Principal | None],
+        environment_token: Token[Mapping[str, object]],
+    ) -> None:
+        """Capture the tokens needed to undo one establishment.
+
+        Constructed by :func:`establish`; there is no reason for application code to build
+        one directly.
+
+        Args:
+            principal_token: Token returned when the principal was set.
+            environment_token: Token returned when the environment was set.
+        """
+        self._principal_token = principal_token
+        self._environment_token = environment_token
+        self._reset = False
+
     def reset(self) -> None:
         """Restore the principal and environment that were ambient before establishment.
 
         Idempotent: resetting an already-reset scope does nothing.
         """
-        raise NotImplementedError
+        if self._reset:
+            return
+        # Mark first: a failed restore must not leave the scope re-resettable, since the
+        # fallback below has already put the context somewhere safe.
+        self._reset = True
+        _restore(_principal_var, self._principal_token, None)
+        _restore(_environment_var, self._environment_token, _EMPTY_ENVIRONMENT)
 
     def __enter__(self) -> ContextScope:
         """Return this scope, for use as a context manager."""
-        raise NotImplementedError
+        return self
 
     def __exit__(
         self,
@@ -187,7 +273,7 @@ class ContextScope:
         tb: TracebackType | None,
     ) -> None:
         """Reset the scope, whether or not the block raised."""
-        raise NotImplementedError
+        self.reset()
 
 
 def establish(principal: Principal, **environment: object) -> ContextScope:
@@ -206,7 +292,11 @@ def establish(principal: Principal, **environment: object) -> ContextScope:
         A scope handle. Use it as a context manager, or call :meth:`ContextScope.reset` when
         the boundary has no enclosing block.
     """
-    raise NotImplementedError
+    principal_token = _principal_var.set(principal)
+    # Snapshot behind a read-only proxy: the environment a decision was made against should
+    # not be able to change under the decision.
+    environment_token = _environment_var.set(MappingProxyType(dict(environment)))
+    return ContextScope(principal_token, environment_token)
 
 
 @contextmanager
@@ -223,12 +313,13 @@ def principal_context(principal: Principal, **environment: object) -> Iterator[N
     Yields:
         ``None``, with the context established.
     """
-    raise NotImplementedError
+    with establish(principal, **environment):
+        yield
 
 
 def current_principal() -> Principal | None:
     """Return the ambient principal, or ``None`` if none has been established."""
-    raise NotImplementedError
+    return _principal_var.get()
 
 
 def require_principal(action: str) -> Principal:
@@ -245,20 +336,30 @@ def require_principal(action: str) -> Principal:
             it holds regardless of ``fail_mode``: an engine that cannot tell who is calling
             has nothing to authorize.
     """
-    raise NotImplementedError
+    principal = _principal_var.get()
+    if principal is None:
+        # A missing principal is normal operation for an unauthenticated caller, not an
+        # operator-actionable error — hence INFO, per the logging standards.
+        _logger.info("No principal in context for action %s; denying", action)
+        raise NoContext(action)
+    return principal
 
 
 def current_environment() -> Mapping[str, object]:
     """Return the ambient request environment, empty when nothing was established."""
-    raise NotImplementedError
+    return _environment_var.get()
 
 
 def clear_context() -> None:
-    """Drop the ambient principal and environment.
+    """Drop the ambient principal, the environment, and the last decision envelope.
 
-    For tests and for long-lived workers that reuse a context between units of work.
+    For tests and for long-lived workers that reuse a context between units of work. The
+    envelope goes too: a worker that has finished one unit of work should not be able to
+    report the previous one's decision as if it were its own.
     """
-    raise NotImplementedError
+    _principal_var.set(None)
+    _environment_var.set(_EMPTY_ENVIRONMENT)
+    set_last_envelope(None)
 
 
 def bind_context(fn: Callable[P, T], /, *args: P.args, **kwargs: P.kwargs) -> Callable[[], T]:
@@ -283,4 +384,10 @@ def bind_context(fn: Callable[P, T], /, *args: P.args, **kwargs: P.kwargs) -> Ca
     Returns:
         A zero-argument thunk that runs ``fn`` inside a copy of the calling context.
     """
-    raise NotImplementedError
+    context = copy_context()
+
+    def run_bound() -> T:
+        """Run the bound call inside the copied context."""
+        return context.run(fn, *args, **kwargs)
+
+    return run_bound

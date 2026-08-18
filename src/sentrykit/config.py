@@ -29,10 +29,15 @@ The knobs and their meaning:
 
 from __future__ import annotations
 
+import logging
+import re
 from typing import Final, Literal, TypedDict
 
+from pydantic import ValidationError
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from typing_extensions import Unpack
+
+from sentrykit.errors import ConfigurationError
 
 __all__ = [
     "ENV_PREFIX",
@@ -50,6 +55,8 @@ __all__ = [
     "settings_for",
 ]
 
+_logger: Final = logging.getLogger("sentrykit.config")
+
 Verbosity = Literal["off", "summary", "verbose", "debug"]
 """How much of the ``_authz`` envelope to render."""
 
@@ -61,6 +68,15 @@ FailMode = Literal["closed", "open"]
 
 ENV_PREFIX: Final = "SENTRYKIT_"
 """Environment-variable prefix, e.g. ``SENTRYKIT_VERBOSITY=debug``."""
+
+_ACTION_UID_RE: Final = re.compile(
+    r'^[A-Za-z_][A-Za-z0-9_]*(?:::[A-Za-z_][A-Za-z0-9_]*)*::"(?P<id>.*)"$'
+)
+"""Matches a Cedar uid so an override key can be reduced to its bare action id.
+
+Deliberately local: config resolves the two spellings of an action name and nothing more, so
+it has no reason to know about :mod:`sentrykit.cedar`.
+"""
 
 
 class SettingsOverrides(TypedDict, total=False):
@@ -93,6 +109,64 @@ class Settings(BaseSettings):
     envelope_on_success: bool = True
 
 
+_settings: Settings | None = None
+"""The cached process-wide settings. Loaded lazily, so importing sentrykit reads no env."""
+
+_action_overrides: dict[str, SettingsOverrides] = {}
+"""Per-action overrides, keyed by the normalized (bare id) spelling of the action."""
+
+
+def _normalize_action(action: str) -> str:
+    """Reduce an action name to the one spelling used as an override key.
+
+    Args:
+        action: A full Cedar uid (``Action::"tool.search"``) or a bare id (``tool.search``).
+
+    Returns:
+        The bare action id, so both spellings address the same override.
+    """
+    candidate = action.strip()
+    match = _ACTION_UID_RE.match(candidate)
+    return match.group("id") if match else candidate
+
+
+def _describe(exc: ValidationError) -> str:
+    """Render a pydantic validation failure as a message naming the offending fields.
+
+    A bad ``SENTRYKIT_FAIL_MODE`` should read as a configuration mistake, not as a pydantic
+    traceback the operator has to decode.
+
+    Args:
+        exc: The failure raised while building :class:`Settings`.
+
+    Returns:
+        A single-line, sentence-case description of every rejected field.
+    """
+    problems = []
+    for error in exc.errors():
+        location = ".".join(str(part) for part in error["loc"]) or "<settings>"
+        problems.append(f"{location}: {error['msg']}")
+    return f"Invalid sentrykit settings (env prefix {ENV_PREFIX}): {'; '.join(problems)}"
+
+
+def _build(overrides: SettingsOverrides) -> Settings:
+    """Construct :class:`Settings` from the environment plus ``overrides``.
+
+    Args:
+        overrides: Fields to set explicitly; the environment supplies the rest.
+
+    Returns:
+        The validated settings.
+
+    Raises:
+        ConfigurationError: If any resolved value is invalid.
+    """
+    try:
+        return Settings(**overrides)
+    except ValidationError as exc:
+        raise ConfigurationError(_describe(exc)) from exc
+
+
 def get_settings() -> Settings:
     """Return the process-wide settings, loading them from the environment on first use.
 
@@ -102,7 +176,11 @@ def get_settings() -> Settings:
     Raises:
         ConfigurationError: If an environment variable holds a value the model rejects.
     """
-    raise NotImplementedError
+    global _settings
+    if _settings is None:
+        _settings = _build({})
+        _logger.debug("Loaded settings from environment with prefix %s", ENV_PREFIX)
+    return _settings
 
 
 def configure(**overrides: Unpack[SettingsOverrides]) -> Settings:
@@ -117,7 +195,10 @@ def configure(**overrides: Unpack[SettingsOverrides]) -> Settings:
     Raises:
         ConfigurationError: If the resulting combination is invalid.
     """
-    raise NotImplementedError
+    global _settings
+    _settings = _build(overrides)
+    _logger.debug("Configured settings explicitly; fields=%s", sorted(overrides))
+    return _settings
 
 
 def reset_settings() -> None:
@@ -126,11 +207,16 @@ def reset_settings() -> None:
     Intended for tests and for hosts that reload configuration at runtime; the next
     :func:`get_settings` re-reads the environment.
     """
-    raise NotImplementedError
+    global _settings
+    _settings = None
+    _action_overrides.clear()
 
 
 def override_action(action: str, **overrides: Unpack[SettingsOverrides]) -> None:
     """Register settings that apply only to ``action``.
+
+    Registering twice for the same action replaces the earlier override outright, so what
+    applies to an action stays answerable by reading a single call.
 
     Args:
         action: The action this override applies to, either the bare id
@@ -138,12 +224,14 @@ def override_action(action: str, **overrides: Unpack[SettingsOverrides]) -> None
             Both spellings resolve to the same override.
         **overrides: Fields to override for that action only.
     """
-    raise NotImplementedError
+    key = _normalize_action(action)
+    _action_overrides[key] = overrides
+    _logger.debug("Registered settings override for action %s; fields=%s", key, sorted(overrides))
 
 
 def clear_action_overrides() -> None:
     """Remove every per-action override, leaving the global settings in place."""
-    raise NotImplementedError
+    _action_overrides.clear()
 
 
 def settings_for(action: str | None = None) -> Settings:
@@ -155,7 +243,7 @@ def settings_for(action: str | None = None) -> Settings:
     Returns:
         The global settings, with any override registered for ``action`` applied on top.
     """
-    raise NotImplementedError
+    return apply_overrides(get_settings(), action)
 
 
 def apply_overrides(base: Settings, action: str | None) -> Settings:
@@ -173,4 +261,9 @@ def apply_overrides(base: Settings, action: str | None) -> Settings:
         ``base`` unchanged when nothing is registered for ``action``, otherwise a copy with
         the override applied.
     """
-    raise NotImplementedError
+    if action is None or not _action_overrides:
+        return base
+    override = _action_overrides.get(_normalize_action(action))
+    if not override:
+        return base
+    return base.model_copy(update=dict(override))
