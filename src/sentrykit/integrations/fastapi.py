@@ -276,7 +276,12 @@ def install_error_handlers(app: FastAPI, provider: FastAPIProvider | None = None
 
     async def render(request: Request, exc: Exception) -> Response:
         """Starlette's handler shape. The request is unused: a refusal is built from ``exc``."""
-        return _effective_provider(provider).render_error(exc)
+        # Bound to an annotated local for the same reason ``read_header`` is: in an
+        # environment where starlette is installed but fastapi is not -- which is exactly the
+        # ``agent`` environment, since mcp depends on starlette -- ``JSONResponse`` resolves
+        # to ``Any`` while ``Response`` is a real type, and returning it directly is an error.
+        response: Response = _effective_provider(provider).render_error(exc)
+        return response
 
     for error_type in STATUS_BY_ERROR:
         # The mapping is keyed by ``BaseException`` so it can describe anything, but Starlette

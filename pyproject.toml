@@ -61,6 +61,8 @@ memory = "sentrykit.stores.memory:InMemoryAuditSink"
 [project.entry-points."sentrykit.context_providers"]
 fastapi = "sentrykit.integrations.fastapi:FastAPIProvider"
 flask = "sentrykit.integrations.flask:FlaskProvider"
+fastmcp = "sentrykit.integrations.fastmcp:FastMCPProvider"
+pydantic-ai = "sentrykit.integrations.pydantic_ai:PydanticAIProvider"
 
 [project.urls]
 Homepage = "https://github.com/yourname/sentrykit"
@@ -107,6 +109,7 @@ module = [
   "fastapi.*",
   "flask.*",
   "mcp.*",
+  "mcp_types.*",
   "pydantic_ai.*",
   "starlette.*",
   "werkzeug.*",
