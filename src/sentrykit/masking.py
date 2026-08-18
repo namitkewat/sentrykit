@@ -35,6 +35,8 @@ A field selects its strategy three ways, most specific first:
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Final, Literal, Protocol, runtime_checkable
@@ -43,6 +45,7 @@ from pydantic import BaseModel
 
 from sentrykit.config import Settings
 from sentrykit.constraints import RejectedArgument
+from sentrykit.errors import ConfigurationError
 
 __all__ = [
     "MASK_VERBS",
@@ -71,6 +74,33 @@ instruction and passes through untouched, to be discharged by the host.
 
 REDACTED: Final = "[redacted]"
 """What :class:`RedactStrategy` substitutes. A fixed marker, so it is greppable in a log."""
+
+_STRATEGY_BY_VERB: Final[dict[str, MaskStrategyName]] = {
+    "redact": "redact",
+    "partial": "partial",
+    "hmac": "hmac",
+    "tokenize": "tokenize",
+}
+"""The obligation verbs that name a strategy outright.
+
+``mask`` is deliberately absent: it means "whatever the configuration says", so it resolves
+against :attr:`Masker._default` rather than against a fixed name.
+"""
+
+_UNAVAILABLE_HINT: Final[dict[MaskStrategyName, str]] = {
+    "hmac": "set SENTRYKIT_HMAC_KEY, or pass key= when building the masker",
+    "tokenize": "pass vault= when building the masker",
+}
+"""What to tell an operator when a strategy was asked for but could not be built."""
+
+
+def _render(value: object) -> str:
+    """Render a value for a strategy that works on text.
+
+    One place, so ``partial``, ``hmac`` and ``tokenize`` agree on what "the value" is — a
+    digest that depended on which strategy rendered it would not correlate with itself.
+    """
+    return value if isinstance(value, str) else str(value)
 
 
 @dataclass(frozen=True, slots=True)
@@ -124,8 +154,12 @@ class RedactStrategy:
     name: MaskStrategyName = "redact"
 
     def mask(self, value: object, *, field: str) -> object:
-        """Return :data:`REDACTED`."""
-        raise NotImplementedError
+        """Return :data:`REDACTED`.
+
+        The marker is fixed rather than shaped like the input — no length hint, no type hint
+        — because anything derived from the value is something an attacker can work with.
+        """
+        return REDACTED
 
 
 class PartialStrategy:
@@ -139,15 +173,22 @@ class PartialStrategy:
     name: MaskStrategyName = "partial"
 
     def __init__(self, keep: int = 4, placeholder: str = "*") -> None:
-        raise NotImplementedError
+        # A negative ``keep`` would slice from the wrong end and reveal a prefix, so it is
+        # clamped rather than trusted.
+        self._keep = max(keep, 0)
+        self._placeholder = placeholder
 
     def mask(self, value: object, *, field: str) -> object:
         """Return the value with everything but its last ``keep`` characters replaced.
 
-        A value shorter than ``keep`` is fully masked rather than partially revealed: the
-        short-value case is exactly where a partial mask would leak the whole thing.
+        A value at or below ``keep`` characters is fully masked rather than partially
+        revealed: the short-value case is exactly where a partial mask would leak the whole
+        thing.
         """
-        raise NotImplementedError
+        rendered = _render(value)
+        if len(rendered) <= self._keep:
+            return self._placeholder * len(rendered)
+        return self._placeholder * (len(rendered) - self._keep) + rendered[-self._keep :]
 
 
 class HmacStrategy:
@@ -167,11 +208,24 @@ class HmacStrategy:
     name: MaskStrategyName = "hmac"
 
     def __init__(self, key: bytes, *, digest_size: int = 32) -> None:
-        raise NotImplementedError
+        if not key:
+            raise ConfigurationError(
+                "The hmac masking strategy needs a key: an unkeyed digest of a low-entropy "
+                "value is recoverable by enumeration. Set SENTRYKIT_HMAC_KEY."
+            )
+        self._key = key
+        self._digest_size = max(digest_size, 1)
 
     def mask(self, value: object, *, field: str) -> object:
-        """Return ``hmac:<hex>``, keyed by the configured key and bound to ``field``."""
-        raise NotImplementedError
+        """Return ``hmac:<hex>``, keyed by the configured key and bound to ``field``.
+
+        The field name is hashed alongside the value with a separator that cannot occur in
+        an identifier, so ``customer_id="c-1"`` and ``account="c-1"`` do not collide and a
+        correlation across records is a correlation of the *same* field.
+        """
+        message = f"{field}\x00{_render(value)}".encode()
+        digest = hmac.new(self._key, message, hashlib.sha256).hexdigest()
+        return f"hmac:{digest[: self._digest_size]}"
 
 
 class TokenVault(Protocol):
@@ -201,11 +255,11 @@ class TokenizeStrategy:
     name: MaskStrategyName = "tokenize"
 
     def __init__(self, vault: TokenVault) -> None:
-        raise NotImplementedError
+        self._vault = vault
 
     def mask(self, value: object, *, field: str) -> object:
         """Return ``token:<id>``, recording the mapping in the vault."""
-        raise NotImplementedError
+        return f"token:{self._vault.tokenize(_render(value), field=field)}"
 
 
 def sensitive_fields(model: type[BaseModel]) -> dict[str, MaskStrategyName | None]:
@@ -223,7 +277,14 @@ def sensitive_fields(model: type[BaseModel]) -> dict[str, MaskStrategyName | Non
         Field name to its declared strategy, ``None`` where the marker named no strategy.
         Fields with no marker are absent.
     """
-    raise NotImplementedError
+    declared: dict[str, MaskStrategyName | None] = {}
+    for name, info in model.model_fields.items():
+        for marker in info.metadata:
+            # Last marker wins, so ``Annotated[str, Sensitive(), Sensitive("redact")]`` reads
+            # left to right like every other refinement in an annotation.
+            if isinstance(marker, Sensitive):
+                declared[name] = marker.strategy
+    return declared
 
 
 class Masker:
@@ -239,7 +300,11 @@ class Masker:
 
     Raises:
         ConfigurationError: If a strategy the configuration needs cannot be built — an
-            ``hmac`` default with no key, a ``tokenize`` default with no vault.
+            ``hmac`` default with no key, a ``tokenize`` default with no vault. That check is
+            deferred to the moment a field actually resolves to the strategy, not made at
+            construction: a masker with no key still masks correctly with ``redact`` and
+            ``partial``, and a process that declares nothing sensitive must not be stopped
+            from auditing because it never set a key it does not use.
     """
 
     __slots__ = ("_default", "_strategies")
@@ -252,7 +317,25 @@ class Masker:
         key: bytes | None = None,
         vault: TokenVault | None = None,
     ) -> None:
-        raise NotImplementedError
+        if default not in _STRATEGY_BY_VERB:
+            raise ConfigurationError(
+                f"Unknown default masking strategy {default!r}; "
+                f"expected one of {sorted(_STRATEGY_BY_VERB)}"
+            )
+        # ``redact`` and ``partial`` need nothing from the environment, so they are always
+        # present; the other two are built only when their dependency was supplied.
+        built: dict[MaskStrategyName, MaskStrategy] = {
+            "redact": RedactStrategy(),
+            "partial": PartialStrategy(),
+        }
+        if key:
+            built["hmac"] = HmacStrategy(key)
+        if vault is not None:
+            built["tokenize"] = TokenizeStrategy(vault)
+        if strategies:
+            built.update(strategies)
+        self._strategies: dict[MaskStrategyName, MaskStrategy] = built
+        self._default: MaskStrategyName = default
 
     @classmethod
     def from_settings(cls, settings: Settings, *, vault: TokenVault | None = None) -> Masker:
@@ -268,7 +351,9 @@ class Masker:
         Raises:
             ConfigurationError: If the settings ask for a strategy that cannot be built.
         """
-        raise NotImplementedError
+        secret = settings.hmac_key
+        key = secret.get_secret_value().encode("utf-8") if secret is not None else None
+        return cls(default=settings.mask_default, key=key, vault=vault)
 
     def plan(
         self,
@@ -287,15 +372,39 @@ class Masker:
             Field name to the strategy that will mask it. An obligation beats a declaration,
             per ADR-014.
         """
-        raise NotImplementedError
+        resolved: dict[str, MaskStrategyName] = {}
+        for name, declared_strategy in (declared or {}).items():
+            resolved[name] = declared_strategy or self._default
+
+        # Applied second, and unconditionally, so policy overrides code: an obligation is
+        # reviewed logic, a ``Sensitive`` marker is one developer's default.
+        for obligation in obligations:
+            verb, separator, target = obligation.partition(":")
+            verb = verb.strip().lower()
+            target = target.strip()
+            if not separator or verb not in MASK_VERBS or not target:
+                # Not a masking instruction — ``notify:secops``, ``justify`` — or a masking
+                # verb naming nothing. Either way it is the host's to discharge, not ours.
+                continue
+            named = _STRATEGY_BY_VERB.get(verb)
+            resolved[target] = named if named is not None else self._default
+        return resolved
 
     def mask_value(self, field: str, value: object, strategy: MaskStrategyName) -> object:
         """Mask one value with a named strategy.
 
         Raises:
-            ConfigurationError: If the strategy is not available on this masker.
+            ConfigurationError: If the strategy is not available on this masker. Refusing is
+                the only safe answer: the alternative is to fall back to a weaker strategy
+                and write the value into a store that cannot be corrected.
         """
-        raise NotImplementedError
+        implementation = self._strategies.get(strategy)
+        if implementation is None:
+            hint = _UNAVAILABLE_HINT.get(strategy, "configure it on the masker")
+            raise ConfigurationError(
+                f"Masking strategy {strategy!r} was asked for but is not configured; {hint}"
+            )
+        return implementation.mask(value, field=field)
 
     def mask_mapping(
         self,
@@ -312,7 +421,12 @@ class Masker:
             A new mapping. The input is never mutated — the caller still has to hand the raw
             values to the protected callable.
         """
-        raise NotImplementedError
+        if not plan:
+            return dict(values)
+        return {
+            name: (self.mask_value(name, value, plan[name]) if name in plan else value)
+            for name, value in values.items()
+        }
 
     def mask_rejections(
         self,
@@ -332,4 +446,14 @@ class Masker:
         Returns:
             New rejections with masked values, in the original order.
         """
-        raise NotImplementedError
+        masked: list[RejectedArgument] = []
+        for rejection in rejected:
+            strategy = plan.get(rejection.name)
+            if strategy is None or rejection.value is None:
+                # Nothing to mask: either the field is not sensitive, or the rejection
+                # carries no value in the first place (``None`` leaks nothing).
+                masked.append(rejection)
+                continue
+            replacement = self.mask_value(rejection.name, rejection.value, strategy)
+            masked.append(rejection.model_copy(update={"value": replacement}))
+        return tuple(masked)
