@@ -1,0 +1,11 @@
+# Normalize line endings so a contributor's platform never shows up in a diff.
+# Without this, an edit made through a Windows-default text write turns a whole file into a
+# CRLF change and buries the real one-line diff.
+* text=auto eol=lf
+
+# Binary / generated: never touched.
+*.png binary
+*.jpg binary
+*.ico binary
+*.pdf binary
+pixi.lock linguist-generated=true
