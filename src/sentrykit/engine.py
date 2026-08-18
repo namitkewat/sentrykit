@@ -48,8 +48,19 @@ from sentrykit.errors import (
     ValidationFailed,
 )
 from sentrykit.masking import Masker, MaskStrategyName, sensitive_fields
-from sentrykit.registry import build_audit_sink, build_grant_store, build_policy_source
-from sentrykit.stores.base import AuditSink, GrantStore, PolicyBundle, PolicySource
+from sentrykit.registry import (
+    build_audit_sink,
+    build_context_provider,
+    build_grant_store,
+    build_policy_source,
+)
+from sentrykit.stores.base import (
+    AuditSink,
+    ContextProvider,
+    GrantStore,
+    PolicyBundle,
+    PolicySource,
+)
 
 __all__ = [
     "ArgumentSpec",
@@ -410,7 +421,7 @@ class Governor:
             second process-global.
     """
 
-    __slots__ = ("_audit", "_bundle", "_grants", "_policy", "_settings")
+    __slots__ = ("_audit", "_bundle", "_grants", "_policy", "_provider", "_settings")
 
     def __init__(
         self,
@@ -420,12 +431,14 @@ class Governor:
         audit: AuditTrail | None = None,
         bundle: PolicyBundle | None = None,
         grants: GrantStore | None = None,
+        context_provider: ContextProvider | None = None,
     ) -> None:
         self._policy = policy
         self._settings = settings
         self._audit = audit
         self._bundle = bundle
         self._grants = grants
+        self._provider = context_provider
 
     @property
     def policy(self) -> PolicyEngine:
@@ -446,6 +459,18 @@ class Governor:
     def grants(self) -> GrantStore | None:
         """The grant store backing this governor's principals, if one was wired."""
         return self._grants
+
+    @property
+    def context_provider(self) -> ContextProvider | None:
+        """The framework provider wired for this process, if one was.
+
+        Held here for the same reason :attr:`grants` is: the decision path never touches
+        it -- a principal reaches the governor already established -- but the boundary
+        adapter has to find the wiring somewhere, and one object beats a second
+        process-global. It is what lets ``SentrykitMiddleware(app)`` be spelled with no
+        arguments once ``install(context_provider=...)`` has run.
+        """
+        return self._provider
 
     def plan(
         self,
@@ -982,6 +1007,7 @@ def install(
     policy_source: str | Sequence[str] | PolicySource | None = None,
     grant_store: str | Sequence[str] | GrantStore | None = None,
     audit_sink: str | Sequence[str] | AuditSink | None = None,
+    context_provider: str | ContextProvider | None = None,
     masker: Masker | None = None,
 ) -> Governor:
     """Wire a governor and make it the process default.
@@ -1008,6 +1034,10 @@ def install(
         audit_sink: One DSN (``"jsonl://./audit.jsonl"``), several, or an already-built sink.
             Defaults to ``SENTRYKIT_AUDIT_SINK``. Nothing configured means no audit trail —
             a library must not begin writing files merely because it was imported.
+        context_provider: One DSN (``"fastapi://"``) or an already-built provider, wired so a
+            framework adapter can find it with no second configuration step. Exactly one, and
+            never a sequence: a process serves one boundary, and there is no composite that
+            could guess which framework an incoming request belongs to.
         masker: How sensitive values are masked before an audit write. Defaults to one built
             from the settings.
 
@@ -1053,7 +1083,17 @@ def install(
         strict=effective.fail_mode == "closed",
     )
 
-    governor = Governor(bundle.engine(), settings, audit=trail, bundle=bundle, grants=store)
+    provider = _as_backend(
+        context_provider, build_context_provider, ContextProvider, "context provider"
+    )
+    governor = Governor(
+        bundle.engine(),
+        settings,
+        audit=trail,
+        bundle=bundle,
+        grants=store,
+        context_provider=provider,
+    )
     set_governor(governor)
     _LOGGER.debug(
         "Installed the process-default governor",
@@ -1062,6 +1102,7 @@ def install(
             "policies": len(bundle.provenance),
             "policy_set_hash": bundle.bundle_hash,
             "audited": trail.enabled,
+            "context_provider": provider.name if provider is not None else None,
         },
     )
     return governor

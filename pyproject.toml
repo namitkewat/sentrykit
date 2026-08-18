@@ -59,8 +59,8 @@ jsonl = "sentrykit.stores.jsonl:JsonlAuditSink"
 memory = "sentrykit.stores.memory:InMemoryAuditSink"
 
 [project.entry-points."sentrykit.context_providers"]
-# fastapi = "sentrykit.integrations.fastapi:FastAPIProvider"     # phase 3
-# flask   = "sentrykit.integrations.flask:FlaskProvider"         # phase 3
+fastapi = "sentrykit.integrations.fastapi:FastAPIProvider"
+flask = "sentrykit.integrations.flask:FlaskProvider"
 
 [project.urls]
 Homepage = "https://github.com/yourname/sentrykit"
@@ -97,8 +97,20 @@ warn_unused_ignores = true
 warn_redundant_casts = true
 files = ["src/sentrykit"]
 
+# `cedarpy` ships no stubs. The framework packages are optional extras, so they are simply
+# absent from the `default` environment -- and `pixi run typecheck` has to stay green there,
+# because the core must remain type-checkable without any integration installed. In the `web`
+# and `agent` environments the real packages are found and these overrides do nothing.
 [[tool.mypy.overrides]]
-module = ["cedarpy.*", "mcp.*", "pydantic_ai.*"]
+module = [
+  "cedarpy.*",
+  "fastapi.*",
+  "flask.*",
+  "mcp.*",
+  "pydantic_ai.*",
+  "starlette.*",
+  "werkzeug.*",
+]
 ignore_missing_imports = true
 
 # --- pytest -----------------------------------------------------------------
@@ -106,6 +118,9 @@ ignore_missing_imports = true
 minversion = "8.0"
 addopts = "-ra --strict-markers --strict-config"
 testpaths = ["tests"]
+# The repo root, so `tests/` can import the example apps under `examples/`. The examples are
+# part of the test surface (testing-standards) but are not an installed distribution.
+pythonpath = ["."]
 asyncio_mode = "auto"
 markers = [
   "unit: fast, isolated, no network or real frameworks",
