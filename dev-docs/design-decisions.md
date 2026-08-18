@@ -200,3 +200,43 @@ the context is already released when the handler runs. Every sentrykit error car
 detail (the refused action and its determining policies, the offending argument and reason, the
 allowed set, pydantic's field errors), so reading the exception is both sufficient and
 deterministic — the same refusal renders identically on every framework and every code path.
+
+## ADR-017 — Manifest filtering is the enforcement decision, made twice
+**Decision.** A tool is hidden from a principal **if and only if** invoking it would be
+refused by the authorization gate. MCP's `tools/list` and Pydantic-AI's `prepare` both call
+the same `Governor.plan(...)` the dispatch path calls, through one framework-free module
+(`integrations/tools.py`), and the dispatch path re-runs it in full regardless of what the
+manifest said. An entitlement refusal (`AuthzDenied`, `NoContext`) hides; an argument-level
+refusal does not.
+**Why.** Hiding is a *usability* affordance, never a control. A model that is not shown a tool
+it may not use stops burning turns proposing calls that cannot succeed — but a client is free
+to skip `tools/list` and call any name it likes, so "the model did not know it existed" is not
+an access-control argument. Making the two answers come from one implementation is what stops
+them drifting into a hole; asserting *both halves in the same test* is what proves they have
+not. The *if* half matters too: a filter that hid more than it had to would silently narrow
+what an agent can do for its user, and nothing would report it.
+The split between entitlement and argument refusals follows from the probe having no
+arguments. A tool with a required parameter and no policy default raises `DefaultUnavailable`
+for *everybody*; treating that as a denial would hide every such tool from every principal.
+Argument-level refusal is therefore deferred to dispatch, where the model has actually
+proposed something to decide about.
+**Alternatives.** A separate, cheaper visibility predicate (two implementations, one of which
+is not the one that enforces — rejected outright). Filtering only, with no dispatch check
+(security by obscurity). No filtering (correct but wasteful, and it leaks the shape of other
+principals' entitlements to every caller).
+
+## ADR-018 — The agent providers target mcp 2.0; `fastmcp` is a name we keep, not a package we import
+**Decision.** `sentrykit.integrations.fastmcp`, the `sentrykit[fastmcp]` extra and the
+`fastmcp://` DSN keep their names. What they are built against is `mcp>=2,<3` —
+`mcp.server.mcpserver.MCPServer` and `mcp.server.context.ServerMiddleware`. Nothing in
+sentrykit imports the standalone `fastmcp` distribution.
+**Why.** mcp 2.0 renamed `mcp.server.fastmcp.FastMCP` to `MCPServer`, and the separately
+published `fastmcp` package no longer imports against mcp 2.0 at all (it still expects
+`McpError`, which mcp 2.0 removed). The user-facing names were already committed to by the
+plan, the entry point and the docs, and renaming them would churn every host's configuration
+to describe an implementation detail. Keeping the name while stating plainly, in the module
+docstring and in `docs/agents.md`, that no `pip install fastmcp` is needed costs one paragraph
+and avoids a broken environment for anyone who reads the module name as an instruction.
+**Alternatives.** Rename everything to `mcpserver` (churns the DSN and the extra for no
+behavioural gain, and the ecosystem still says "FastMCP"). Support both packages (the
+standalone one does not import; there is nothing to support).
