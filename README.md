@@ -19,11 +19,12 @@ sentrykit sits at the **action layer**: it refuses the side effect *before* it h
 unlike output validators that run after a model finishes. It is self-hosted, Cedar-based, and
 audit-first.
 
-> **Status: the framework-agnostic core works.** `@protect`, ambient context, the Cedar gate,
-> argument filtering, default injection, validation and the `_authz` envelope are implemented
-> and tested. Still to come, in the phases laid out in `dev-docs/implementation.md`: the
-> pluggable stores and the tamper-evident audit log, the FastAPI/Flask and FastMCP/Pydantic-AI
-> providers, and the shipped Cedar policy pack with its CLI.
+> **Status: the core and the pluggable substrate work.** `@protect`, ambient context, the
+> Cedar gate, argument filtering, default injection, validation and the `_authz` envelope are
+> implemented and tested — as are the three stores (policy sources, grant stores, audit sinks),
+> entry-point plugin discovery, masking, and the tamper-evident audit log. Still to come, in
+> the phases laid out in `dev-docs/implementation.md`: the FastAPI/Flask and
+> FastMCP/Pydantic-AI providers, and the shipped Cedar policy pack with its CLI.
 
 ## Install (once published)
 
@@ -106,6 +107,57 @@ Given `alice → Team::"eu-support" → Division::"emea" → Project::"orders-eu
 an order owned by that project. The policy mentions neither the team nor the division. Sever
 one edge and the access is gone — because the relationship *is* the authorization.
 
+## Every decision is auditable
+
+Point sentrykit at a sink and each decision — allow *and* refusal — becomes one hash-chained
+record: the principal's effective attributes snapshotted at decision time, the arguments
+proposed, processed, rejected and defaulted, the policies that decided and where they came
+from, and the `policy_set_hash` that lets the decision be replayed.
+
+```python
+install(
+    policy_source="file://./policies",
+    grant_store="memory://",
+    audit_sink="jsonl://./var/audit.jsonl",
+)
+```
+
+Sensitive values are masked **before** the write, never after — anything in an append-only
+store is permanent, so masking at report time is too late. A policy says what to mask:
+
+```cedar
+@id("support-may-look-up")
+@obligations("hmac:account, notify:secops")
+permit (principal in Role::"support", action == Action::"tool.lookup", resource == Tool::"accounts");
+```
+
+The callable receives `ACCT-4417-9930`; the audit log receives
+`hmac:9aceb229b6349cc0…`. Keyed HMAC is the default because it is the one
+strategy that lets an auditor correlate records without the store ever holding the value.
+Obligations that are not masking instructions — `notify:secops` — ride along on the record and
+the envelope for your application to discharge.
+
+Tampering is detectable, not preventable: each record's hash covers its predecessor's, so
+`verify_chain` catches both an edited record and a deleted one. Preventing the rewrite is the
+storage layer's job.
+
+## Everything on the outside is a plugin
+
+Policy sources, grant stores, audit sinks and (from the next phase) framework providers all
+use one mechanism: a `Protocol`, a DSN, a `register_*` decorator, and an entry point. The
+built-ins take exactly the path a third-party package takes.
+
+```toml
+# pyproject.toml of sentrykit-splunk
+[project.entry-points."sentrykit.audit_sinks"]
+splunk = "sentrykit_splunk.sink:SplunkAuditSink"
+```
+
+After `pip install sentrykit-splunk`, `audit_sink="splunk://..."` works with no change to
+sentrykit. Pass a list instead of one DSN and you get a composite that satisfies the same
+`Protocol` — policy sources union, grant stores merge or route by namespace, audit sinks fan
+out — so the decision path never learns how many were configured.
+
 ## Develop
 
 This repo uses [pixi](https://pixi.sh/) for environments and helper tasks.
@@ -121,7 +173,9 @@ pixi run -e all check   # format-check, lint, typecheck, tests+coverage, docs
 git repository first — on a fresh clone it already is.
 
 See `CLAUDE.md` for the build workflow, `dev-docs/architecture.md` for how it fits together,
-and `dev-docs/design-decisions.md` for why.
+and `dev-docs/design-decisions.md` for why. The user docs cover
+[policies and grants](docs/policies.md), [audit and masking](docs/audit.md), and
+[writing a plugin](docs/plugins.md).
 
 ## License
 

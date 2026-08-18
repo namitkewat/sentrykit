@@ -67,7 +67,24 @@ no-principal ⇒ deny.
 
 ---
 
-## Phase 2 — Stores, plugin registry, masking, audit
+## Phase 2 — Stores, plugin registry, masking, audit — **done**
+
+Delivered as described. Working notes in `notes/phase-2-research.md`; the decisions it forced
+are ADR-012 (obligations as policy annotations), ADR-013 (the JSONL sink's write model) and
+ADR-014 (masking on the audit path is not configurable).
+
+Three things landed differently from the plan below, each for a reason worth carrying forward:
+
+- `cedar.py` gained `policy_annotations()` and `validate_policies()`. Cedar exposes annotations
+  only through `policies_to_json_str`, and the filesystem source needs the validator — routing
+  both through `cedar.py` preserves the phase 1 invariant that exactly one module imports
+  `cedarpy`, now enforced by `tests/unit/test_cedar_confinement.py`.
+- Two policy sources that share a *name* are refused, because names namespace policy ids. A
+  `file://` source is therefore named after its directory rather than its scheme, so the
+  ordinary two-directory union works without the caller naming anything.
+- Two sources declaring the *same entity identically* is allowed; declaring it *differently* is
+  a `ConfigurationError`. The original brief said any duplicate was an error, which would have
+  made it impossible for two policy directories to each require `Role::"admin"` to exist.
 
 **Goal.** The pluggable substrate and the audit-grade decision log, with fan-out/union/merge
 composites and entry-point discovery.

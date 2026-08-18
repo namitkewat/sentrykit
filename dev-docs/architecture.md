@@ -70,6 +70,19 @@ the decorator reads it wherever the function lives. Rules:
 All three are `Protocol`s with reference implementations; backends are addressed by DSN and
 discovered via entry points.
 
+**Built in phase 2.** `FilesystemPolicySource` (`file://`), `InMemoryGrantStore` (`memory://`),
+`JsonlAuditSink` (`jsonl://`) and `InMemoryAuditSink` (`memory://`), each registered through
+the same decorator a third-party package uses, plus the three composites. Two properties fell
+out of the build and are worth stating as invariants:
+
+- A `PolicySource` owns the **annotation index**, because Cedar exposes annotations only
+  through the policy *text* and numbers policies positionally within it. `PolicyBundle` carries
+  the text and its provenance together for that reason, and nothing may rebuild one without the
+  other.
+- Source order cannot change a decision. An override is a Cedar `forbid`, and forbid always
+  wins, so the union is order-independent. Source names exist to namespace policy ids, not to
+  establish precedence.
+
 ## 5. Policies-as-code, grants-as-data
 
 Cedar cleanly separates *policies* (logic) from *entities* (data). We exploit that:
@@ -95,6 +108,20 @@ chain for tamper-evidence. Sensitive values are **masked before the write** (red
 partial / HMAC / tokenize); reversible token maps stay out of the immutable store. Iceberg-
 on-S3 or S3 Object Lock are the durable backends; a period query over the sink *is* the
 yearly audit report.
+
+**Built in phase 2**, with the mask-before-write rule made structural rather than
+conventional: `AuditTrail` is the only object that calls `AuditSink.write`, it masks on the
+way in, and a unit test scans the source tree and fails if any other module writes to a sink.
+The `Governor` reaches the trail through one optional constructor argument; with none wired it
+builds no records at all and takes the phase 1 path exactly.
+
+A record is emitted for **refusals as well as allows**, classified finer than allow/deny —
+`denied`, `no-valid-arguments`, `default-unavailable`, `validation-failed`,
+`arguments-rejected`, `engine-error` — because those are one thing to a caller and six
+different events to an auditor. One asymmetry: a sink failure while recording an *allow*
+propagates and refuses the call (`fail_mode="closed"`), while a sink failure while recording a
+*refusal* is logged and swallowed, since the call is already refused and replacing a precise
+`AuthzDenied` with an operational error would take away the answer the caller needs.
 
 ## 7. Plugin model (uniform across the whole library)
 
