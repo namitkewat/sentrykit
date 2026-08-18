@@ -9,11 +9,11 @@
 // The forbid closes the window from the other side. Without it a lapsed elevation would
 // merely stop matching this permit, leaving every other permit the principal has intact --
 // which is right for a role they still hold and wrong for one that has just run out.
-
 @id("jit-elevation")
 @obligations("notify:secops")
 permit (principal, action, resource)
-when {
+when
+{
   principal has elevation_role &&
   principal has elevation_until &&
   context has now &&
@@ -24,7 +24,8 @@ when {
 
 @id("jit-elevation-expired-forbidden")
 forbid (principal, action, resource)
-when {
+when
+{
   principal has elevation_until &&
   context has now &&
   context.now > principal.elevation_until

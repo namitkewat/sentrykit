@@ -47,6 +47,7 @@ __all__ = [
     "PolicyValidation",
     "PolicyValidationError",
     "coerce_value",
+    "format_policies",
     "policy_annotations",
     "validate_policies",
 ]
@@ -651,3 +652,33 @@ def validate_policies(policies: str, schema: str) -> PolicyValidation:
         for error in result.errors
     )
     return PolicyValidation(passed=bool(result.validation_passed), errors=errors)
+
+
+def format_policies(policies: str, *, line_width: int = 80, indent_width: int = 2) -> str:
+    """Render ``policies`` the way Cedar's own formatter would write them.
+
+    The lint half of ``sentrykit policy validate``. A policy file that does not equal its own
+    formatting is reported as a warning and never rewritten, because reviewed policy text is
+    not something a validation command edits — so the only thing a caller needs is the
+    formatting Cedar *would* produce, to compare against.
+
+    It lives here for the reason the module docstring gives: ``cedarpy`` is imported by
+    exactly one module, and a second import in the CLI would turn that claim into a comment.
+
+    Args:
+        policies: Cedar policy text.
+        line_width: Column the formatter wraps at.
+        indent_width: Spaces per indent level.
+
+    Returns:
+        The formatted text, ending in a newline.
+
+    Raises:
+        ConfigurationError: If the text does not parse. Cedar's own message here is terse
+            (``cannot parse input policies``), so a caller holding a filename should name the
+            file it came from.
+    """
+    try:
+        return str(cedarpy.format_policies(policies, line_width, indent_width))
+    except ValueError as exc:
+        raise ConfigurationError(f"cedar policy text failed to parse: {exc}") from exc

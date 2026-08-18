@@ -9,10 +9,10 @@
 // The forbid half is what makes an emergency-only resource emergency-only: it fires whenever
 // the flag is absent, and forbid beats every other permit in the pack. The permit carries a
 // mandatory obligation, so a call that proceeds this way cannot proceed quietly.
-
 @id("emergency-resource-forbidden-without-flag")
 forbid (principal, action, resource)
-when {
+when
+{
   resource has emergency_only &&
   resource.emergency_only &&
   !(context has break_glass && context.break_glass)
@@ -21,7 +21,8 @@ when {
 @id("break-the-glass")
 @obligations("notify:secops,record:justification")
 permit (principal, action, resource)
-when {
+when
+{
   resource has emergency_only &&
   resource.emergency_only &&
   resource has emergency_role &&
