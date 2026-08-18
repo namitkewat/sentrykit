@@ -85,9 +85,13 @@ run-fastapi = "uvicorn examples.fastapi_app.main:create_app --factory --reload"
 run-flask = "flask --app examples.flask_app.main:create_app run --debug"
 run-mcp = "python -m examples.fastmcp_server.server"
 run-agent = "python -m examples.pydantic_ai_agent.agent"
-# governance / ops (available once phase 5 CLI exists)
-policy-validate = "python -m sentrykit.cli policy validate policy/"
-audit-report = "python -m sentrykit.cli audit-report --from 2026-01-01 --to 2026-12-31 --out dist/audit-report.md"
+# governance / ops
+# `policy validate` with no directory validates the *shipped* pack; point it at your own
+# with `pixi run policy-validate ./policies`.
+policy-validate = "python -m sentrykit.cli policy validate"
+# The sink is named explicitly so the task runs out of the box against a dev log; in a
+# deployment `SENTRYKIT_AUDIT_SINK` supplies it and the flag comes off.
+audit-report = "python -m sentrykit.cli audit-report --from 2026-01-01 --to 2026-12-31 --sink jsonl://./dist/audit.jsonl --out dist/audit-report.md"
 # docs
 docs = "mkdocs build --strict"
 docs-serve = "mkdocs serve"

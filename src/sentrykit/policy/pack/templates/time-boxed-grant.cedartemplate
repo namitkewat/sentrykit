@@ -1,0 +1,5 @@
+permit (
+  principal == ?principal,
+  action,
+  resource == ?resource
+);

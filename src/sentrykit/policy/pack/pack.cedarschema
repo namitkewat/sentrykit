@@ -1,0 +1,45 @@
+// The shipped pack's Cedar schema.
+//
+// Every attribute is optional, because a pattern is adopted by *adding* an attribute: a
+// resource that declares no `owner` simply never reaches the ownership permit. Declaring
+// them required would make the pack an all-or-nothing commitment instead of a menu.
+//
+// Times are `Long` — epoch seconds — because `sentrykit.cedar.coerce_value` renders every
+// `datetime` that way and Cedar has no ordering on strings.
+
+type PackContext = {
+  now?: Long,
+  break_glass?: Bool,
+  justification?: String,
+  on_behalf_of?: User,
+};
+
+entity Role in [Role];
+
+entity Group in [Group];
+
+entity User in [Role, Group] {
+  entitlement_starts?: Long,
+  entitlement_expires?: Long,
+  delegated_by?: User,
+  delegated_actions?: Set<Action>,
+  delegation_expires?: Long,
+  elevation_role?: Role,
+  elevation_until?: Long,
+};
+
+entity Resource in [Group] {
+  owner?: User,
+  group?: Group,
+  required_role?: Role,
+  emergency_only?: Bool,
+  emergency_role?: Role,
+  conflicting_role?: Role,
+  prepared_by?: User,
+};
+
+action "access", "approve" appliesTo {
+  principal: [User],
+  resource: [Resource],
+  context: PackContext
+};

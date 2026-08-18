@@ -88,6 +88,13 @@ from sentrykit.errors import (
     ValidationFailed,
 )
 from sentrykit.masking import Masker, Sensitive
+from sentrykit.policy.loader import (
+    LinkedPolicySource,
+    PackPolicySource,
+    TemplateLink,
+    link_template,
+    load_pack,
+)
 from sentrykit.registry import (
     available,
     build_audit_sink,
@@ -134,9 +141,11 @@ __all__ = [
     "GrantSpec",
     "GrantStore",
     "Invocation",
+    "LinkedPolicySource",
     "Masker",
     "NoContext",
     "NoValidArguments",
+    "PackPolicySource",
     "Plan",
     "PolicyBundle",
     "PolicyEngine",
@@ -147,6 +156,7 @@ __all__ = [
     "Sensitive",
     "SentrykitError",
     "Settings",
+    "TemplateLink",
     "ValidationFailed",
     "__version__",
     "available",
@@ -166,6 +176,8 @@ __all__ = [
     "install",
     "is_protected",
     "last_envelope",
+    "link_template",
+    "load_pack",
     "override_action",
     "principal_context",
     "protect",

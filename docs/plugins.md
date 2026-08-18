@@ -18,7 +18,7 @@ rather than a property.
 
 | Kind | Protocol | Entry-point group | Ships with |
 | --- | --- | --- | --- |
-| Policy source | `PolicySource` | `sentrykit.policy_sources` | `file` |
+| Policy source | `PolicySource` | `sentrykit.policy_sources` | `file`, `pack` |
 | Grant store | `GrantStore` | `sentrykit.grant_stores` | `memory` |
 | Audit sink | `AuditSink` | `sentrykit.audit_sinks` | `jsonl`, `memory` |
 | Context provider | `ContextProvider` | `sentrykit.context_providers` | `fastapi`, `flask` |
@@ -33,6 +33,8 @@ The scheme selects the backend; everything after it is that backend's business.
 
 ```python
 "file://./policies"                      # a directory of .cedar files
+"pack://"                                # the shipped policy pack
+"pack://rbac,ownership"                  # ... just those two patterns
 "file://./policies?validate=false"       # skip schema type-checking at load
 "jsonl://./var/audit.jsonl?fsync=true"   # durable append-only log
 "memory://"                              # in-process grant store
@@ -152,7 +154,7 @@ without uninstalling the package that provides it.
 from sentrykit import available
 
 available("audit_sink")     # ('jsonl', 'memory')
-available("policy_source")  # ('file',)
+available("policy_source")  # ('file', 'pack')
 ```
 
 An unknown scheme raises `ConfigurationError` naming what *is* available, and every built

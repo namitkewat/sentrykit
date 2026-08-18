@@ -31,7 +31,7 @@ import logging
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from importlib import metadata
-from typing import Final, Literal, TypeVar
+from typing import Final, Literal, TypeAlias, TypeVar, cast
 from urllib.parse import unquote
 
 from sentrykit.errors import ConfigurationError
@@ -47,6 +47,7 @@ _LOGGER: Final = logging.getLogger("sentrykit.registry")
 __all__ = [
     "DSN",
     "ENTRY_POINT_GROUPS",
+    "Configured",
     "PluginKind",
     "RegisteredPlugin",
     "available",
@@ -67,6 +68,16 @@ __all__ = [
 
 PluginKind = Literal["policy_source", "grant_store", "audit_sink", "context_provider"]
 """The four extension points."""
+
+Configured: TypeAlias = "str | object | Sequence[str | object]"
+"""How a backend can be named: a DSN, a built backend, or a sequence mixing the two.
+
+Deliberately not narrowed to each Protocol. The four ``build_*`` functions share one
+normalization path, and a caller who passes something that satisfies no contract gets a
+:class:`~sentrykit.errors.ConfigurationError` naming the protocol it failed — which is a
+better error than a type checker's, and the only one available to a host wiring itself from a
+config file at runtime.
+"""
 
 ENTRY_POINT_GROUPS: Final[Mapping[PluginKind, str]] = {
     "policy_source": "sentrykit.policy_sources",
@@ -383,14 +394,14 @@ def clear_registry(kind: PluginKind | None = None) -> None:
         _DISCOVERED.discard(one)
 
 
-def build_policy_source(dsn: str | Sequence[str] | None) -> PolicySource | None:
+def build_policy_source(dsn: Configured | None) -> PolicySource | None:
     """Build a policy source from one DSN, or a composite from several.
 
     Multiplicity is a composite that satisfies the same Protocol (ADR-004), so the core
     always holds exactly one source and never learns how many were configured.
 
     Args:
-        dsn: One DSN, several, or ``None``.
+        dsn: One DSN, several, an already-built source, a mix of the two, or ``None``.
 
     Returns:
         The single source when one DSN was given, a
@@ -403,12 +414,10 @@ def build_policy_source(dsn: str | Sequence[str] | None) -> PolicySource | None:
     addresses = _addresses(dsn)
     if not addresses:
         return None
-    sources: list[PolicySource] = []
-    for address in addresses:
-        built = _instantiate("policy_source", address)
-        if not isinstance(built, PolicySource):
-            raise _unsatisfied("policy_source", address, "PolicySource")
-        sources.append(built)
+    sources: list[PolicySource] = [
+        cast("PolicySource", _resolve("policy_source", member, PolicySource, "PolicySource"))
+        for member in addresses
+    ]
     if len(sources) == 1:
         return sources[0]
     from sentrykit.stores.composite import CompositePolicySource
@@ -416,7 +425,7 @@ def build_policy_source(dsn: str | Sequence[str] | None) -> PolicySource | None:
     return CompositePolicySource(sources)
 
 
-def build_grant_store(dsn: str | Sequence[str] | None) -> GrantStore | None:
+def build_grant_store(dsn: Configured | None) -> GrantStore | None:
     """Build a grant store from one DSN, or a composite from several.
 
     Several stores merge by precedence — earlier DSNs win — unless every one of them declares
@@ -435,12 +444,10 @@ def build_grant_store(dsn: str | Sequence[str] | None) -> GrantStore | None:
     addresses = _addresses(dsn)
     if not addresses:
         return None
-    stores: list[GrantStore] = []
-    for address in addresses:
-        built = _instantiate("grant_store", address)
-        if not isinstance(built, GrantStore):
-            raise _unsatisfied("grant_store", address, "GrantStore")
-        stores.append(built)
+    stores: list[GrantStore] = [
+        cast("GrantStore", _resolve("grant_store", member, GrantStore, "GrantStore"))
+        for member in addresses
+    ]
     if len(stores) == 1:
         return stores[0]
     from sentrykit.stores.composite import CompositeGrantStore
@@ -448,7 +455,7 @@ def build_grant_store(dsn: str | Sequence[str] | None) -> GrantStore | None:
     return CompositeGrantStore(stores)
 
 
-def build_audit_sink(dsn: str | Sequence[str] | None) -> AuditSink | None:
+def build_audit_sink(dsn: Configured | None) -> AuditSink | None:
     """Build an audit sink from one DSN, or a fan-out composite from several.
 
     Args:
@@ -469,25 +476,30 @@ def build_audit_sink(dsn: str | Sequence[str] | None) -> AuditSink | None:
     # wiring error, not a surprise the first time a replica goes down.
     from sentrykit.stores.composite import AUDIT_ERROR_POLICIES, CompositeAuditSink
 
-    requested = parse_dsn(addresses[0]).option("on_error", "primary-durable") or ""
+    first = addresses[0]
+    # Only a DSN can carry the option; a caller passing a built sink first has no way to
+    # spell it, so the default stands rather than the wiring failing on their behalf.
+    requested = (
+        parse_dsn(first).option("on_error", "primary-durable") or ""
+        if isinstance(first, str)
+        else "primary-durable"
+    )
     on_error = AUDIT_ERROR_POLICIES.get(requested)
     if on_error is None:
         known = ", ".join(sorted(AUDIT_ERROR_POLICIES))
         raise ConfigurationError(
-            f"audit sink option 'on_error' in {addresses[0]!r} is {requested!r}; expected {known}"
+            f"audit sink option 'on_error' in {first!r} is {requested!r}; expected {known}"
         )
-    sinks: list[AuditSink] = []
-    for address in addresses:
-        built = _instantiate("audit_sink", address)
-        if not isinstance(built, AuditSink):
-            raise _unsatisfied("audit_sink", address, "AuditSink")
-        sinks.append(built)
+    sinks: list[AuditSink] = [
+        cast("AuditSink", _resolve("audit_sink", member, AuditSink, "AuditSink"))
+        for member in addresses
+    ]
     if len(sinks) == 1:
         return sinks[0]
     return CompositeAuditSink(sinks, on_error=on_error)
 
 
-def build_context_provider(dsn: str | Sequence[str] | None) -> ContextProvider | None:
+def build_context_provider(dsn: Configured | None) -> ContextProvider | None:
     """Build a framework context provider. Phases 3 and 4 supply the implementations.
 
     Args:
@@ -508,12 +520,10 @@ def build_context_provider(dsn: str | Sequence[str] | None) -> ContextProvider |
         # it actually serves.
         raise ConfigurationError(
             f"only one context provider can be configured, but {len(addresses)} were given: "
-            f"{', '.join(addresses)}"
+            f"{', '.join(str(address) for address in addresses)}"
         )
-    built = _instantiate("context_provider", addresses[0])
-    if not isinstance(built, ContextProvider):
-        raise _unsatisfied("context_provider", addresses[0], "ContextProvider")
-    return built
+    resolved = _resolve("context_provider", addresses[0], ContextProvider, "ContextProvider")
+    return cast("ContextProvider", resolved)
 
 
 def discovered(kind: PluginKind) -> Iterable[RegisteredPlugin]:
@@ -571,17 +581,50 @@ def discovered(kind: PluginKind) -> Iterable[RegisteredPlugin]:
     return tuple(found)
 
 
-def _addresses(dsn: str | Sequence[str] | None) -> tuple[str, ...]:
-    """Normalize the three ways a backend can be configured into a tuple of DSNs.
+def _addresses(dsn: Configured | None) -> tuple[object, ...]:
+    """Normalize the ways a backend can be configured into a tuple of members.
 
     A lone string is one DSN rather than a sequence of characters, which is the whole reason
-    this is a function and not an inline ``tuple(dsn)``.
+    this is a function and not an inline ``tuple(dsn)``. A member is either a DSN to build or
+    an already-built backend to use as it stands — see :func:`_resolve` for why both.
     """
     if dsn is None:
         return ()
     if isinstance(dsn, str):
         return (dsn,)
-    return tuple(dsn)
+    if isinstance(dsn, Sequence):
+        return tuple(dsn)
+    return (dsn,)
+
+
+def _resolve(kind: PluginKind, member: object, protocol: type, name: str) -> object:
+    """Turn one configured member into a backend satisfying ``protocol``.
+
+    A string is a DSN and gets built; anything else is taken to be a backend already. Mixing
+    the two in one sequence is the point: composing the shipped policy pack with a source the
+    host constructed itself — ``[PackPolicySource(), LinkedPolicySource(links)]``, or
+    ``["pack://", my_source]`` — is an ordinary thing to want, and requiring every member of a
+    union to be expressible as a DSN would put a backend holding live credentials or
+    in-memory state out of reach of the union entirely.
+
+    Args:
+        kind: Which extension point.
+        member: A DSN string, or a built backend.
+        protocol: The Protocol the result must satisfy.
+        name: The protocol's name, for the error message.
+
+    Returns:
+        The backend.
+
+    Raises:
+        ConfigurationError: If a DSN names an unknown scheme, a factory rejects it, or the
+            result does not satisfy ``protocol``.
+    """
+    built = _instantiate(kind, member) if isinstance(member, str) else member
+    if not isinstance(built, protocol):
+        described = member if isinstance(member, str) else type(member).__name__
+        raise _unsatisfied(kind, str(described), name)
+    return built
 
 
 def _instantiate(kind: PluginKind, dsn: str) -> object:

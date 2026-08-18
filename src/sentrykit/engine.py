@@ -26,7 +26,7 @@ from collections.abc import Awaitable, Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
-from typing import Any, Final, NoReturn, TypeVar, get_type_hints
+from typing import Any, Final, NoReturn, TypeVar, cast, get_type_hints
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, ValidationError, create_model
@@ -49,6 +49,7 @@ from sentrykit.errors import (
 )
 from sentrykit.masking import Masker, MaskStrategyName, sensitive_fields
 from sentrykit.registry import (
+    Configured,
     build_audit_sink,
     build_context_provider,
     build_grant_store,
@@ -1004,9 +1005,9 @@ def install(
     entities: Sequence[Entity] = (),
     schema: str | None = None,
     settings: Settings | None = None,
-    policy_source: str | Sequence[str] | PolicySource | None = None,
-    grant_store: str | Sequence[str] | GrantStore | None = None,
-    audit_sink: str | Sequence[str] | AuditSink | None = None,
+    policy_source: str | PolicySource | Sequence[str | PolicySource] | None = None,
+    grant_store: str | GrantStore | Sequence[str | GrantStore] | None = None,
+    audit_sink: str | AuditSink | Sequence[str | AuditSink] | None = None,
     context_provider: str | ContextProvider | None = None,
     masker: Masker | None = None,
 ) -> Governor:
@@ -1028,7 +1029,9 @@ def install(
             the sources and the grant store contribute.
         schema: Optional Cedar schema text, for inline policies.
         settings: Base settings, defaulting to the process configuration.
-        policy_source: One DSN (``"file://./policies"``), several, or an already-built source.
+        policy_source: One DSN (``"file://./policies"``), several, an already-built source,
+            or a sequence mixing the two — ``["pack://", LinkedPolicySource(links)]`` unions
+            the shipped pack with something the host constructed itself.
         grant_store: One DSN (``"memory://"``), several, or an already-built store. Its stable
             entities join the graph; its principals do not, since those are per-request.
         audit_sink: One DSN (``"jsonl://./audit.jsonl"``), several, or an already-built sink.
@@ -1109,20 +1112,21 @@ def install(
 
 
 def _as_backend(
-    configured: str | Sequence[str] | _B | None,
-    build: Callable[[str | Sequence[str] | None], _B | None],
+    configured: Configured | _B | None,
+    build: Callable[[Configured | None], _B | None],
     protocol: type,
     label: str,
 ) -> _B | None:
-    """Accept either a DSN (or several) or an already-built backend, and return the backend.
+    """Accept DSNs, already-built backends, or a mix of the two, and return one backend.
 
     Letting a caller pass an instance matters more than it looks: a test wants an
     :class:`~sentrykit.stores.memory.InMemoryAuditSink` it still holds a reference to, and a
     host with its own credentials wants to construct its backend itself. A DSN is the
-    convenience, not the only door.
+    convenience, not the only door — and that has to hold *inside* a sequence too, or a
+    union is closed to any backend that cannot be spelled as a DSN.
 
     Args:
-        configured: A DSN, a sequence of DSNs, an instance, or ``None``.
+        configured: A DSN, a built backend, a sequence mixing the two, or ``None``.
         build: The registry factory for this kind.
         protocol: The Protocol an instance must satisfy.
         label: Human name for the error message.
@@ -1143,7 +1147,9 @@ def _as_backend(
         raise ConfigurationError(
             f"the {label} passed to install() does not satisfy the {protocol.__name__} protocol"
         )
-    return configured
+    # ``Configured`` widens to ``object`` so that one normalization path serves all four
+    # extension points; the isinstance above is the check the cast stands on.
+    return cast("_B", configured)
 
 
 def set_governor(governor: Governor | None) -> None:

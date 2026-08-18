@@ -368,7 +368,7 @@ def test_two_sources_declaring_the_same_entity_identically_is_fine(tmp_path: Pat
 @pytest.mark.unit
 def test_the_page_lists_the_backends_that_actually_ship() -> None:
     assert available("audit_sink") == ("jsonl", "memory")
-    assert available("policy_source") == ("file",)
+    assert available("policy_source") == ("file", "pack")
     assert available("grant_store") == ("memory",)
 
 
