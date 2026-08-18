@@ -49,13 +49,14 @@ all = ["sentrykit[web,agents]"]
 # register the same way. Format: name = "module:Class".
 # Register each entry point WHEN its backend is built (do not leave dangling refs).
 [project.entry-points."sentrykit.policy_sources"]
-# file = "sentrykit.stores.filesystem:FilesystemPolicySource"   # phase 2
+file = "sentrykit.stores.filesystem:FilesystemPolicySource"
 
 [project.entry-points."sentrykit.grant_stores"]
-# memory = "sentrykit.stores.memory:InMemoryGrantStore"          # phase 2
+memory = "sentrykit.stores.memory:InMemoryGrantStore"
 
 [project.entry-points."sentrykit.audit_sinks"]
-# jsonl = "sentrykit.stores.jsonl:JsonlAuditSink"                # phase 2
+jsonl = "sentrykit.stores.jsonl:JsonlAuditSink"
+memory = "sentrykit.stores.memory:InMemoryAuditSink"
 
 [project.entry-points."sentrykit.context_providers"]
 # fastapi = "sentrykit.integrations.fastapi:FastAPIProvider"     # phase 3

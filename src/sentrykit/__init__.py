@@ -35,6 +35,7 @@ fit and ``dev-docs/design-decisions.md`` for why.
 
 from __future__ import annotations
 
+from sentrykit.audit import AuditTrail, AuthzAuditRecord, ChainVerdict, verify_chain
 from sentrykit.cedar import CedarDecision, CedarRequest, Entity, EntityRef, PolicyEngine
 from sentrykit.config import (
     Settings,
@@ -77,6 +78,7 @@ from sentrykit.engine import (
 from sentrykit.envelope import AuthzEnvelope, last_envelope
 from sentrykit.errors import (
     ArgumentRejected,
+    AuditUnavailable,
     AuthzDenied,
     ConfigurationError,
     DefaultUnavailable,
@@ -85,15 +87,41 @@ from sentrykit.errors import (
     SentrykitError,
     ValidationFailed,
 )
+from sentrykit.masking import Masker, Sensitive
+from sentrykit.registry import (
+    available,
+    build_audit_sink,
+    build_grant_store,
+    build_policy_source,
+    register_audit_sink,
+    register_context_provider,
+    register_grant_store,
+    register_policy_source,
+)
+from sentrykit.stores.base import (
+    AuditSink,
+    AuditWindow,
+    GrantRecord,
+    GrantSpec,
+    GrantStore,
+    PolicyBundle,
+    PolicySource,
+)
 
 __all__ = [
     "ArgumentConstraint",
     "ArgumentRejected",
     "ArgumentSpec",
+    "AuditSink",
+    "AuditTrail",
+    "AuditUnavailable",
+    "AuditWindow",
+    "AuthzAuditRecord",
     "AuthzDenied",
     "AuthzEnvelope",
     "CedarDecision",
     "CedarRequest",
+    "ChainVerdict",
     "ConfigurationError",
     "ConstraintSet",
     "ContextScope",
@@ -102,19 +130,30 @@ __all__ = [
     "EntityRef",
     "FilterResult",
     "Governor",
+    "GrantRecord",
+    "GrantSpec",
+    "GrantStore",
     "Invocation",
+    "Masker",
     "NoContext",
     "NoValidArguments",
     "Plan",
+    "PolicyBundle",
     "PolicyEngine",
+    "PolicySource",
     "Principal",
     "ProtectedMeta",
     "RejectedArgument",
+    "Sensitive",
     "SentrykitError",
     "Settings",
     "ValidationFailed",
     "__version__",
+    "available",
     "bind_context",
+    "build_audit_sink",
+    "build_grant_store",
+    "build_policy_source",
     "clear_action_overrides",
     "clear_context",
     "configure",
@@ -131,11 +170,16 @@ __all__ = [
     "principal_context",
     "protect",
     "protected_meta",
+    "register_audit_sink",
+    "register_context_provider",
+    "register_grant_store",
+    "register_policy_source",
     "require_principal",
     "reset_settings",
     "set_governor",
     "settings_for",
     "use_governor",
+    "verify_chain",
 ]
 
 __version__ = "0.1.0.dev0"

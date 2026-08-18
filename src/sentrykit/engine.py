@@ -24,7 +24,7 @@ import inspect
 import logging
 from collections.abc import Awaitable, Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from typing import Any, Final, NoReturn, TypeVar, get_type_hints
 from uuid import uuid4
@@ -47,8 +47,9 @@ from sentrykit.errors import (
     SentrykitError,
     ValidationFailed,
 )
-from sentrykit.masking import MaskStrategyName, sensitive_fields
-from sentrykit.stores.base import PolicyBundle
+from sentrykit.masking import Masker, MaskStrategyName, sensitive_fields
+from sentrykit.registry import build_audit_sink, build_grant_store, build_policy_source
+from sentrykit.stores.base import AuditSink, GrantStore, PolicyBundle, PolicySource
 
 __all__ = [
     "ArgumentSpec",
@@ -62,6 +63,7 @@ __all__ = [
 ]
 
 T = TypeVar("T")
+_B = TypeVar("_B")
 
 _LOGGER: Final = logging.getLogger("sentrykit.engine")
 
@@ -401,9 +403,14 @@ class Governor:
             index obligations are read from (ADR-012) and the provenance the audit record
             carries. Without one, obligations stay empty and provenance is unavailable —
             which is exactly the phase 1 behaviour, unchanged.
+        grants: The grant store principals were materialized from, when there is one. The
+            decision path never consults it — a principal arrives already materialized, by
+            way of :func:`~sentrykit.context.establish` — but the admin surface needs to
+            reach the store it is governing, and holding the wiring in one object beats a
+            second process-global.
     """
 
-    __slots__ = ("_audit", "_bundle", "_policy", "_settings")
+    __slots__ = ("_audit", "_bundle", "_grants", "_policy", "_settings")
 
     def __init__(
         self,
@@ -412,11 +419,13 @@ class Governor:
         *,
         audit: AuditTrail | None = None,
         bundle: PolicyBundle | None = None,
+        grants: GrantStore | None = None,
     ) -> None:
         self._policy = policy
         self._settings = settings
         self._audit = audit
         self._bundle = bundle
+        self._grants = grants
 
     @property
     def policy(self) -> PolicyEngine:
@@ -432,6 +441,11 @@ class Governor:
     def bundle(self) -> PolicyBundle | None:
         """The policy bundle this governor's policies came from, if any."""
         return self._bundle
+
+    @property
+    def grants(self) -> GrantStore | None:
+        """The grant store backing this governor's principals, if one was wired."""
+        return self._grants
 
     def plan(
         self,
@@ -960,34 +974,135 @@ class Governor:
 
 
 def install(
-    policies: str,
+    policies: str | None = None,
     *,
     entities: Sequence[Entity] = (),
     schema: str | None = None,
     settings: Settings | None = None,
+    policy_source: str | Sequence[str] | PolicySource | None = None,
+    grant_store: str | Sequence[str] | GrantStore | None = None,
+    audit_sink: str | Sequence[str] | AuditSink | None = None,
+    masker: Masker | None = None,
 ) -> Governor:
-    """Build a governor over an in-memory policy set and make it the process default.
+    """Wire a governor and make it the process default.
 
-    The one-call wiring for Phase 1, for tests, and for small services whose policy fits in a
-    string literal. Phase 2 replaces the in-memory source with the pluggable
-    ``PolicySource`` / ``GrantStore`` pair without changing anything downstream.
+    One call covers both ends of the range. Hand it a policy string and it behaves exactly as
+    it did in phase 1 — the wiring for tests and for a service whose policy fits in a literal.
+    Hand it DSNs instead and the same call assembles the pluggable substrate: policy sources
+    unioned, grant stores merged, audit sinks fanned out, each resolved through the registry
+    so a third-party backend is reachable by name alone.
+
+    Either way the result is one :class:`Governor`, because multiplicity is a composite that
+    satisfies the same Protocol (ADR-004) — the decision path never learns how many sources
+    were configured.
 
     Args:
-        policies: Cedar policy text.
-        entities: The stable entity graph — roles, teams, resources.
-        schema: Optional Cedar schema text.
+        policies: Cedar policy text. Mutually exclusive with ``policy_source``.
+        entities: Extra stable entities — roles, teams, resources — merged on top of whatever
+            the sources and the grant store contribute.
+        schema: Optional Cedar schema text, for inline policies.
         settings: Base settings, defaulting to the process configuration.
+        policy_source: One DSN (``"file://./policies"``), several, or an already-built source.
+        grant_store: One DSN (``"memory://"``), several, or an already-built store. Its stable
+            entities join the graph; its principals do not, since those are per-request.
+        audit_sink: One DSN (``"jsonl://./audit.jsonl"``), several, or an already-built sink.
+            Defaults to ``SENTRYKIT_AUDIT_SINK``. Nothing configured means no audit trail —
+            a library must not begin writing files merely because it was imported.
+        masker: How sensitive values are masked before an audit write. Defaults to one built
+            from the settings.
 
     Returns:
         The installed governor.
 
     Raises:
-        ConfigurationError: If the policies, entities or schema fail to parse.
+        ConfigurationError: If neither or both of ``policies``/``policy_source`` were given,
+            if a DSN names an unknown backend, or if the policies, entities or schema fail to
+            parse.
     """
-    governor = Governor(PolicyEngine(policies, entities, schema=schema), settings)
+    if (policies is None) == (policy_source is None):
+        raise ConfigurationError(
+            "install() needs exactly one of policies= (inline Cedar text) or "
+            "policy_source= (a DSN or a built PolicySource)"
+        )
+
+    effective = settings or get_settings()
+    source = _as_backend(policy_source, build_policy_source, PolicySource, "policy source")
+    store = _as_backend(grant_store, build_grant_store, GrantStore, "grant store")
+
+    if source is not None:
+        bundle = source.load()
+    else:
+        # Inline policies get a bundle too, rather than a bare engine. It costs one extra
+        # parse at wiring time and buys the annotation index, which is what makes obligations
+        # work for a policy literal exactly as they do for a policy directory.
+        bundle = PolicyBundle.from_text(policies or "", schema=schema, source="inline")
+
+    graph: list[Entity] = list(bundle.entities)
+    if store is not None:
+        graph.extend(store.entities())
+    graph.extend(entities)
+    bundle = replace(bundle, entities=tuple(graph))
+
+    sink = _as_backend(audit_sink, build_audit_sink, AuditSink, "audit sink")
+    if sink is None and effective.audit_sink:
+        sink = build_audit_sink(effective.audit_sink)
+    trail = AuditTrail(
+        sink,
+        masker=masker or Masker.from_settings(effective),
+        bundle=bundle,
+        strict=effective.fail_mode == "closed",
+    )
+
+    governor = Governor(bundle.engine(), settings, audit=trail, bundle=bundle, grants=store)
     set_governor(governor)
-    _LOGGER.debug("Installed the process-default governor", extra={"entities": len(entities)})
+    _LOGGER.debug(
+        "Installed the process-default governor",
+        extra={
+            "entities": len(bundle.entities),
+            "policies": len(bundle.provenance),
+            "policy_set_hash": bundle.bundle_hash,
+            "audited": trail.enabled,
+        },
+    )
     return governor
+
+
+def _as_backend(
+    configured: str | Sequence[str] | _B | None,
+    build: Callable[[str | Sequence[str] | None], _B | None],
+    protocol: type,
+    label: str,
+) -> _B | None:
+    """Accept either a DSN (or several) or an already-built backend, and return the backend.
+
+    Letting a caller pass an instance matters more than it looks: a test wants an
+    :class:`~sentrykit.stores.memory.InMemoryAuditSink` it still holds a reference to, and a
+    host with its own credentials wants to construct its backend itself. A DSN is the
+    convenience, not the only door.
+
+    Args:
+        configured: A DSN, a sequence of DSNs, an instance, or ``None``.
+        build: The registry factory for this kind.
+        protocol: The Protocol an instance must satisfy.
+        label: Human name for the error message.
+
+    Returns:
+        The backend, or ``None`` when nothing was configured.
+
+    Raises:
+        ConfigurationError: If an instance was given that does not satisfy ``protocol``.
+    """
+    if configured is None:
+        return None
+    if isinstance(configured, str):
+        return build(configured)
+    if isinstance(configured, Sequence):
+        return build(list(configured))
+    if not isinstance(configured, protocol):
+        raise ConfigurationError(
+            f"the {label} passed to install() does not satisfy the {protocol.__name__} protocol"
+        )
+    return configured
 
 
 def set_governor(governor: Governor | None) -> None:
