@@ -41,6 +41,7 @@ __all__ = [
     "Settings",
     "SettingsOverrides",
     "Verbosity",
+    "apply_overrides",
     "clear_action_overrides",
     "configure",
     "get_settings",
@@ -153,5 +154,23 @@ def settings_for(action: str | None = None) -> Settings:
 
     Returns:
         The global settings, with any override registered for ``action`` applied on top.
+    """
+    raise NotImplementedError
+
+
+def apply_overrides(base: Settings, action: str | None) -> Settings:
+    """Layer the override registered for ``action`` on top of ``base``.
+
+    Split out from :func:`settings_for` so a governor constructed with explicit settings
+    still honors per-action overrides -- otherwise configuring a governor would silently
+    disable a mechanism the host had already relied on.
+
+    Args:
+        base: The settings to start from.
+        action: The action being authorized, in either spelling, or ``None``.
+
+    Returns:
+        ``base`` unchanged when nothing is registered for ``action``, otherwise a copy with
+        the override applied.
     """
     raise NotImplementedError

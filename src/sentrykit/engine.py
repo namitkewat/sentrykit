@@ -21,7 +21,7 @@ call it never invokes, to decide whether to show the tool to a model at all.
 from __future__ import annotations
 
 import inspect
-from collections.abc import Awaitable, Callable, Collection, Iterator, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import TypeVar
@@ -367,7 +367,6 @@ def merge_environment(
     explicit: Mapping[str, object] | None,
     *,
     proposed: Mapping[str, object] | None = None,
-    parameters: Collection[str] = (),
 ) -> dict[str, object]:
     """Build the Cedar request context for one decision.
 
@@ -381,8 +380,6 @@ def merge_environment(
         ambient: The environment established at the boundary.
         explicit: Per-call overrides.
         proposed: The proposed arguments, exposed to policy under ``args``.
-        parameters: Parameter names of the target callable, used to label the argument
-            context.
 
     Returns:
         The merged environment, ready for coercion into a Cedar context.

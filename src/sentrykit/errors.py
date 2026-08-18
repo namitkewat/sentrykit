@@ -71,7 +71,16 @@ class ArgumentRejected(SentrykitError):
 
 
 class NoValidArguments(SentrykitError):
-    """Raised when every supplied argument was rejected and no defaults can complete the call."""
+    """Raised when the caller supplied arguments and the policy rejected every one of them.
+
+    Deliberately raised even when defaults could complete the call. Filling in defaults after
+    discarding everything the caller asked for would answer a question they did not ask --
+    the caller wanted orders for one customer and would silently get their own. Partial
+    rejection is different: some of the request stood, so narrowing the rest to what the
+    principal is entitled to is a refinement rather than a substitution.
+
+    ``allowed`` describes what the principal *may* pass, so the caller can retry correctly.
+    """
 
     def __init__(self, allowed: dict[str, Any], rejected: list[dict[str, Any]]) -> None:
         self.allowed = allowed
