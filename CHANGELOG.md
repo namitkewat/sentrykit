@@ -4,7 +4,78 @@ All notable changes to this project are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning follows SemVer.
 
 ## [Unreleased]
+
+## [0.1.0] - 2026-08-18
+
+First release. The library is complete against the plan in `dev-docs/implementation.md`:
+one decorator, two worlds (web and agents), a shipped policy pack, a tamper-evident audit
+trail, a maintenance CLI, and a plugin seam for every backend.
+
 ### Added
+- The shipped Cedar policy pack and its loader (phase 5).
+  - `policy/pack/` — eight domain-neutral patterns: `rbac`, `groups`, `ownership`,
+    `delegation`, `expiry`, `break-glass`, `separation-of-duties`, `jit-elevation`. No
+    shipped policy names a role, a resource type or an action; the resource declares what it
+    requires, the grant store supplies the principal's edges, and the context supplies `now`,
+    `break_glass`, `on_behalf_of` and `justification` (ADR-021).
+  - `policy/loader.py` — the pack reaches a governor as an ordinary `PolicySource` under a
+    `pack://` DSN, so it unions with a user's own directory through the existing composite
+    and its ids namespace as `pack/<id>`. `pack://rbac,ownership` takes a subset. It is data,
+    not a second policy mechanism (ADR-020).
+  - `link_template` / `LinkedPolicySource` — time-boxed grants from a Cedar template, linked
+    on sentrykit's side because `cedarpy` exposes no linking API, and returning the concrete
+    policy together with the `GrantSpec` that makes it listable, auditable and revocable
+    (ADR-023).
+- The `sentrykit` command line (phase 5), over `argparse` and no new dependency.
+  - `policy validate [DIR]` — type-checks a directory (the shipped pack by default) against
+    its schema, groups errors by `@id`, reports parse failures at file level, and warns about
+    formatting drift without rewriting anything. Non-zero exit on failure, so it belongs in CI.
+  - `grant` / `revoke` / `grants` — the admin surface, governed by the same engine it
+    administers. The `GrantSpec` is built from the policy-processed arguments rather than from
+    `argv`, so an argument constraint decides *which* grants an operator may make (ADR-024).
+  - `audit-report --from --to --out` — windows the sink and writes markdown, aggregating by
+    **outcome** rather than by allow/deny, with a separate mutations section and a tamper
+    evidence verdict.
+- `JsonFileGrantStore` (`jsonfile://`) — a durable grant store, so the admin surface has
+  something to write to outside a single process (ADR-025).
+- `sentrykit policy` is exported from the package root: `PackPolicySource`, `load_pack`,
+  `link_template`, `TemplateLink`, `LinkedPolicySource`.
+- `cedar.format_policies`, the lint half of `policy validate`, kept in `cedar.py` so the
+  one-module-imports-`cedarpy` invariant stays true.
+- `docs/policies.md` and `docs/audit.md` gained the pack, the admin surface and the report;
+  `docs/index.md` and `docs/quickstart.md` were refreshed for the finished library. Every
+  example and CLI invocation on those pages is pinned by a test.
+- `scripts/release_check.py` and a `release-check` task: builds the wheel and sdist, then
+  installs the wheel with each extra into a throwaway venv and imports it. The offline half —
+  that the wheel actually contains the policy pack, the schema, the entity graph, the
+  templates, `py.typed`, the console script and every entry-point group — is a test.
+
+### Changed
+- The registry builders (`build_policy_source`, `build_grant_store`, `build_audit_sink`,
+  `build_context_provider`) now accept an already-built backend *inside* a sequence, not only
+  a DSN string, so `install(policy_source=["pack://", LinkedPolicySource(links)])` composes. A
+  union closed to anything unspellable as a DSN would have put an in-memory or
+  credential-holding backend out of reach. Every previous spelling is unchanged.
+
+### Notes
+- **The pack ships no permit for the admin actions**, deliberately: a library does not get to
+  ship the rule that hands out authority. `sentrykit grant` under the default `--policy
+  pack://` therefore refuses until a host writes one, and says so. The first operator is
+  seeded in provisioning code — a bootstrap flag that skipped the gate would be a back door
+  that never closes (ADR-024).
+- **Break-the-glass takes an entitlement, a flag and a justification.** The obvious draft —
+  permit when the emergency flag is set — was measured to authorize anyone at all, because
+  the flag is caller-supplied and a Cedar `permit` needs no base entitlement to fire
+  (ADR-022).
+- **The pack's schema is opt-in** (`pack://?schema=true`). A composite concatenates its
+  members' schemas and an engine built with one validates every *request* against it, so a
+  pack contributing a schema by default would break requests naming actions it never heard
+  of. Decisions are identical either way (ADR-020).
+- `cedarpy` 4.8.7 exposes no policy-template linking API at all. An unlinked template in a
+  policy set is inert, and `policy_annotations` drops it — though positional ids stay aligned,
+  so provenance survives one. See `dev-docs/notes/phase-5-research.md`.
+- Cedar has no ordering on strings, so every timestamp the pack compares is epoch seconds.
+  `coerce_value` already rendered `datetime` that way; the pack's schema declares them `Long`.
 - The MCP and Pydantic-AI context providers, tool-manifest filtering, and two runnable
   example agents (phase 4).
   - `integrations/tools.py` — the framework-free half of an agent boundary. `decide_tool` /

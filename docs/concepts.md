@@ -98,7 +98,7 @@ Cedar separates policy *logic* from *entity data*, and sentrykit leans on that s
   time-boxed grant is an attribute plus a `context.now` condition.
 
 "Add a role" is therefore CRUD on entity data; reviewed policy logic never changes at
-runtime. Because `Action::"grant_role"` is an ordinary Cedar action, the admin surface ends
+runtime. Because `Action::"admin.grant"` is an ordinary Cedar action, the admin surface ends
 up governed by the same engine it administers.
 
 ## Argument constraints

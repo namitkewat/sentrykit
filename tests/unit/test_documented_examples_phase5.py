@@ -377,3 +377,206 @@ def test_policy_validate_with_no_directory_checks_the_shipped_pack(
     """The page's "a quick way to confirm an install"."""
     assert main(["policy", "validate"]) == EXIT_OK
     assert "validation: passed" in capsys.readouterr().out
+
+
+# --- docs/policies.md — Administering grants ----------------------------------------------
+
+
+@pytest.fixture
+def admin_policy(tmp_path: Path) -> Path:
+    """The permit the page tells you to write, verbatim."""
+    directory = tmp_path / "admin-policies"
+    directory.mkdir()
+    (directory / "00-admin.cedar").write_text(
+        '@id("root-may-administer-grants")\n'
+        "permit (\n"
+        '  principal in Role::"admin",\n'
+        '  action in [Action::"admin.grant", Action::"admin.revoke"],\n'
+        '  resource == Resource::"admin.grants"\n'
+        ");\n",
+        encoding="utf-8",
+    )
+    return directory
+
+
+@pytest.fixture
+def bootstrapped_store(tmp_path: Path) -> Path:
+    """The provisioning snippet from 'Bootstrapping the first operator'."""
+    from sentrykit.stores import JsonFileGrantStore
+    from sentrykit.stores.base import GrantSpec
+
+    path = tmp_path / "var" / "grants.json"
+    store = JsonFileGrantStore(path)
+    store.add_entity(Entity(EntityRef("Role", "admin")))
+    store.add_entity(Entity(EntityRef("Role", "oncall")))
+    store.grant(
+        GrantSpec(
+            principal=EntityRef("User", "root"),
+            kind="role",
+            subject="admin",
+            granted_by="bootstrap",
+            reason="initial operator",
+        )
+    )
+    return path
+
+
+@pytest.mark.unit
+def test_the_documented_grant_and_revoke_invocations_run(
+    tmp_path: Path,
+    admin_policy: Path,
+    bootstrapped_store: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The three shell lines on the page, and the record counts the page promises."""
+    from sentrykit.registry import build_audit_sink
+
+    log = tmp_path / "audit.jsonl"
+    common = [
+        "--store",
+        f"jsonfile://{bootstrapped_store}",
+        "--policy",
+        f"file://{admin_policy}",
+        "--sink",
+        f"jsonl://{log}",
+    ]
+
+    assert (
+        main(
+            [
+                "grant",
+                'User::"ana"',
+                "--role",
+                "oncall",
+                "--expires",
+                "2026-09-01",
+                "--reason",
+                "on-call rotation",
+                "--as",
+                'User::"root"',
+                *common,
+            ]
+        )
+        == EXIT_OK
+    )
+    capsys.readouterr()
+
+    # `sentrykit grants` — a *separate* invocation over the same file sees it.
+    assert main(["grants", 'User::"ana"', "--store", f"jsonfile://{bootstrapped_store}"]) == EXIT_OK
+    listing = capsys.readouterr().out
+    assert 'User::"ana" holds 1 grant(s).' in listing
+    grant_id = listing.split("id=")[1].split()[0]
+
+    assert (
+        main(["revoke", grant_id, "--reason", "shift ended", "--as", 'User::"root"', *common])
+        == EXIT_OK
+    )
+
+    # Two records per allowed mutation: the decision, then the mutation. `grants` writes none.
+    sink = build_audit_sink(f"jsonl://{log}")
+    assert sink is not None
+    assert [(r.kind, r.outcome) for r in sink.query(AuditWindow())] == [
+        ("decision", "allowed"),
+        ("mutation", "granted"),
+        ("decision", "allowed"),
+        ("mutation", "revoked"),
+    ]
+
+
+@pytest.mark.unit
+def test_an_operator_the_store_does_not_know_is_refused(
+    tmp_path: Path, admin_policy: Path, bootstrapped_store: Path
+) -> None:
+    """ "An operator the store has never heard of is refused" — there is no back door."""
+    from sentrykit.registry import build_audit_sink
+
+    log = tmp_path / "audit.jsonl"
+
+    code = main(
+        [
+            "grant",
+            'User::"eve"',
+            "--role",
+            "admin",
+            "--as",
+            'User::"mallory"',
+            "--store",
+            f"jsonfile://{bootstrapped_store}",
+            "--policy",
+            f"file://{admin_policy}",
+            "--sink",
+            f"jsonl://{log}",
+        ]
+    )
+
+    assert code != EXIT_OK
+    assert not log.exists() or list(build_audit_sink(f"jsonl://{log}").query(AuditWindow())) == []  # type: ignore[union-attr]
+
+
+@pytest.mark.unit
+def test_the_proposed_grant_is_argument_filtered(
+    tmp_path: Path, admin_policy: Path, bootstrapped_store: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The page's constraint snippet: asking for `admin` stores `oncall`."""
+    from sentrykit.constraints import ArgumentConstraint
+    from sentrykit.stores import JsonFileGrantStore
+    from sentrykit.stores.base import GrantSpec
+
+    store = JsonFileGrantStore(bootstrapped_store)
+    store.grant(
+        GrantSpec(
+            principal=EntityRef("User", "root"),
+            kind="constraint",
+            subject="subject",
+            action='Action::"admin.grant"',
+            constraint=ArgumentConstraint(
+                allow=("oncall",), default="oncall", policy="grant-admin-scope"
+            ),
+        )
+    )
+
+    code = main(
+        [
+            "grant",
+            'User::"ana"',
+            "--role",
+            "admin",
+            "--as",
+            'User::"root"',
+            "--store",
+            f"jsonfile://{bootstrapped_store}",
+            "--policy",
+            f"file://{admin_policy}",
+        ]
+    )
+
+    assert code == EXIT_OK
+    assert "Granted role 'oncall'" in capsys.readouterr().out
+    stored = JsonFileGrantStore(bootstrapped_store).grants_for('User::"ana"')
+    assert [record.spec.subject for record in stored] == ["oncall"]
+
+
+# --- README.md ----------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_the_readme_quotes_the_pack_policy_verbatim() -> None:
+    """The README prints a shipped forbid. If the pack changes, the README has to.
+
+    Quoting policy text in prose is exactly where drift hides: the claim reads as true long
+    after the rule stopped saying that. Compared against the file rather than eyeballed.
+    """
+    from sentrykit.policy import pack_root
+
+    quoted = (
+        '@id("delegation-outside-scope-forbidden")\n'
+        "forbid (principal, action, resource)\n"
+        "when { principal has delegated_actions && !(action in principal.delegated_actions) };"
+    )
+    shipped = (pack_root() / "40-delegation.cedar").read_text(encoding="utf-8")
+
+    normalized = " ".join(shipped.split())
+    assert " ".join(quoted.split()) in normalized
+
+    readme = Path(__file__).resolve().parents[2] / "README.md"
+    assert quoted in readme.read_text(encoding="utf-8")

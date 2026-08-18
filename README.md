@@ -19,13 +19,13 @@ sentrykit sits at the **action layer**: it refuses the side effect *before* it h
 unlike output validators that run after a model finishes. It is self-hosted, Cedar-based, and
 audit-first.
 
-> **Status: the core, the pluggable substrate and the web providers work.** `@protect`,
-> ambient context, the Cedar gate, argument filtering, default injection, validation and the
-> `_authz` envelope are implemented and tested — as are the three stores (policy sources, grant
-> stores, audit sinks), entry-point plugin discovery, masking, the tamper-evident audit log,
-> and the **FastAPI and Flask** context providers with runnable example apps. Still to come, in
-> the phases laid out in `dev-docs/implementation.md`: the FastMCP/Pydantic-AI providers, and
-> the shipped Cedar policy pack with its CLI.
+> **Status: 0.1.0 — everything below works.** `@protect`, ambient context, the Cedar gate,
+> argument filtering, default injection, validation and the `_authz` envelope; the three
+> pluggable stores with entry-point discovery; masking and the tamper-evident audit log; the
+> **FastAPI, Flask, MCP and Pydantic-AI** providers with four runnable example apps; the
+> **shipped policy pack**; and the `sentrykit` command line. Not yet shipped: the durable WORM
+> audit backends (S3 Object Lock, Iceberg) described in `dev-docs/architecture.md` — those are
+> a `Protocol` away rather than built.
 
 ## Install (once published)
 
@@ -226,9 +226,75 @@ Tampering is detectable, not preventable: each record's hash covers its predeces
 `verify_chain` catches both an edited record and a deleted one. Preventing the rewrite is the
 storage layer's job.
 
+## A policy pack ships with it
+
+The shapes every project ends up writing — a role the resource requires, ownership, a group
+hierarchy, a delegation, an expiry, a break-the-glass — ship as **data**, reachable through
+the same union as your own directory:
+
+```python
+install(policy_source=["pack://", "file://./policies"])
+```
+
+Eight patterns: `rbac`, `groups`, `ownership`, `delegation`, `expiry`, `break-glass`,
+`separation-of-duties`, `jit-elevation`. None of them names a role, a resource type or an
+action — a shipped pack cannot know your vocabulary, so each one reads the *shape* of the
+request instead. The resource declares what it requires, the grant store supplies the
+principal's edges, the context supplies `now`, `break_glass`, `on_behalf_of` and
+`justification`. Adopting a pattern is putting an attribute on an entity.
+
+Half the pack **forbids**, and that half is the part that contains rather than permits:
+
+```cedar
+@id("delegation-outside-scope-forbidden")
+forbid (principal, action, resource)
+when { principal has delegated_actions && !(action in principal.delegated_actions) };
+```
+
+Without it a delegated agent could reach the plain RBAC permit and ignore the scope it was
+delegated. Same story for break-the-glass: the `forbid` is what makes an emergency-only
+resource emergency-only, and the permit that reopens it demands an emergency role, the flag
+**and** a justification — because a permit conditioned on a caller-supplied boolean alone
+authorizes anyone at all. It carries `notify:secops` and `record:justification` as mandatory
+obligations, so a call that proceeds that way cannot proceed quietly.
+
+```python
+with establish(ana, channel="web", break_glass=True, justification="incident 4471"):
+    open_vault(item="master-key")
+```
+
+See [docs/policies.md](docs/policies.md).
+
+## A command line for the parts an API is the wrong shape for
+
+```bash
+sentrykit policy validate ./policies
+sentrykit grant 'User::"ana"' --role oncall --expires 2026-09-01 \
+    --store jsonfile://./var/grants.json --as 'User::"root"'
+sentrykit audit-report --from 2026-01-01 --to 2026-12-31 --out audit.md
+```
+
+`policy validate` type-checks a directory against its schema before it deploys, groups errors
+by the policy's `@id`, and exits non-zero — so it belongs in CI, where it catches the policy
+set that cannot possibly permit anything and would otherwise deploy cleanly and deny every
+request for the life of the process.
+
+`grant` and `revoke` are **not** back doors into the store. Each is a `@protect`-ed callable
+decided by the same governor the application uses, so a policy governs who may administer
+grants *and which grants they may make* — the spec is built from the policy-processed
+arguments, not from `argv`. An operator entitled only to `oncall` who asks for `--role admin`
+stores `oncall`, and the audit log says so. An allowed mutation leaves two records, the
+decision and the mutation; a refused one leaves the refusal and an untouched store.
+
+`audit-report` is ADR-006 made literal: the yearly report is a query. It aggregates by
+**outcome** rather than allow/deny, because allow/deny folds six materially different refusals
+into one bucket and both admin mutations into the other.
+
+See [docs/audit.md](docs/audit.md).
+
 ## Everything on the outside is a plugin
 
-Policy sources, grant stores, audit sinks and (from the next phase) framework providers all
+Policy sources, grant stores, audit sinks and framework providers all
 use one mechanism: a `Protocol`, a DSN, a `register_*` decorator, and an entry point. The
 built-ins take exactly the path a third-party package takes.
 

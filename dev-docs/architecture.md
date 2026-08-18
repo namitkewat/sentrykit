@@ -130,7 +130,7 @@ Cedar cleanly separates *policies* (logic) from *entities* (data). We exploit th
   changes at runtime.
 
 The admin surface is therefore just governed CRUD over the grant store — and because
-`Action::"grant_role"` is an ordinary Cedar action, the admin surface is **self-governed**
+`Action::"admin.grant"` is an ordinary Cedar action, the admin surface is **self-governed**
 (authorized by the same engine) and **self-logged** (into the same sink).
 
 ## 6. Audit pipeline

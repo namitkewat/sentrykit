@@ -232,7 +232,42 @@ work; extras `sentrykit[fastmcp]` / `sentrykit[pydantic-ai]` resolve.
 
 ---
 
-## Phase 5 — Policy pack, CLI + audit report, docs & release
+## Phase 5 — Policy pack, CLI + audit report, docs & release — **done**
+
+Delivered as described, plus one backend the plan did not call for. Working notes in
+`notes/phase-5-research.md`; the decisions it forced are ADR-020 (the pack is a policy source
+and its schema is opt-in), ADR-021 (every pattern is attribute-driven, and half of them
+forbid), ADR-022 (break-the-glass takes three things), ADR-023 (templates are linked by us),
+ADR-024 (the admin surface is governed and the pack ships no permit for it) and ADR-025 (a
+file-backed grant store).
+
+Five things landed differently from the plan below, each measured rather than assumed:
+
+1. **The pack ships its schema but does not load it.** A composite concatenates its members'
+   schemas and an engine built with one validates every *request* against it, so a pack
+   contributing a schema by default would break an application that was working a moment
+   earlier. `pack://?schema=true` opts in; decisions are identical either way.
+2. **Break-the-glass needed redesigning before it shipped.** The obvious draft — permit when
+   the emergency flag is set — authorizes anyone, because the flag is caller-supplied and a
+   Cedar permit needs no base entitlement. It now requires an emergency role, the flag and a
+   non-empty justification (ADR-022).
+3. **`cedarpy` has no template-linking API**, so `link_template` links textually and returns
+   the concrete policy together with the grant that records it as revocable data. Its expiry
+   clause is guarded with `context has now`, because Cedar's validator refuses an
+   unconditional read of an optional context attribute.
+4. **A file-backed grant store was added** (`jsonfile://`), outside the plan. The plan's own
+   acceptance criterion could not otherwise hold: `sentrykit grant` resolves the operator
+   through the grant store and fails closed, so with only the in-process store shipping,
+   every shell invocation began against an empty store and refused itself.
+5. **The pack ships no permit for the admin actions**, deliberately (ADR-024), so
+   `sentrykit grant` under the default `--policy pack://` refuses until a host writes one.
+   The refusal says so rather than printing an empty policy list.
+
+The registry builders were also widened to accept an already-built backend *inside* a
+sequence, so `install(policy_source=["pack://", LinkedPolicySource(links)])` works — a union
+closed to anything unspellable as a DSN would have put an in-memory or credential-holding
+backend out of reach.
+
 
 **Goal.** Ship the sensible-defaults policy pack, the maintenance/audit CLI, and make the
 project releasable and fully documented.

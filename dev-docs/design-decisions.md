@@ -272,3 +272,115 @@ dispatch instead trades the same defect onto denials.
 `@server.tool()` over `@protect` still has its refusal swallowed. That sharp edge is stated in
 the module docstring and in `docs/agents.md` rather than engineered away, because the
 alternative is monkey-patching another library's dispatch.
+
+## ADR-020 — The shipped pack is a policy source, and its schema is opt-in
+**Decision.** The policy pack reaches a governor as an ordinary `PolicySource` under a
+`pack://` DSN, registered in the same entry-point group a third party would use, unioned by
+the same composite. Its `pack.cedarschema` ships with it but is **not** put on the loaded
+bundle unless the DSN asks (`pack://?schema=true`).
+**Why.** Two separate reasons. The source part is CLAUDE.md §3 applied to ourselves: a pack
+that arrived through a private mechanism would be a second policy system to keep in step, and
+would be privileged in a way no third-party pack could be. The schema part is a measurement
+(phase 5 research §4, §7): `CompositePolicySource` concatenates its members' schemas, and a
+Cedar engine built *with* a schema validates every **request** against it — so a pack that
+contributed one by default would make every request naming an action the pack never heard of
+fail to parse, in an application that was working a moment earlier. The pack's decisions were
+measured identical with and without it, so the default costs nothing.
+**Consequence.** Adopting the pack is additive and reversible: drop the DSN and it is gone.
+A host that *does* opt into the schema must declare only what the pack does not — redeclaring
+`User`, `Role`, `Group` or `Resource` is a Cedar schema parse error.
+**Alternatives.** Shipping the pack as a directory users copy (loses the ability to fix a
+pattern in a release). A `sentrykit.pack` import hook (a second mechanism). Namespacing the
+pack's entity types (`sentrykit::User`) so schemas could never collide — which would force
+every principal in the system to change type in order to use one pattern.
+
+## ADR-021 — Every pack pattern is attribute-driven, and half of them forbid
+**Decision.** No shipped policy names a role, a resource type or an action. The **resource**
+declares what it requires (`required_role`, `group`, `owner`, `emergency_only`,
+`emergency_role`, `conflicting_role`, `prepared_by`), the **grant store** supplies the
+principal's edges and attributes, and the **context** supplies `now`, `break_glass`,
+`on_behalf_of` and `justification`. Five of the eight patterns contribute a `forbid`.
+**Why.** A shipped pack cannot know anyone's vocabulary, so a pattern that named one would be
+an example rather than a policy. Reading the *shape* of the request instead makes adoption a
+matter of putting an attribute on an entity — which is data, which is ADR-005 restated. The
+forbids are what make a pattern *contain* rather than merely permit:
+`delegation-outside-scope-forbidden` is the reason a delegated principal cannot reach the
+plain RBAC permit and ignore the scope it was delegated, and
+`emergency-resource-forbidden-without-flag` is the whole of what makes an emergency-only
+resource emergency-only.
+**Measured.** Entity-valued attributes work as the right-hand side of `in`
+(`principal in resource.required_role`), a `Set<Action>` attribute works with
+`action in principal.delegated_actions`, and transitive `in` resolves a group hierarchy at
+any depth. Timestamps are epoch **`Long`s**, because `coerce_value` renders every `datetime`
+that way and Cedar has no ordering on strings.
+
+## ADR-022 — Break-the-glass takes an entitlement, a flag *and* a justification
+**Decision.** The `break-the-glass` permit requires the principal to be in the resource's
+`emergency_role`, the context to carry `break_glass`, and the context to carry a **non-empty**
+`justification`. It carries `notify:secops` and `record:justification` as mandatory
+obligations.
+**Why.** The obvious draft — permit when `resource.emergency_only && context.break_glass` —
+was written, measured, and found to authorize **anyone at all**: the flag is caller-supplied,
+and a Cedar `permit` needs no base entitlement to fire. The same run showed the symptom
+downstream, with a closed JIT-elevation window still allowed because the break-glass permit
+had fired instead. An emergency path is the highest-risk rule a pack can ship, so it is the
+one that must not be convenient.
+**Consequence.** A host adopting break-the-glass must model an emergency role and must pass a
+justification through `establish(...)`. That is more setup than a boolean, and it is the
+point.
+
+## ADR-023 — Templates are linked by sentrykit, and produce a policy *and* a grant
+**Decision.** `link_template` fills `?principal` / `?resource` textually, prepends an `@id`,
+and appends `when { context has now && context.now <= <epoch> }` when an expiry is asked for.
+It returns the concrete policy **and** the matching `GrantSpec`. Templates live under
+`pack/templates/*.cedartemplate`, outside the `*.cedar` glob.
+**Why.** `cedarpy` 4.8.7 exposes no linking API at all — measured: `dir(cedarpy)` has no
+`link`, no `template`, no `PolicyTemplate`. An unlinked template in a policy set is inert, and
+`policy_annotations` drops it entirely (though cedarpy keeps positional ids aligned, so
+provenance survives one). Returning both halves is ADR-005 honoured rather than dodged: a
+time-boxed grant is reviewable logic *and* revocable data, and emitting only the policy would
+leave nothing for an admin surface to list or an auditor to query.
+**The `has` guard is not cosmetic.** Cedar's validator refuses an unconditional read of an
+optional context attribute (`unable to guarantee safety of access to optional attribute
+'now'`), so an unguarded link would evaluate correctly and fail `sentrykit policy validate`
+the day anyone wrote one out to a directory.
+
+## ADR-024 — The CLI's admin surface is governed, and the pack ships no permit for it
+**Decision.** `sentrykit grant` and `sentrykit revoke` are `@protect`-ed callables decided by
+the same governor the application uses, against `Action::"admin.grant"` /
+`Action::"admin.revoke"` on `Resource::"admin.grants"`. The `GrantSpec` is built from the
+**policy-processed** arguments, not from `argv`. The shipped pack contains **no** permit for
+either action, and there is no bootstrap flag.
+**Why.** Architecture §5 says the admin surface is self-governed and self-logged; making it a
+`@protect`-ed callable is the cheapest way for that to be literally true rather than
+approximately true, and it means an argument constraint decides *which* grants an operator may
+make, not merely whether they may make any. Shipping a permit for the action that hands out
+authority is not something a library gets to do on a host's behalf, and a `--bootstrap` flag
+that skipped the gate for the first grant would be a back door that never closes — so the
+first operator is seeded in provisioning code, where the store is an ordinary object.
+**Consequence.** An allowed mutation writes **two** audit records (the decision, then the
+mutation) and a refused one writes **one**. Those counts are asserted in the scenario suite,
+because the phase 4 double-write was invisible to every behavioural assertion. The default
+`--policy pack://` therefore refuses until a host writes the permit, and the refusal says so
+rather than printing an empty policy list.
+
+## ADR-025 — A file-backed grant store ships, subclassing the in-memory one
+**Decision.** `JsonFileGrantStore` persists grants to one JSON document, written to a sibling
+temp file and renamed over the target, with reads gated on `(st_mtime_ns, st_size)`. It
+**subclasses** `InMemoryGrantStore` rather than reimplementing the `GrantStore` contract. One
+writing process at a time, stated in the docstring rather than defended with a lock.
+**Why.** Not in the phase 5 plan, and added because the plan's own acceptance criterion could
+not otherwise hold: `sentrykit grant` resolves the operator through the grant store and fails
+closed, so with only an in-process store shipping, every shell invocation began against an
+empty store and refused itself. Architecture §4 calls the grant store the admin surface's only
+write target; shipping the surface without a durable target left the command group unreachable
+outside a test. Subclassing keeps materialization — expiry, revocation, parent edges,
+per-action constraints — as one piece of code, because a second hand-written materializer is
+precisely how two stores start disagreeing about who holds what.
+**`exclude_unset=True` is a correctness requirement.** `ArgumentConstraint.has_default` is
+derived from `model_fields_set`, so a plain `model_dump()` writes `"default": null` for a
+constraint that configured none — and read back, that constraint would begin injecting `None`
+into every call that omitted the argument.
+**Alternatives.** A `--as-role` flag letting an operator declare their own roles (a hole that
+defeats the self-governance in ADR-024). Leaving the gap and documenting it (the criterion
+"grant/revoke work" would have been false from any shell).
