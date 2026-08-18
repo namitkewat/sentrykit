@@ -32,6 +32,15 @@ residual *interpretation*, not availability.
 **Also confirmed.** `validate_policies(policies, schema)` is available and returns a
 structured `ValidationResult`, so the phase 5 `sentrykit policy validate` command does not
 need to shell out to the Cedar CLI.
+**Amended 2026-08-18 (phase 2 research).** The `validate_policies` contract is now pinned by
+experiment rather than inferred: the signature is `(policies: str, schema: str | dict |
+Schema) -> ValidationResult`, the result carries `validation_passed`, `errors` (each with
+`.policy_id` and `.error`) and `id_annotations_by_policy_id`, and it **never raises** — a
+policy parse error and a schema parse error both come back as ordinary entries in `errors`
+with an empty `policy_id`. `FilesystemPolicySource` (phase 2) and `sentrykit policy validate`
+(phase 5) therefore branch on `validation_passed` and translate failure into
+`ConfigurationError` themselves. `Schema.from_str` accepts Cedar schema syntax only, not the
+JSON schema form.
 
 ## ADR-003 — Ambient context via `contextvars`, fail-closed
 **Decision.** Providers set an ambient `ContextVar` at the boundary; `@protect` reads it;
@@ -103,3 +112,63 @@ that shells out to a POSIX utility is a broken task, not a shortcut.
 **Decision.** Conventional Commits, enforced by `scripts/check_commit_msg.py` as a
 `commit-msg` hook; no references to AI assistants/models or "generated with/by" trailers.
 **Why.** Project requirement; enforced mechanically so it cannot be forgotten.
+
+## ADR-012 — Obligations are Cedar annotations on the determining policies
+**Decision.** An obligation is declared in the policy itself, as a single comma-separated
+`@obligations("...")` annotation, and is surfaced at decision time by joining
+`CedarDecision.determining_policies` against an annotation index built from the policy text.
+Only the determining **permit** policies contribute obligations to a call that proceeds; a
+determining `forbid`'s annotations are recorded on the denial instead. Each obligation is a
+`verb:target` pair (`mask:customer_id`, `redact:ssn`, `hmac:email`, `tokenize:iban`,
+`notify:secops`); masking verbs are consumed by `masking.py`, the rest are carried on the
+envelope and the audit record for the host to discharge.
+**Why.** Phase 2 research established that `cedarpy` exposes *every* annotation — but only
+through `policies_to_json_str(text)`, never through the opaque `PolicySet` handle, and keyed
+by Cedar's generated `policyN` ids, which are positional in the policy text. So the index has
+to be derived from exactly the text the engine was built from, and `PolicySource.load()` is
+the only place that owns both. Putting obligations in the policy keeps ADR-005 intact:
+"what must also happen when this is permitted" is reviewed logic, not mutable grant data.
+**Constraints this inherits from Cedar.** An annotation key cannot repeat on one policy
+(`ValueError: duplicate annotation`) — hence one comma-separated value rather than repeated
+annotations. Keys cannot contain dots. A valueless annotation parses to `None`, and a policy
+with no annotations parses to `None` rather than `{}`; both are read as "absent".
+**Alternatives.** Obligations as grant-store data (loses review; an obligation is a rule, not
+an assignment). A side-car obligations file keyed by `@id` (a second thing to keep in sync,
+and `@id` is not unique across sources). Inferring obligations from the resource type
+(implicit, unauditable).
+
+## ADR-013 — The JSONL audit sink is single-writer, byte-pinned, and flush-by-default
+**Decision.** `JsonlAuditSink` holds one file handle open for its lifetime, opened in append
+mode with `encoding="utf-8", newline="\n"`, serializes `write()` behind a `threading.Lock`,
+recovers `prev_hash` from the last line when it opens an existing file, flushes every record,
+and calls `os.fsync` only when the DSN asks (`jsonl://path?fsync=true`). One file has exactly
+one writing process; concurrent writers get separate files (or a `CompositeAuditSink`).
+**Why.** All four parts are forced by measurement on the win-64 platform this repo targets:
+- Default text-mode append writes `\r\n` on Windows. A hash chain is over bytes, so the same
+  record would hash differently per platform and an external verifier would disagree with the
+  writer. `newline="\n"` is a correctness requirement.
+- `open(path, "a")` per write is **not** atomic on Windows — the CRT emulates append as
+  seek-to-end plus write. Measured: 8 threads × 200 records produced 1346 of 1600 lines, 3 of
+  them malformed. One shared handle behind a lock produced 1600/1600 in 0.01 s.
+- `record_hash` depends on `prev_hash`, so the writer must know the file's tail. That state
+  cannot be shared across processes without a distributed lock, which makes single-writer an
+  invariant of the chain rather than a shortcut. `fcntl` does not exist on Windows anyway.
+- `fsync` costs 3.71 ms per record versus 0.007 ms for `flush` alone. Paying 3.7 ms on every
+  authorization decision to defend against machine crash (process crash is already covered by
+  `flush`) is the wrong default for a pre-action gate; it stays available as a DSN option, and
+  WORM-grade durability is what the phase 5 S3 / Iceberg backends are for.
+**Consequence for `fail_mode`.** A sink that cannot be written to raises, and under
+`fail_mode="closed"` the call is refused — "can't prove it, don't do it", per the logging
+standards.
+
+## ADR-014 — Masking is unconditional on the audit path
+**Decision.** Every value crossing into an `AuditSink` is masked first, and the `redaction`
+setting cannot switch that off. `redaction` governs the caller-facing `_authz` envelope and
+the operational logs. Selection precedence is: a policy obligation (`mask:field`) beats a
+`Sensitive(...)` annotation on the callable's signature, which beats the configured default
+strategy. Reversible token maps live in a separate vault the audit store never sees.
+**Why.** ADR-007 turns on the write being immutable: a raw value in a WORM store cannot be
+withdrawn, so the one place masking must not be configurable is the one place it is
+permanent. Making it a setting would mean a single environment variable silently converts the
+compliance artifact into a liability. Policy beats code because an obligation is reviewed
+logic and an annotation is a developer's default.
