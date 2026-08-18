@@ -10,7 +10,8 @@ Start with the [quickstart](quickstart.md) for a working example in six steps, t
 relationships are Cedar's job rather than your application's.
 
 **Status.** The framework-agnostic core is implemented: `@protect`, ambient context, the
-Cedar gate, argument filtering, default injection, validation, and the `_authz` envelope. The
-pluggable stores and the audit log, the web and agent providers, and the shipped policy pack
-land in the later phases described in `dev-docs/implementation.md`; the pages for those are
-still placeholders.
+Cedar gate, argument filtering, default injection, validation, and the `_authz` envelope — as
+are the [pluggable stores](plugins.md) and the [audit log](audit.md), and the
+[FastAPI and Flask providers](web-frameworks.md) with runnable example apps. The agent
+providers and the shipped policy pack land in the later phases described in
+`dev-docs/implementation.md`; [agent tooling](agents.md) is still a placeholder.

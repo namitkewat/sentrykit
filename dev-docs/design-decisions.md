@@ -172,3 +172,31 @@ withdrawn, so the one place masking must not be configurable is the one place it
 permanent. Making it a setting would mean a single environment variable silently converts the
 compliance artifact into a liability. Policy beats code because an obligation is reviewed
 logic and an annotation is a developer's default.
+
+## ADR-015 — A context provider releases at teardown what it established at the boundary
+**Decision.** Every provider pairs `establish()` at the request boundary with `release()` at
+teardown — in a `finally` for ASGI, in `teardown_request` for Flask. `release()` is total: it
+resets the scope when there is one, clears the ambient context outright when there is not, and
+drops the last envelope either way.
+**Why.** Not tidiness — measured. Flask serves a request on a pooled worker thread and its test
+client serves one in the caller's own context, so an un-reset `ContextVar` leaves request *N*'s
+principal ambient after it ends, and anything on that thread outside a request acts as them.
+Removing the Flask teardown and calling a protected function from the test process returned a
+`200` as `alice`; with teardown in place the same call raises `NoContext`.
+**Consequence for tests.** Because `establish()` also *clears* the context for an
+unauthenticated caller, a behavioural "principal A, then anonymous ⇒ denied" test passes even
+with the release deleted. The assertions with teeth are `current_principal() is None` between
+two requests in one context, and driving the ASGI app twice inside a single `contextvars`
+context. Both are in `tests/integration/test_web_context_isolation.py`.
+
+## ADR-016 — Refusals are rendered from the exception, not from ambient state
+**Decision.** The verbosity-aware refusal renderer in `integrations/base.py` builds the
+`_authz` body from the raised error alone. `last_envelope()` is not consulted.
+**Why.** It is not reliably there. A sync FastAPI route runs in an AnyIO worker thread that
+receives a *copy* of the context, so anything written inside it — including the envelope the
+engine records — is discarded on return, and an exception handler sees nothing. A
+yield-dependency has the mirror problem: its teardown unwinds below `ExceptionMiddleware`, so
+the context is already released when the handler runs. Every sentrykit error carries structured
+detail (the refused action and its determining policies, the offending argument and reason, the
+allowed set, pydantic's field errors), so reading the exception is both sufficient and
+deterministic — the same refusal renders identically on every framework and every code path.

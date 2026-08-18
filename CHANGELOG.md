@@ -5,6 +5,25 @@ All notable changes to this project are documented here. Format follows
 
 ## [Unreleased]
 ### Added
+- The FastAPI and Flask context providers, and two runnable example apps (phase 3).
+  - `integrations/base.py` — the shared half of every provider: the exception → HTTP status
+    table, the verbosity-aware refusal renderer, and `BaseContextProvider`, which resolves an
+    app's auth → identity callback through `GrantStore.get_principal` and owns the
+    establish/release lifecycle. A subclass supplies four small methods (`name`, `narrow`,
+    `read_header`, `render_error`) and inherits the rest.
+  - `integrations/fastapi.py` — `FastAPIProvider`, a pure-ASGI `SentrykitMiddleware`, an
+    `async` yield `context_dependency()`, `install_error_handlers()` and `protect_app()`.
+  - `integrations/flask.py` — `FlaskProvider` with `before_request` / `teardown_request`
+    hooks, `install_error_handlers()`, `protect_app()` and `protect_blueprint()` for governing
+    one blueprint rather than a whole app.
+  - `install()` now accepts `context_provider=` — a DSN (`"fastapi://"`) or a built provider —
+    and `Governor.context_provider` exposes it, so the boundary adapters find their wiring
+    without a second process-global. Both providers are registered under the
+    `sentrykit.context_providers` entry-point group.
+  - `examples/fastapi_app/` and `examples/flask_app/` — the same three routes, the same policy
+    and the same service layer on both frameworks, run with `pixi run -e web run-fastapi` /
+    `run-flask`.
+  - `docs/web-frameworks.md`, with every example pinned by a test.
 - Pluggable stores, plugin registry, masking and the tamper-evident audit log (phase 2).
   - `stores/base.py` — the three `Protocol`s (`PolicySource`, `GrantStore`, `AuditSink`) plus
     the value objects that cross them, and a `ContextProvider` stub for phase 3.
@@ -52,6 +71,24 @@ All notable changes to this project are documented here. Format follows
   it points at exists, rather than installing a command that raises `ModuleNotFoundError`.
 
 ### Notes
+- **A provider must release the context it established** (ADR-015). Measured on the installed
+  web environment: Flask serves a request on a pooled worker thread and its test client serves
+  one in the caller's own context, so an un-reset `ContextVar` leaves the previous request's
+  principal ambient — and anything running on that thread outside a request then acts as them.
+  `release()` is total: it resets the scope when there is one, clears the context outright when
+  there is not, and drops the last envelope either way.
+- **Refusals are rendered from the exception, never from ambient state** (ADR-016). A sync
+  FastAPI route runs in an AnyIO worker thread whose context copy is discarded on return, so
+  `last_envelope()` is empty by the time an exception handler runs; a yield-dependency's
+  teardown unwinds before the handler for the same net effect. Every sentrykit error already
+  carries the structured detail the envelope needs.
+- **A synchronous FastAPI dependency cannot establish context** and none is shipped. It runs in
+  its own worker thread with a *copy* of the context, so its `establish()` is discarded on
+  return and every protected call downstream fails closed. Middleware and `async` dependencies
+  both work, and both reach `def` routes — `anyio.to_thread.run_sync` copies the context in.
+  See `dev-docs/notes/phase-3-research.md`.
+- A route declaring a pydantic `response_model` strips the `_authz` key the engine attaches to
+  the returned mapping. The docs say so, and a test reproduces it.
 - **Obligations are Cedar annotations** on the determining policies, declared as a single
   comma-separated `@obligations("...")` (ADR-012). `cedarpy` exposes annotations only through
   `policies_to_json_str` on the policy *text*, keyed by generated ids that are positional in

@@ -56,6 +56,18 @@ the decorator reads it wherever the function lives. Rules:
   **not** across a bare `ThreadPoolExecutor.submit` / `run_in_executor` — those need
   `contextvars.copy_context()`. sentrykit ships a `copy_context`-aware helper for offload.
 
+A provider's boundary hook is therefore **paired**: `establish()` on the way in, `release()` on
+the way out, in a `finally` or the framework's teardown hook (ADR-015). The copy is one-way,
+and that shapes two things measured in `notes/phase-3-research.md`:
+
+- **Downward** it works. A sync FastAPI route runs in an AnyIO worker thread, and
+  `anyio.to_thread.run_sync` copies the context in, so ambient context reaches it. A *sync
+  dependency*, though, establishes into its own discarded copy — which is why no provider may
+  establish from one.
+- **Upward** it does not. Nothing written inside a sync route survives its return, so a provider
+  rendering a refusal cannot read ambient state and builds the response from the exception
+  instead (ADR-016).
+
 ## 4. Three stores (never one)
 
 - **PolicySource** — Cedar policies + templates + schema. Authored and reviewed in **git**;

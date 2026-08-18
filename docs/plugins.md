@@ -1,9 +1,9 @@
 # Plugins & extensions
 
 Everything sentrykit talks to on the outside is a plugin: where policies come from, where
-grants live, where audit records go, and — from Phase 3 — how a framework establishes
-context. All four use the same four pieces, so *add a sink* and *add a framework* are the
-same shape of task (ADR-004).
+grants live, where audit records go, and how a framework establishes context. All four use
+the same four pieces, so *add a sink* and *add a framework* are the same shape of task
+(ADR-004).
 
 1. A `Protocol` contract in `sentrykit.stores.base`.
 2. A name, which doubles as a DSN scheme.
@@ -21,7 +21,7 @@ rather than a property.
 | Policy source | `PolicySource` | `sentrykit.policy_sources` | `file` |
 | Grant store | `GrantStore` | `sentrykit.grant_stores` | `memory` |
 | Audit sink | `AuditSink` | `sentrykit.audit_sinks` | `jsonl`, `memory` |
-| Context provider | `ContextProvider` | `sentrykit.context_providers` | *(Phase 3)* |
+| Context provider | `ContextProvider` | `sentrykit.context_providers` | `fastapi`, `flask` |
 
 ## Addressing a backend: the DSN
 

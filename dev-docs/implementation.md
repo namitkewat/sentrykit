@@ -130,7 +130,7 @@ entry-point discovery with no core change; audit records are reproducible given
 
 ---
 
-## Phase 3 — Web providers: FastAPI + Flask
+## Phase 3 — Web providers: FastAPI + Flask — **done**
 
 **Goal.** The same `@protect` guarding real HTTP handlers on two frameworks, plus runnable
 example apps.
@@ -158,6 +158,15 @@ a protected non-route function inside a handler is governed by the same ambient 
 
 **Acceptance.** `pixi run -e web test-integration` green; `pixi run run-fastapi` and
 `run-flask` serve working apps; extras `sentrykit[fastapi]` / `sentrykit[flask]` resolve.
+
+**Outcome.** Both gates green: `pixi run check` (default env, 705 passed / 5 skipped, 88.59%
+coverage) and `pixi run -e web check` (779 passed, 93.11%). Both example apps were driven over
+real HTTP under `uvicorn` and `flask run`, demonstrating the gate, argument filtering, default
+injection, a denial, the audit envelope, and a protected non-route callable governed by ambient
+context. Two decisions came out of the phase and are recorded as ADR-015 (establish at the
+boundary, release at teardown) and ADR-016 (render refusals from the exception). The measured
+basis for both is in `notes/phase-3-research.md`; the sharpest finding is that a **sync FastAPI
+dependency cannot establish context**, so no sync-dependency form is shipped.
 
 ---
 

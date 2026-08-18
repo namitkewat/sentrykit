@@ -1,7 +1,8 @@
 # Quickstart
 
-Everything below runs against the Phase 1 core: a policy set held in memory, one decorator,
-and no framework. Web and agent providers arrive in later phases and change none of this.
+Everything below runs against the core: a policy set held in memory, one decorator, and no
+framework. Guarding an HTTP route adds one line and changes none of it — see
+[web frameworks](web-frameworks.md).
 
 ## Install
 

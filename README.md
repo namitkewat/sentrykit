@@ -19,12 +19,13 @@ sentrykit sits at the **action layer**: it refuses the side effect *before* it h
 unlike output validators that run after a model finishes. It is self-hosted, Cedar-based, and
 audit-first.
 
-> **Status: the core and the pluggable substrate work.** `@protect`, ambient context, the
-> Cedar gate, argument filtering, default injection, validation and the `_authz` envelope are
-> implemented and tested — as are the three stores (policy sources, grant stores, audit sinks),
-> entry-point plugin discovery, masking, and the tamper-evident audit log. Still to come, in
-> the phases laid out in `dev-docs/implementation.md`: the FastAPI/Flask and
-> FastMCP/Pydantic-AI providers, and the shipped Cedar policy pack with its CLI.
+> **Status: the core, the pluggable substrate and the web providers work.** `@protect`,
+> ambient context, the Cedar gate, argument filtering, default injection, validation and the
+> `_authz` envelope are implemented and tested — as are the three stores (policy sources, grant
+> stores, audit sinks), entry-point plugin discovery, masking, the tamper-evident audit log,
+> and the **FastAPI and Flask** context providers with runnable example apps. Still to come, in
+> the phases laid out in `dev-docs/implementation.md`: the FastMCP/Pydantic-AI providers, and
+> the shipped Cedar policy pack with its CLI.
 
 ## Install (once published)
 
@@ -88,6 +89,46 @@ narrowed to what she is entitled to, and saying so:
 
 With no established principal, the call is refused rather than run unguarded. Forgetting to
 wire a provider fails closed.
+
+### Guard an HTTP route — same decorator, one extra line
+
+A **context provider** is all a framework contributes. It establishes the principal at the
+request boundary and renders a refusal as an HTTP response; nothing else changes.
+
+```python
+from fastapi import FastAPI
+
+from sentrykit import install
+from sentrykit.integrations.fastapi import FastAPIProvider, protect_app
+
+provider = FastAPIProvider(identify=lambda request: request.headers.get("x-user"), grants=store)
+install(POLICY_TEXT, grant_store=store, context_provider=provider)
+
+app = FastAPI()
+protect_app(app, provider=provider)          # <- the one extra line
+
+
+@app.get("/orders/summary")                  # this route is NOT protected
+def summary() -> dict[str, object]:
+    return summarize_orders()                # this call is
+```
+
+Flask is the same shape (`from sentrykit.integrations.flask import protect_app`), and
+`protect_blueprint` scopes it to one blueprint. `identify` answers *who is this*; the grant
+store answers *what may they do*. A denial comes back as a 403 carrying the same `_authz`
+envelope a success carries, trimmed by `verbosity`:
+
+```json
+{
+  "detail": "The policy denied action Action::\"orders.search\".",
+  "error": "AuthzDenied",
+  "_authz": {"decision": "deny", "action": "Action::\"orders.search\"", "resource": "Tool::\"orders\""}
+}
+```
+
+Two runnable apps — the same three routes, the same policy, the same service layer, on both
+frameworks — live in `examples/fastapi_app/` and `examples/flask_app/`. See
+[docs/web-frameworks.md](docs/web-frameworks.md).
 
 ### Relationships are the policy's job
 
