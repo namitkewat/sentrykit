@@ -47,9 +47,16 @@ from collections.abc import AsyncIterator, Callable
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 from starlette.requests import Request
+from starlette.responses import Response
 from starlette.types import ASGIApp, Receive, Scope, Send
 
-from sentrykit.integrations.base import BaseContextProvider
+from sentrykit.errors import ConfigurationError, SentrykitError
+from sentrykit.integrations.base import (
+    DEFAULT_PRINCIPAL_HEADER,
+    DEFAULT_REQUEST_ID_HEADER,
+    STATUS_BY_ERROR,
+    BaseContextProvider,
+)
 from sentrykit.registry import DSN, register_context_provider
 
 __all__ = [
@@ -87,12 +94,17 @@ class FastAPIProvider(BaseContextProvider[Request]):
         Returns:
             The provider.
         """
-        raise NotImplementedError
+        # ``or`` rather than the option's own default, so ``?header=`` with an empty value
+        # falls back to the shipped header instead of wiring a provider that reads ``""``.
+        return cls(
+            principal_header=dsn.option("header") or DEFAULT_PRINCIPAL_HEADER,
+            request_id_header=dsn.option("request_id_header") or DEFAULT_REQUEST_ID_HEADER,
+        )
 
     @property
     def name(self) -> str:
         """``fastapi``."""
-        raise NotImplementedError
+        return "fastapi"
 
     def narrow(self, request: object) -> Request:
         """Check that ``request`` is a Starlette request.
@@ -107,11 +119,21 @@ class FastAPIProvider(BaseContextProvider[Request]):
             ConfigurationError: If it is not a Starlette request — which means this provider
                 was wired to the wrong framework.
         """
-        raise NotImplementedError
+        if isinstance(request, Request):
+            return request
+        actual = type(request)
+        raise ConfigurationError(
+            "the fastapi context provider expects a starlette.requests.Request but was given "
+            f"a {actual.__module__}.{actual.__qualname__}; it is wired to the wrong framework"
+        )
 
     def read_header(self, request: Request, name: str) -> str | None:
         """Read one header from a Starlette request. Starlette's headers are case-insensitive."""
-        raise NotImplementedError
+        # Bound to an annotated local rather than returned directly, so the module still
+        # type-checks in the default environment where starlette is absent and every symbol
+        # imported from it is ``Any``.
+        value: str | None = request.headers.get(name)
+        return value
 
     def render_error(self, error: Exception) -> JSONResponse:
         """Render a sentrykit refusal as a JSON response carrying the ``_authz`` envelope.
@@ -123,7 +145,41 @@ class FastAPIProvider(BaseContextProvider[Request]):
             The response, at the status
             :func:`~sentrykit.integrations.base.status_for` maps the error to.
         """
-        raise NotImplementedError
+        status, body = self.error_response(error)
+        return JSONResponse(body, status_code=status)
+
+
+def _effective_provider(provider: FastAPIProvider | None) -> FastAPIProvider:
+    """Resolve the provider a boundary hook should establish with.
+
+    The one place the defaulting rule lives, so the middleware, the dependency, the exception
+    handlers and :func:`protect_app` cannot drift apart. Resolution is deferred to call time on
+    purpose: ``install(context_provider=...)`` and the app wiring may then happen in either
+    order, which is the difference between a documented ordering constraint and none at all.
+
+    A governor wired to some *other* framework's provider is ignored rather than treated as an
+    error, since a process may legitimately serve an ASGI app beside a WSGI one. The fallback
+    is a bare header-identifying provider, which fails closed for any caller who sends no
+    header.
+
+    Args:
+        provider: An explicitly supplied provider, or ``None``.
+
+    Returns:
+        The explicit provider, the installed governor's when it is a :class:`FastAPIProvider`,
+        or a freshly built default.
+    """
+    if provider is not None:
+        return provider
+    # Imported in the body rather than at module scope: the engine pulls in the whole decision
+    # path, and a framework adapter should not dictate the library's import order.
+    from sentrykit.engine import current_governor
+
+    governor = current_governor()
+    wired = governor.context_provider if governor is not None else None
+    if isinstance(wired, FastAPIProvider):
+        return wired
+    return FastAPIProvider()
 
 
 class SentrykitMiddleware:
@@ -143,7 +199,8 @@ class SentrykitMiddleware:
     """
 
     def __init__(self, app: ASGIApp, provider: FastAPIProvider | None = None) -> None:
-        raise NotImplementedError
+        self.app = app
+        self.provider = provider
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         """Establish, delegate, release.
@@ -153,7 +210,18 @@ class SentrykitMiddleware:
             receive: The ASGI receive callable.
             send: The ASGI send callable.
         """
-        raise NotImplementedError
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        provider = _effective_provider(self.provider)
+        # A Starlette request is a lazy view over the scope, so building one here costs
+        # nothing and — crucially — does not consume the body the route is about to read.
+        established = provider.establish(Request(scope, receive))
+        try:
+            await self.app(scope, receive, send)
+        finally:
+            provider.release(established)
 
 
 def context_dependency(
@@ -180,7 +248,17 @@ def context_dependency(
     Returns:
         The dependency callable, ready to hand to ``Depends``.
     """
-    raise NotImplementedError
+
+    async def dependency(request: Request) -> AsyncIterator[None]:
+        """Establish for the duration of one route, and release however the route ends."""
+        resolved = _effective_provider(provider)
+        established = resolved.establish(request)
+        try:
+            yield
+        finally:
+            resolved.release(established)
+
+    return dependency
 
 
 def install_error_handlers(app: FastAPI, provider: FastAPIProvider | None = None) -> None:
@@ -195,7 +273,19 @@ def install_error_handlers(app: FastAPI, provider: FastAPIProvider | None = None
         app: The application.
         provider: The provider whose :meth:`FastAPIProvider.render_error` builds the response.
     """
-    raise NotImplementedError
+
+    async def render(request: Request, exc: Exception) -> Response:
+        """Starlette's handler shape. The request is unused: a refusal is built from ``exc``."""
+        return _effective_provider(provider).render_error(exc)
+
+    for error_type in STATUS_BY_ERROR:
+        # The mapping is keyed by ``BaseException`` so it can describe anything, but Starlette
+        # dispatches only on ``Exception`` — and nothing outside it belongs in an HTTP body.
+        if issubclass(error_type, Exception):
+            app.add_exception_handler(error_type, render)
+    # Registered last and unconditionally, so the catch-all is there even if the mapping above
+    # is ever trimmed. Re-registering a key with the same handler is a no-op.
+    app.add_exception_handler(SentrykitError, render)
 
 
 def protect_app(
@@ -217,4 +307,12 @@ def protect_app(
     Returns:
         The provider that was wired, so a caller can hold on to it.
     """
-    raise NotImplementedError
+    # Resolved eagerly, unlike everywhere else, because the return value is the point of the
+    # function: a caller asking "what got wired?" must not be answered "whatever is installed
+    # by the time the first request arrives".
+    resolved = _effective_provider(provider)
+    if middleware:
+        app.add_middleware(SentrykitMiddleware, provider=resolved)
+    if handlers:
+        install_error_handlers(app, resolved)
+    return resolved
