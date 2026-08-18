@@ -27,6 +27,29 @@ your app / agent ──► @protect (action, args) ──► Governor ──► 
                                                     AuthzSink (append-only, masked)
 ```
 
+### An agent boundary has a second job
+
+A web provider establishes context and nothing else, because an HTTP client already knows which
+URLs exist. An agent boundary also decides what the model is *shown*: the tool manifest is
+per-caller. MCP's `tools/list` and Pydantic-AI's `prepare` are the same question asked twice, so
+they share one framework-free implementation (`integrations/tools.py`) and one invariant:
+
+> A tool is hidden from a principal **if and only if** invoking it would be refused by the gate.
+
+Hiding is a usability affordance — it stops a model burning turns proposing calls that cannot
+succeed — and never a control: the dispatch path re-runs the identical decision, so a client
+that skips the manifest is refused just the same. Both halves are asserted together, because a
+filter that *were* the control would be a hole the moment someone skipped `tools/list`. See
+ADR-017.
+
+Two framework behaviours shape the agent providers more than anything in sentrykit does, and
+both were measured (`notes/phase-4-research.md` §10-11). Each framework validates a proposal
+against the tool's advertised schema *before* dispatch, so an argument declared `required`
+cannot be omitted and cannot receive a policy default — which is why a governed tool is
+registered behind a shim that re-declares those parameters as omittable. And mcp launders any
+exception a tool body raises into a result with no structured content, so a refusal travels out
+inside an `MCPError`, the one type it re-raises. See ADR-019.
+
 ## 2. The request lifecycle inside the Governor
 
 1. Resolve `principal` (ambient or explicit), `resource`, and build `environment`.

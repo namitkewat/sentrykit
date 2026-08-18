@@ -170,7 +170,38 @@ dependency cannot establish context**, so no sync-dependency form is shipped.
 
 ---
 
-## Phase 4 — Agent providers: FastMCP + Pydantic-AI
+## Phase 4 — Agent providers: FastMCP + Pydantic-AI — **done**
+
+Delivered as described. Working notes in `notes/phase-4-research.md`; the decisions it forced
+are ADR-017 (the manifest-filtering invariant), ADR-018 (mcp 2.0 is the target, `fastmcp` is a
+name we keep) and ADR-019 (omittable arguments, and a refusal carried out in an `MCPError`).
+
+Four things landed differently from the plan below, each measured rather than assumed:
+
+- **There is no `FastMCP`.** mcp 2.0 renamed it `mcp.server.mcpserver.MCPServer`, and the
+  standalone `fastmcp` distribution does not import against mcp 2.0 at all. The module, the
+  extra and the DSN keep the `fastmcp` name; nothing imports that package (ADR-018).
+- **A tool's advertised schema had to change.** Both frameworks validate a proposal against it
+  *before* dispatch, so an argument marked `required` can never be omitted — and per-principal
+  default injection was therefore unreachable from an agent. `integrations/tools.proposable`
+  re-declares the policy-suppliable parameters as omittable, which is the same move the
+  FastAPI example already makes at its route (ADR-019).
+- **A refusal cannot simply be raised on the MCP side.** `Tool.run` launders it into a result
+  with no structured content, so the `_authz` envelope is lost before any middleware sees it.
+  It travels out inside an `MCPError` instead — the one type mcp re-raises — which is why a
+  protected MCP tool must be registered through `governed_tool`.
+- **`integrations/tools.py` is a fourth module the plan did not name.** MCP's `tools/list` and
+  Pydantic-AI's `prepare` are two spellings of one question, so they get one framework-free
+  implementation and cannot answer it differently.
+
+The plan's sub-agent split held. What it did not anticipate is that the first working build of
+the MCP dispatch path decided every allowed call twice — one dispatch, two `allowed` audit
+records — which for an audit-first library is a correctness defect rather than an
+inefficiency, and was only visible by counting records off a real sink. It is worth counting
+that sort of thing in Phase 5 too.
+
+### The plan, as written
+
 
 **Goal.** The same enforcement on agent tool calls, including per-principal tool-manifest
 filtering, demonstrating that nested relationships are resolved by policy, not the model.
