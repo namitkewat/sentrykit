@@ -42,7 +42,7 @@ agents = ["sentrykit[fastmcp,pydantic-ai]"]
 all = ["sentrykit[web,agents]"]
 
 [project.scripts]
-# sentrykit = "sentrykit.cli:main"                                # phase 5
+sentrykit = "sentrykit.cli:main"
 
 # --- Plugin discovery groups ------------------------------------------------
 # Third parties publish a `sentrykit-<name>` package registering here; built-ins
@@ -50,6 +50,7 @@ all = ["sentrykit[web,agents]"]
 # Register each entry point WHEN its backend is built (do not leave dangling refs).
 [project.entry-points."sentrykit.policy_sources"]
 file = "sentrykit.stores.filesystem:FilesystemPolicySource"
+pack = "sentrykit.policy.loader:PackPolicySource"
 
 [project.entry-points."sentrykit.grant_stores"]
 memory = "sentrykit.stores.memory:InMemoryGrantStore"
