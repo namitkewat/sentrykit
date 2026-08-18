@@ -25,6 +25,21 @@ The knobs and their meaning:
 ``envelope_on_success``
     Whether a successful invocation gets an envelope attached at all. Denials always carry
     their detail on the raised error, regardless.
+``audit_sink``
+    DSN of the sink decisions are written to — ``jsonl://./audit.jsonl``. Unset means no
+    audit trail is emitted at all, which is the right default for a library that must not
+    start writing files because it was imported.
+``hmac_key``
+    Key for the ``hmac`` masking strategy. Held as a ``SecretStr`` so it cannot be printed
+    into a debug trace or a repr by accident.
+``mask_default``
+    Which strategy an unqualified ``mask:`` obligation or a bare ``Sensitive()`` marker
+    resolves to. ``hmac`` by default, because it is the only strategy that keeps records
+    correlatable without keeping the value.
+
+Note that ``redaction`` governs the caller-facing envelope and the operational logs only. It
+does **not** reach the audit path: per ADR-014 masking before an immutable write is not
+configurable, because that write is the one that cannot be taken back.
 """
 
 from __future__ import annotations
@@ -33,7 +48,7 @@ import logging
 import re
 from typing import Final, Literal, TypedDict
 
-from pydantic import ValidationError
+from pydantic import SecretStr, ValidationError
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from typing_extensions import Unpack
 
@@ -43,6 +58,7 @@ __all__ = [
     "ENV_PREFIX",
     "ArgHandling",
     "FailMode",
+    "MaskDefault",
     "Settings",
     "SettingsOverrides",
     "Verbosity",
@@ -65,6 +81,14 @@ ArgHandling = Literal["lenient", "strict"]
 
 FailMode = Literal["closed", "open"]
 """Whether an engine failure refuses the call (``closed``) or lets it through (``open``)."""
+
+MaskDefault = Literal["redact", "partial", "hmac", "tokenize"]
+"""Default masking strategy.
+
+Spelled out here rather than imported from :mod:`sentrykit.masking` so that configuration
+stays at the bottom of the dependency graph — masking imports config, not the other way
+round. The two are kept in step by a unit test.
+"""
 
 ENV_PREFIX: Final = "SENTRYKIT_"
 """Environment-variable prefix, e.g. ``SENTRYKIT_VERBOSITY=debug``."""
@@ -91,6 +115,9 @@ class SettingsOverrides(TypedDict, total=False):
     fail_mode: FailMode
     redaction: bool
     envelope_on_success: bool
+    audit_sink: str | None
+    hmac_key: SecretStr | None
+    mask_default: MaskDefault
 
 
 class Settings(BaseSettings):
@@ -107,6 +134,9 @@ class Settings(BaseSettings):
     fail_mode: FailMode = "closed"
     redaction: bool = True
     envelope_on_success: bool = True
+    audit_sink: str | None = None
+    hmac_key: SecretStr | None = None
+    mask_default: MaskDefault = "hmac"
 
 
 _settings: Settings | None = None

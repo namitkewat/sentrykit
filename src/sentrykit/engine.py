@@ -31,6 +31,7 @@ from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, ValidationError, create_model
 
+from sentrykit.audit import AuditOutcome, AuditTrail, build_facts
 from sentrykit.cedar import CedarDecision, CedarRequest, Entity, EntityRef, PolicyEngine
 from sentrykit.config import Settings, apply_overrides, get_settings
 from sentrykit.constraints import ConstraintSet, RejectedArgument
@@ -38,12 +39,16 @@ from sentrykit.context import Invocation, Principal, current_environment
 from sentrykit.envelope import AuthzEnvelope, attach_envelope, build_envelope, set_last_envelope
 from sentrykit.errors import (
     ArgumentRejected,
+    AuditUnavailable,
     AuthzDenied,
     ConfigurationError,
     DefaultUnavailable,
     NoValidArguments,
+    SentrykitError,
     ValidationFailed,
 )
+from sentrykit.masking import MaskStrategyName, sensitive_fields
+from sentrykit.stores.base import PolicyBundle
 
 __all__ = [
     "ArgumentSpec",
@@ -66,6 +71,21 @@ DEFAULT_RESOURCE_TYPE: str = "Resource"
 _GOVERNOR: Governor | None = None
 """The process-default governor. A plain global, not a ``ContextVar``: wiring is a
 process-lifetime concern, and :func:`use_governor` covers the scoped case."""
+
+
+_REFUSAL_OUTCOMES: Final[dict[type[BaseException], AuditOutcome]] = {
+    AuthzDenied: "denied",
+    ArgumentRejected: "arguments-rejected",
+    NoValidArguments: "no-valid-arguments",
+    DefaultUnavailable: "default-unavailable",
+    ValidationFailed: "validation-failed",
+}
+"""How each typed refusal is classified in the audit trail.
+
+Deliberately finer-grained than allow/deny: "Cedar permitted the call and then every argument
+the caller proposed was refused" is a different event to an auditor than "no policy permits
+this at all", even though the caller experiences both as a denial.
+"""
 
 
 def _qualified_name(fn: Callable[..., object]) -> str:
@@ -373,18 +393,45 @@ class Governor:
         policy: The Cedar policy set and entity graph to decide against.
         settings: Base settings. Defaults to the process-wide configuration, resolved per
             action at decision time so a per-action override still applies.
+        audit: Where decisions are recorded. ``None`` — the default — means no records are
+            built at all, so a governor wired without a sink costs exactly what it did before
+            the audit trail existed.
+        bundle: The loaded policy bundle, when the governor was built from a
+            :class:`~sentrykit.stores.base.PolicySource`. Supplies the per-policy annotation
+            index obligations are read from (ADR-012) and the provenance the audit record
+            carries. Without one, obligations stay empty and provenance is unavailable —
+            which is exactly the phase 1 behaviour, unchanged.
     """
 
-    __slots__ = ("_policy", "_settings")
+    __slots__ = ("_audit", "_bundle", "_policy", "_settings")
 
-    def __init__(self, policy: PolicyEngine, settings: Settings | None = None) -> None:
+    def __init__(
+        self,
+        policy: PolicyEngine,
+        settings: Settings | None = None,
+        *,
+        audit: AuditTrail | None = None,
+        bundle: PolicyBundle | None = None,
+    ) -> None:
         self._policy = policy
         self._settings = settings
+        self._audit = audit
+        self._bundle = bundle
 
     @property
     def policy(self) -> PolicyEngine:
         """The policy engine this governor decides against."""
         return self._policy
+
+    @property
+    def audit(self) -> AuditTrail | None:
+        """The audit trail this governor records to, if any."""
+        return self._audit
+
+    @property
+    def bundle(self) -> PolicyBundle | None:
+        """The policy bundle this governor's policies came from, if any."""
+        return self._bundle
 
     def plan(
         self,
@@ -443,6 +490,19 @@ class Governor:
             "principal": str(principal.uid),
         }
 
+        # Built before the gate rather than alongside the returned plan, because a refusal has
+        # to be as auditable as an allow and the record describes an *attempted* invocation
+        # either way.
+        invocation = Invocation(
+            id=invocation_id,
+            principal=principal,
+            action=action,
+            resource=resource,
+            proposed=proposed_arguments,
+            environment=env,
+            callable_name=spec.name,
+        )
+
         decision = self._policy.evaluate(
             CedarRequest(
                 principal=principal.uid,
@@ -456,36 +516,42 @@ class Governor:
             )
         )
 
-        self._gate(decision, settings, action, resource, principal, context, env)
+        rejected: tuple[RejectedArgument, ...] = ()
+        try:
+            self._gate(decision, settings, action, resource, principal, context, env)
 
-        constraints = principal.constraints_for(action)
-        kept, rejected = constraints.filter(proposed_arguments)
-        if rejected:
-            self._report_rejections(rejected, settings, context)
+            obligations = self._obligations(decision, allowed=True)
+            constraints = principal.constraints_for(action)
+            kept, rejected = constraints.filter(proposed_arguments)
+            if rejected:
+                self._report_rejections(rejected, settings, context)
 
-        if proposed_arguments and not kept:
-            # Every argument the caller asked for was refused. Completing the call from
-            # defaults would answer a question they did not ask, so refuse instead.
-            _LOGGER.info(
-                "Every proposed argument was rejected",
-                extra={**context, "arguments": sorted(proposed_arguments)},
-            )
-            raise NoValidArguments(
-                allowed=constraints.describe(),
-                rejected=[item.as_detail() for item in rejected],
-            )
+            if proposed_arguments and not kept:
+                # Every argument the caller asked for was refused. Completing the call from
+                # defaults would answer a question they did not ask, so refuse instead.
+                _LOGGER.info(
+                    "Every proposed argument was rejected",
+                    extra={**context, "arguments": sorted(proposed_arguments)},
+                )
+                raise NoValidArguments(
+                    allowed=constraints.describe(),
+                    rejected=[item.as_detail() for item in rejected],
+                )
 
-        arguments, defaults_applied = constraints.inject_defaults(kept, spec.parameters)
+            arguments, defaults_applied = constraints.inject_defaults(kept, spec.parameters)
 
-        missing = self._missing_arguments(spec, constraints, arguments)
-        if missing:
-            _LOGGER.info(
-                "Required argument has no value and no default",
-                extra={**context, "arguments": list(missing)},
-            )
-            raise DefaultUnavailable(missing[0])
+            missing = self._missing_arguments(spec, constraints, arguments)
+            if missing:
+                _LOGGER.info(
+                    "Required argument has no value and no default",
+                    extra={**context, "arguments": list(missing)},
+                )
+                raise DefaultUnavailable(missing[0])
 
-        processed = spec.validate(arguments)
+            processed = spec.validate(arguments)
+        except SentrykitError as exc:
+            self._audit_refusal(invocation, decision, spec, exc, rejected=rejected)
+            raise
 
         trace: dict[str, object] = {}
         if settings.verbosity == "debug":
@@ -507,24 +573,19 @@ class Governor:
             },
         )
 
-        return Plan(
-            invocation=Invocation(
-                id=invocation_id,
-                principal=principal,
-                action=action,
-                resource=resource,
-                proposed=proposed_arguments,
-                environment=env,
-                callable_name=spec.name,
-            ),
+        plan = Plan(
+            invocation=invocation,
             decision=decision,
             settings=settings,
             spec=spec,
             processed=processed,
             rejected=rejected,
             defaults_applied=defaults_applied,
+            obligations=obligations,
             trace=trace,
         )
+        self._audit_decision(plan)
+        return plan
 
     def _gate(
         self,
@@ -737,6 +798,111 @@ class Governor:
         ordered = [name for name in spec.parameters if name in missing]
         ordered.extend(sorted(name for name in missing if name not in spec.parameters))
         return tuple(ordered)
+
+    # --- audit ---------------------------------------------------------------------------
+    #
+    # The whole reach of phase 2 into the decision pipeline is these three methods plus the
+    # two calls that reach them. They are no-ops unless a trail was wired, so a governor
+    # built the phase 1 way — ``Governor(policy_engine)`` — takes exactly the path it always
+    # did, allocating nothing and touching no masking code.
+
+    def _obligations(self, decision: CedarDecision, *, allowed: bool) -> tuple[str, ...]:
+        """Read the obligations the determining policies attached to this decision.
+
+        Per ADR-012 obligations live in an ``@obligations`` annotation, which Cedar exposes
+        only through the policy *text*. The bundle owns that index, so a governor wired from
+        raw policy text — with no bundle — reports no obligations, which is the phase 1
+        behaviour unchanged.
+
+        Args:
+            decision: What Cedar returned.
+            allowed: Whether the call is proceeding, which selects the determining permit
+                policies rather than the determining forbids.
+
+        Returns:
+            The obligations, or empty when no bundle is wired.
+        """
+        if self._bundle is None:
+            return ()
+        return self._bundle.obligations_for(decision.determining_policies, allowed=allowed)
+
+    def _declared_sensitive(self, spec: ArgumentSpec) -> dict[str, MaskStrategyName | None]:
+        """Read the ``Sensitive`` markers off the protected callable's signature.
+
+        Computed only when a trail is wired: introspecting the argument model costs more than
+        the decision does, and an unaudited governor has no use for the answer.
+        """
+        return sensitive_fields(spec.model)
+
+    def _audit_decision(self, plan: Plan) -> None:
+        """Record a decision that permitted the call.
+
+        A sink failure propagates here. That is the point: under ``fail_mode="closed"`` an
+        action whose authorization cannot be proven must not happen, so the
+        :class:`~sentrykit.errors.AuditUnavailable` refuses the call before the side effect
+        rather than after it.
+        """
+        trail = self._audit
+        if trail is None or not trail.enabled:
+            return
+        trail.record(
+            build_facts(
+                invocation=plan.invocation,
+                decision=plan.decision,
+                outcome="allowed",
+                allowed=True,
+                processed=plan.processed,
+                rejected=plan.rejected,
+                defaults_applied=plan.defaults_applied,
+                obligations=plan.obligations,
+                declared_sensitive=self._declared_sensitive(plan.spec),
+            )
+        )
+
+    def _audit_refusal(
+        self,
+        invocation: Invocation,
+        decision: CedarDecision,
+        spec: ArgumentSpec,
+        error: SentrykitError,
+        *,
+        rejected: tuple[RejectedArgument, ...] = (),
+    ) -> None:
+        """Record a decision that refused the call.
+
+        Unlike :meth:`_audit_decision`, a sink failure here is logged and swallowed. The call
+        is already being refused, so raising
+        :class:`~sentrykit.errors.AuditUnavailable` would replace a precise
+        :class:`~sentrykit.errors.AuthzDenied` — the answer the caller actually needs — with
+        an operational error, and would change what phase 1 raises. Failing closed is already
+        the outcome; the only thing left to protect is the diagnosis.
+        """
+        trail = self._audit
+        if trail is None or not trail.enabled:
+            return
+        outcome: AuditOutcome = _REFUSAL_OUTCOMES.get(type(error), "denied")
+        try:
+            trail.record(
+                build_facts(
+                    invocation=invocation,
+                    decision=decision,
+                    outcome=outcome,
+                    allowed=False,
+                    reason=str(error),
+                    rejected=rejected,
+                    obligations=self._obligations(decision, allowed=False),
+                    declared_sensitive=self._declared_sensitive(spec),
+                )
+            )
+        except AuditUnavailable:
+            _LOGGER.error(
+                "Audit sink rejected a refusal record; the refusal itself still stands",
+                extra={
+                    "invocation_id": invocation.id,
+                    "action": str(invocation.action),
+                    "outcome": outcome,
+                },
+            )
 
     def invoke(self, fn: Callable[..., T], plan: Plan) -> T:
         """Perform a planned call and attach its envelope.

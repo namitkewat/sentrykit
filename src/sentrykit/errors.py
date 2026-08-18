@@ -118,3 +118,24 @@ class ValidationFailed(SentrykitError):
     def __init__(self, errors: list[dict[str, Any]]) -> None:
         self.errors = errors
         super().__init__(f"argument validation failed with {len(errors)} error(s)")
+
+
+class AuditUnavailable(SentrykitError):
+    """Raised when an audit record could not be written to its sink.
+
+    An operational failure, not an authorization one — but under ``fail_mode="closed"`` it
+    still refuses the governed call, because an action nobody can prove happened is an action
+    that should not have happened ("can't prove it, don't do it", per the logging standards).
+
+    ``sink`` names the backend that failed; ``failures`` carries one entry per sink when a
+    fan-out composite raised, so an operator can see whether one replica or all of them are
+    down.
+    """
+
+    def __init__(
+        self, sink: str, reason: str, failures: list[dict[str, Any]] | None = None
+    ) -> None:
+        self.sink = sink
+        self.reason = reason
+        self.failures = failures or []
+        super().__init__(f"audit sink {sink!r} could not accept the record: {reason}")

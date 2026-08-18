@@ -42,8 +42,10 @@ __all__ = [
     "CedarRequest",
     "Entity",
     "EntityRef",
+    "PolicyAnnotation",
     "PolicyEngine",
     "coerce_value",
+    "policy_annotations",
 ]
 
 _LOGGER: Final = logging.getLogger("sentrykit.cedar")
@@ -482,3 +484,85 @@ def _determining_policies(diagnostics: cedarpy.Diagnostics) -> tuple[str, ...]:
         annotation = annotations.get(policy_id)
         named.append(annotation if isinstance(annotation, str) and annotation else policy_id)
     return tuple(named)
+
+
+@dataclass(frozen=True, slots=True)
+class PolicyAnnotation:
+    """One policy's identity and annotations, read out of the policy text.
+
+    Cedar's ``PolicySet`` handle is opaque — it cannot be walked — but
+    ``cedarpy.policies_to_json_str`` renders the parsed set as JSON carrying *every*
+    annotation, not just ``@id``. That is the only way to see an ``@obligations(...)``
+    declaration, which is why :func:`policy_annotations` exists and why ADR-012 puts
+    obligations in annotations at all.
+
+    Attributes:
+        cedar_id: Cedar's generated id (``policy0``). Positional in the policy text, and the
+            key that ``diagnostics.reasons`` reports.
+        effect: ``permit`` or ``forbid``.
+        annotations: Every annotation on the policy. A valueless annotation
+            (``@obligations`` with no parentheses) maps to ``None``.
+    """
+
+    cedar_id: str
+    effect: Literal["permit", "forbid"]
+    annotations: Mapping[str, str | None] = field(default_factory=dict)
+
+    @property
+    def declared_id(self) -> str:
+        """The ``@id`` annotation when the policy declares a non-empty one, else :attr:`cedar_id`.
+
+        Matches how :attr:`CedarDecision.determining_policies` names a policy, so the two can
+        be joined.
+        """
+        declared = self.annotations.get("id")
+        return declared if isinstance(declared, str) and declared else self.cedar_id
+
+    def annotation(self, key: str) -> str | None:
+        """Return one annotation's value, or ``None`` when it is absent or valueless."""
+        value = self.annotations.get(key)
+        return value if isinstance(value, str) and value else None
+
+
+def policy_annotations(policies: str) -> tuple[PolicyAnnotation, ...]:
+    """Read the effect and annotations of every static policy in ``policies``.
+
+    The generated ids this returns are positional in ``policies``, so the result is only
+    joinable with a decision if it was produced from **exactly** the text the
+    :class:`PolicyEngine` was built from. Callers that concatenate policy fragments must
+    concatenate once, deterministically, and derive both the engine and this index from that
+    one string.
+
+    Templates and template links are ignored: only static policies can be determining.
+
+    Args:
+        policies: Cedar policy text.
+
+    Returns:
+        One entry per static policy, in the order Cedar numbered them.
+
+    Raises:
+        ConfigurationError: If the text does not parse.
+    """
+    if not policies.strip():
+        return ()
+    try:
+        rendered = json.loads(cedarpy.policies_to_json_str(policies))
+    except ValueError as exc:
+        raise ConfigurationError(f"cedar policy set failed to parse: {exc}") from exc
+
+    read: list[PolicyAnnotation] = []
+    for cedar_id, policy in rendered.get("staticPolicies", {}).items():
+        # A policy with no annotations renders ``"annotations": null`` rather than ``{}``,
+        # and an annotation written without parentheses renders a null value — both mean
+        # "absent" and neither can be assumed to be a dict or a str.
+        annotations = policy.get("annotations") or {}
+        effect = policy.get("effect")
+        read.append(
+            PolicyAnnotation(
+                cedar_id=str(cedar_id),
+                effect="forbid" if effect == "forbid" else "permit",
+                annotations={str(key): value for key, value in annotations.items()},
+            )
+        )
+    return tuple(read)
