@@ -4,7 +4,7 @@
 
 [workspace]
 name = "sentrykit"
-version = "0.0.0"
+version = "0.1.0.dev0"
 description = "Lightweight, framework-agnostic authorization for Python web frameworks and agent tooling, built on AWS Cedar."
 authors = ["Your Name <you@example.com>"]
 channels = ["conda-forge"]

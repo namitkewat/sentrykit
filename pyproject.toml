@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "sentrykit"
-version = "0.0.0"
+dynamic = ["version"]
 description = "Lightweight, framework-agnostic authorization for Python web frameworks and agent tooling, built on AWS Cedar."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -42,7 +42,7 @@ agents = ["sentrykit[fastmcp,pydantic-ai]"]
 all = ["sentrykit[web,agents]"]
 
 [project.scripts]
-sentrykit = "sentrykit.cli:main"
+# sentrykit = "sentrykit.cli:main"                                # phase 5
 
 # --- Plugin discovery groups ------------------------------------------------
 # Third parties publish a `sentrykit-<name>` package registering here; built-ins
@@ -66,6 +66,11 @@ Homepage = "https://github.com/yourname/sentrykit"
 Documentation = "https://github.com/yourname/sentrykit#readme"
 Source = "https://github.com/yourname/sentrykit"
 Changelog = "https://github.com/yourname/sentrykit/blob/main/CHANGELOG.md"
+
+# The version lives in the package, so `sentrykit.__version__` and the distribution metadata
+# cannot drift apart.
+[tool.hatch.version]
+path = "src/sentrykit/__init__.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/sentrykit"]

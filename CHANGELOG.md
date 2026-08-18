@@ -24,6 +24,9 @@ All notable changes to this project are documented here. Format follows
   support.
 - pre-commit ran its own pinned ruff and mypy, which disagreed with the locked toolchain and
   could not resolve `pydantic-settings`; the hooks now run the pixi tasks.
+- The distribution version is now read from `sentrykit.__version__`, so the package and its
+  metadata cannot drift apart. The `sentrykit` console script is commented out until the CLI
+  it points at exists, rather than installing a command that raises `ModuleNotFoundError`.
 
 ### Notes
 - `AuthzDenied.engine_errors` distinguishes a policy denial from a Cedar evaluation failure
