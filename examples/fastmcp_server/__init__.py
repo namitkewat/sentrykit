@@ -1,1 +1,1 @@
-"""Example: fastmcp_server — built in the phased plan (see dev-docs/implementation.md)."""
+"""Example: fastmcp_server — a governed MCP tool server (mcp 2.0). See this package's README."""
