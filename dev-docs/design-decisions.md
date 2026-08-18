@@ -19,12 +19,19 @@ a large existing Casbin base — not our case.
 **Decision.** Cedar returns allow/deny; sentrykit performs argument filtering and default
 injection in Python from entity attributes. Keep a Cedar `forbid` backstop as defense in
 depth.
-**Why.** `cedarpy` wraps Cedar's stable API and does not expose partial evaluation. Attribute-
-driven filtering works today and is maintainable.
-**Future.** True residual-derived filtering (type-aware partial evaluation) is the elegant
-path and can come via a dedicated maturin binding that enables the `tpe`/`partial-eval`
-features. Formal policy *validation/analysis* may likewise require the Cedar CLI or Rust
-side — verify what the installed `cedarpy` exposes before promising formal guarantees.
+**Why.** Attribute-driven filtering works today, is maintainable, and — the part that
+matters for ADR-006 — is explicable to an auditor: a rejection names the rule it violated.
+**Amended 2026-08-18 (phase 1 research).** The original rationale said `cedarpy` "does not
+expose partial evaluation". That is no longer true: 4.8.7 ships `is_authorized_partial` and
+`PartialAuthzResult` with `residuals`, `must_be_determining` and `nontrivial_residuals`. The
+decision stands anyway, for different reasons: cedarpy's own docstring warns that a partial
+result **must not** be used as a final authorization decision, so a residual-driven filter
+would still need a full `is_authorized` re-run per candidate argument set; and turning a
+residual AST into an allow-set / range / pattern is a compiler, not a module. The blocker is
+residual *interpretation*, not availability.
+**Also confirmed.** `validate_policies(policies, schema)` is available and returns a
+structured `ValidationResult`, so the phase 5 `sentrykit policy validate` command does not
+need to shell out to the Cedar CLI.
 
 ## ADR-003 — Ambient context via `contextvars`, fail-closed
 **Decision.** Providers set an ambient `ContextVar` at the boundary; `@protect` reads it;
@@ -87,8 +94,10 @@ agent tools.
 **Decision.** `pixi.toml` owns dev environments, feature composition, and governance tasks;
 `pyproject.toml` (hatchling, src layout) owns packaging, extras, entry-point groups, and tool
 config. Apache-2.0 license.
-**Why.** Reproducible multi-extra dev environments and a clean, standard package. Confirm the
-current pixi manifest schema against the installed pixi version in Phase 1.
+**Why.** Reproducible multi-extra dev environments and a clean, standard package.
+**Confirmed (phase 1).** pixi 0.70.2 accepts the `[workspace]` manifest form; no change
+needed. Governance tasks must stay cross-platform — the manifest lists `win-64`, so a task
+that shells out to a POSIX utility is a broken task, not a shortcut.
 
 ## ADR-011 — Commit messages carry no tooling attribution
 **Decision.** Conventional Commits, enforced by `scripts/check_commit_msg.py` as a
