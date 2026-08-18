@@ -75,6 +75,8 @@ typecheck = "mypy src"
 # tests
 test = "pytest"
 test-cov = "pytest --cov=sentrykit --cov-report=term-missing --cov-report=xml"
+# Enforces the floor over the modules this environment can actually import; see the script.
+coverage-gate = "python scripts/coverage_gate.py"
 test-unit = "pytest -m unit tests/unit"
 test-integration = "pytest -m integration tests/integration"
 test-scenarios = "pytest -m scenario tests/scenarios"
@@ -90,7 +92,7 @@ audit-report = "python -m sentrykit.cli audit-report --from 2026-01-01 --to 2026
 docs = "mkdocs build --strict"
 docs-serve = "mkdocs serve"
 # aggregate
-check = { depends-on = ["fmt-check", "lint", "typecheck", "test-cov", "docs"] }
+check = { depends-on = ["fmt-check", "lint", "typecheck", "test-cov", "coverage-gate", "docs"] }
 ci = { depends-on = ["check"] }
 build = "python -m build"
 # `rm -rf` is unavailable on win-64, which is in the platform list above.

@@ -308,6 +308,34 @@ def permitted_tools(
     )
 
 
+def _widened(label: str, name: str, annotation: object) -> object:
+    """Widen one parameter's annotation to admit the ``None`` that means *not proposed*.
+
+    Args:
+        label: The callable's qualified name, for the error message.
+        name: The parameter being widened.
+        annotation: Its resolved annotation, or :data:`inspect.Parameter.empty`.
+
+    Returns:
+        ``annotation | None``, or the annotation untouched when there was none to widen.
+
+    Raises:
+        ConfigurationError: If the annotation does not support ``|``. An unannotated parameter
+            is fine and common; one annotated with something that is not a type is a mistake in
+            the tool, and it surfaces here as the configuration error the docstring promises
+            rather than as a bare ``TypeError`` from inside a signature rebuild.
+    """
+    if annotation is inspect.Parameter.empty:
+        return annotation
+    try:
+        return annotation | None  # type: ignore[operator]
+    except TypeError as exc:
+        raise ConfigurationError(
+            f"cannot make {name!r} on {label} omittable: its annotation {annotation!r} does "
+            f"not support `| None` ({exc})"
+        ) from exc
+
+
 def proposable(
     fn: Callable[..., Any],
     *,
@@ -411,8 +439,8 @@ def proposable(
             kind=inspect.Parameter.KEYWORD_ONLY,
             default=None if key in omittable else parameter.default,
             annotation=(
-                parameter.annotation | None
-                if key in omittable and parameter.annotation is not inspect.Parameter.empty
+                _widened(label, key, parameter.annotation)
+                if key in omittable
                 else parameter.annotation
             ),
         )

@@ -148,4 +148,9 @@ branch = true
 
 [tool.coverage.report]
 show_missing = true
-fail_under = 85
+# The floor is enforced by `scripts/coverage_gate.py`, not here. `--cov=sentrykit` reports every
+# module in the package including ones this environment cannot import, and three of the four
+# pixi environments deliberately install only some of the optional extras -- so a single number
+# taken off this report means something different in each of them. The script applies the floor
+# over the modules that could actually be imported, and says which it skipped and why.
+fail_under = 0
