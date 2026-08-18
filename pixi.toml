@@ -50,6 +50,11 @@ ruff = ">=0.4"
 mypy = ">=1.10"
 pre-commit = ">=3.7"
 build = ">=1.2"
+# The build backend, present so `tests/integration/test_release_artifacts.py` can build the
+# wheel with `--no-isolation`: offline, and about ten times faster. Without it that test
+# falls back to an isolated build and skips wherever there is no index -- and a packaging
+# check that skips is exactly how a wheel ships without its policy pack.
+hatchling = ">=1.24"
 mkdocs = ">=1.6"
 mkdocs-material = ">=9.5"
 mkdocstrings = { version = ">=0.25", extras = ["python"] }
@@ -99,5 +104,8 @@ docs-serve = "mkdocs serve"
 check = { depends-on = ["fmt-check", "lint", "typecheck", "test-cov", "coverage-gate", "docs"] }
 ci = { depends-on = ["check"] }
 build = "python -m build"
+# Needs the network: builds the artifacts and installs the wheel with each extra into a
+# throwaway venv. The offline half of this check is tests/integration/test_release_artifacts.py.
+release-check = "python scripts/release_check.py"
 # `rm -rf` is unavailable on win-64, which is in the platform list above.
 clean = "python scripts/clean.py"

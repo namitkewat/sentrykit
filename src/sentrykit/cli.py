@@ -1083,7 +1083,11 @@ def _run_audit_report(args: argparse.Namespace) -> int:
     finally:
         _close(sink)
 
-    document = _document(report, title)
+    # The heading echoes what the operator typed, not the half-open bound the window
+    # carries: someone who asked for "--to 2026-12-31" should not read a title saying
+    # 2027-01-01 and wonder whether they got a day too many. The header line below the
+    # title still states the exact bounds, marked exclusive.
+    document = _document(report, title or f"Audit report: {args.start} to {args.end}")
     if out is None:
         print(document, end="")
         return EXIT_OK

@@ -420,7 +420,11 @@ def test_a_bare_to_date_includes_that_whole_day(
     document = capsys.readouterr().out
     assert code == EXIT_OK
     assert "| Records | 3 |" in document
-    assert "# Audit report: 2026-12-01 to 2027-01-01" in document
+    # The heading echoes what was typed; the header line states the bound that was actually
+    # queried, marked exclusive. Both, because reading either one alone is how a reader ends
+    # up unsure whether the last day was counted.
+    assert "# Audit report: 2026-12-01 to 2026-12-31" in document
+    assert "to 2027-01-01T00:00:00+00:00 (end exclusive)" in document
 
 
 def test_a_to_carrying_a_time_is_used_exactly(
