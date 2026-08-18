@@ -15,8 +15,10 @@ exception, so the engine can drop it (``arg_handling="lenient"``) or raise on it
 
 from __future__ import annotations
 
+import logging
+import re
 from collections.abc import Collection, Mapping
-from typing import Literal, NamedTuple
+from typing import Final, Literal, NamedTuple
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -28,6 +30,58 @@ __all__ = [
     "RejectedArgument",
     "Rule",
 ]
+
+_LOGGER: Final = logging.getLogger("sentrykit.constraints")
+
+_PATTERN_CACHE: Final[dict[str, re.Pattern[str] | None]] = {}
+
+
+def _compiled(pattern: str) -> re.Pattern[str] | None:
+    """Compile and memoize ``pattern``, returning ``None`` if it is not a valid regex.
+
+    Constraint checking runs on every protected call, so the compile is cached by pattern
+    text. An uncompilable pattern is cached too, and reported as ``None`` rather than raised:
+    :meth:`ConstraintSet.filter` promises not to raise, so a malformed grant fails *closed*
+    (the value is rejected) instead of taking the call path down with it.
+    """
+    if pattern in _PATTERN_CACHE:
+        return _PATTERN_CACHE[pattern]
+    try:
+        compiled: re.Pattern[str] | None = re.compile(pattern)
+    except re.error as exc:
+        _LOGGER.error(
+            "argument constraint pattern is not a valid regular expression",
+            extra={"pattern": pattern, "error": str(exc)},
+        )
+        compiled = None
+    _PATTERN_CACHE[pattern] = compiled
+    return compiled
+
+
+def _same_value(candidate: object, member: object) -> bool:
+    """Compare a proposed value with a set member without letting ``True`` equal ``1``.
+
+    Python's ``bool`` is an ``int``, so a plain ``==`` would let a caller slip ``True`` past
+    an allow-set of ``(1,)``. Membership decides authorization here, so the types must match
+    as well as the values.
+    """
+    if isinstance(candidate, bool) is not isinstance(member, bool):
+        return False
+    return bool(candidate == member)
+
+
+def _as_number(value: object) -> int | float | None:
+    """Return ``value`` as a number for range comparison, or ``None`` if it is not one.
+
+    ``bool`` is deliberately not a number: comparing ``True >= 1`` would make a boolean
+    satisfy a numeric bound by accident.
+    """
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int | float):
+        return value
+    return None
+
 
 Rule = Literal["allow-set", "deny-set", "pattern", "minimum", "maximum", "not-comparable"]
 """Which kind of constraint a value violated."""
@@ -60,7 +114,7 @@ class RejectedArgument(BaseModel):
 
     def as_detail(self) -> dict[str, object]:
         """Render without the value, for ``summary`` verbosity and for error payloads."""
-        raise NotImplementedError
+        return self.model_dump(exclude={"value"}, exclude_none=True)
 
 
 class FilterResult(NamedTuple):
@@ -128,10 +182,20 @@ class ArgumentConstraint(BaseModel):
     @property
     def has_default(self) -> bool:
         """Whether a default was configured, including an explicit default of ``None``."""
-        raise NotImplementedError
+        return "default" in self.model_fields_set
+
+    def _reject(self, name: str, rule: Rule, reason: str, value: object) -> RejectedArgument:
+        """Build a rejection carrying this constraint's provenance."""
+        return RejectedArgument(
+            name=name, rule=rule, reason=reason, policy=self.policy, value=value
+        )
 
     def check(self, name: str, value: object) -> RejectedArgument | None:
         """Test one value against every rule in this constraint.
+
+        Rules are evaluated allow-set, deny-set, pattern, minimum, maximum, and the first
+        violation is returned: reporting one concrete reason is more actionable than a list,
+        and the order runs from the coarsest rule to the finest.
 
         Args:
             name: The parameter name, used to label a rejection.
@@ -141,11 +205,92 @@ class ArgumentConstraint(BaseModel):
             ``None`` if the value is acceptable, otherwise the rejection describing the first
             rule it violated.
         """
-        raise NotImplementedError
+        if self.allow is not None and not any(_same_value(value, m) for m in self.allow):
+            return self._reject(
+                name, "allow-set", "Value is not one of the permitted values", value
+            )
+
+        if self.deny is not None and any(_same_value(value, m) for m in self.deny):
+            return self._reject(name, "deny-set", "Value is explicitly denied", value)
+
+        if self.pattern is not None:
+            if not isinstance(value, str):
+                return self._reject(
+                    name,
+                    "not-comparable",
+                    "Value is not a string and cannot be matched against a pattern",
+                    value,
+                )
+            compiled = _compiled(self.pattern)
+            if compiled is None:
+                # Fail closed: the grant is malformed, so nothing can be shown to satisfy it.
+                return self._reject(
+                    name,
+                    "pattern",
+                    "Value cannot be checked because the configured pattern is invalid",
+                    value,
+                )
+            if compiled.fullmatch(value) is None:
+                return self._reject(
+                    name,
+                    "pattern",
+                    f"Value does not match the required pattern {self.pattern!r}",
+                    value,
+                )
+
+        if self.minimum is not None:
+            number = _as_number(value)
+            if number is None:
+                return self._reject(
+                    name,
+                    "not-comparable",
+                    "Value is not a number and cannot be compared against a minimum",
+                    value,
+                )
+            if number < self.minimum:
+                return self._reject(
+                    name, "minimum", f"Value is below the minimum of {self.minimum}", value
+                )
+
+        if self.maximum is not None:
+            number = _as_number(value)
+            if number is None:
+                return self._reject(
+                    name,
+                    "not-comparable",
+                    "Value is not a number and cannot be compared against a maximum",
+                    value,
+                )
+            if number > self.maximum:
+                return self._reject(
+                    name, "maximum", f"Value is above the maximum of {self.maximum}", value
+                )
+
+        return None
 
     def describe(self) -> dict[str, object]:
-        """Summarize the rules, for the "here is what you *may* pass" half of an error."""
-        raise NotImplementedError
+        """Summarize the rules, for the "here is what you *may* pass" half of an error.
+
+        Only the rules that were actually configured appear. The default *value* never does —
+        a caller is told that one exists, not what it is, since a per-principal default can
+        itself be sensitive (someone else's tenant id, say).
+        """
+        described: dict[str, object] = {}
+        if self.allow is not None:
+            described["allow"] = list(self.allow)
+        if self.deny is not None:
+            described["deny"] = list(self.deny)
+        if self.pattern is not None:
+            described["pattern"] = self.pattern
+        if self.minimum is not None:
+            described["minimum"] = self.minimum
+        if self.maximum is not None:
+            described["maximum"] = self.maximum
+        if self.policy is not None:
+            described["policy"] = self.policy
+        described["required"] = self.required
+        described["has_default"] = self.has_default
+        return described
 
 
 class ConstraintSet(BaseModel):
@@ -162,7 +307,7 @@ class ConstraintSet(BaseModel):
 
     def __bool__(self) -> bool:
         """Whether this set constrains anything at all."""
-        raise NotImplementedError
+        return bool(self.arguments)
 
     def merged_with(self, other: ConstraintSet) -> ConstraintSet:
         """Return this set with ``other`` layered on top, per argument.
@@ -172,7 +317,7 @@ class ConstraintSet(BaseModel):
         action-specific entry for an argument replaces the wildcard entry for it outright,
         which keeps "what applies here" answerable by reading one object.
         """
-        raise NotImplementedError
+        return ConstraintSet(arguments={**self.arguments, **other.arguments})
 
     def filter(self, proposed: Mapping[str, object]) -> FilterResult:
         """Split proposed arguments into those the policy accepts and those it does not.
@@ -184,7 +329,21 @@ class ConstraintSet(BaseModel):
             The kept arguments and the rejections. Never raises — turning a rejection into an
             error is ``arg_handling``'s decision, made by the engine.
         """
-        raise NotImplementedError
+        kept: dict[str, object] = {}
+        rejected: list[RejectedArgument] = []
+        for name, value in proposed.items():
+            constraint = self.arguments.get(name)
+            if constraint is None:
+                # Unconstrained: the coarse Cedar gate already permitted this call, and an
+                # empty constraint set must not mean "forbid everything".
+                kept[name] = value
+                continue
+            rejection = constraint.check(name, value)
+            if rejection is None:
+                kept[name] = value
+            else:
+                rejected.append(rejection)
+        return FilterResult(kept=kept, rejected=tuple(rejected))
 
     def inject_defaults(
         self,
@@ -207,7 +366,14 @@ class ConstraintSet(BaseModel):
         Returns:
             The completed argument mapping and the subset that was injected.
         """
-        raise NotImplementedError
+        arguments: dict[str, object] = dict(kept)
+        applied: dict[str, object] = {}
+        for name, constraint in self.arguments.items():
+            if name in arguments or name not in parameters or not constraint.has_default:
+                continue
+            arguments[name] = constraint.default
+            applied[name] = constraint.default
+        return DefaultsResult(arguments=arguments, applied=applied)
 
     def missing_required(self, present: Collection[str]) -> tuple[str, ...]:
         """Name the required arguments that are still absent after defaults were injected.
@@ -219,8 +385,12 @@ class ConstraintSet(BaseModel):
             The names of required arguments with neither a supplied value nor a default —
             each one a :class:`~sentrykit.errors.DefaultUnavailable`.
         """
-        raise NotImplementedError
+        return tuple(
+            name
+            for name, constraint in self.arguments.items()
+            if constraint.required and name not in present
+        )
 
     def describe(self) -> dict[str, object]:
         """Summarize every constraint, for the allowed-set half of an error payload."""
-        raise NotImplementedError
+        return {name: constraint.describe() for name, constraint in self.arguments.items()}
