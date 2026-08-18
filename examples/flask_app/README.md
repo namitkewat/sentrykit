@@ -37,7 +37,7 @@ returns the subject of a verified session or token from `_identify`.
 ## Run it
 
 ```bash
-pixi run -e web run-flask     # flask --app examples.flask_app.main run --debug
+pixi run -e web run-flask     # flask --app examples.flask_app.main:create_app run --debug
 ```
 
 The app runs at `http://127.0.0.1:5000` and is configured with `verbosity="verbose"`, so the

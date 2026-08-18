@@ -18,6 +18,12 @@ replaces with its session, its bearer token, or its gateway's assertion — ever
 
 No route declares a pydantic `response_model`. One would strip the `_authz` key the engine
 attaches to the returned mapping, and the envelope is half of what this example is showing.
+
+The app is built by a **factory** and never at import: `create_app()` calls `configure()` and
+`install()`, which mutate process-global state. A module-level `app = create_app()` would run
+that wiring for anyone who so much as imported the module — including a test collector, and
+including a second example app in the same process. `pixi run -e web run-fastapi` invokes the
+factory instead (`uvicorn ... --factory`), and every test builds its own.
 """
 
 from __future__ import annotations
@@ -99,7 +105,3 @@ def create_app() -> FastAPI:
         return summarize_orders()
 
     return app
-
-
-app = create_app()
-"""The module-level app `uvicorn examples.fastapi_app.main:app` serves."""

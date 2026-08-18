@@ -79,8 +79,8 @@ test-unit = "pytest -m unit tests/unit"
 test-integration = "pytest -m integration tests/integration"
 test-scenarios = "pytest -m scenario tests/scenarios"
 # example apps (built in phases 3-4)
-run-fastapi = "uvicorn examples.fastapi_app.main:app --reload"
-run-flask = "flask --app examples.flask_app.main run --debug"
+run-fastapi = "uvicorn examples.fastapi_app.main:create_app --factory --reload"
+run-flask = "flask --app examples.flask_app.main:create_app run --debug"
 run-mcp = "python -m examples.fastmcp_server.server"
 run-agent = "python -m examples.pydantic_ai_agent.agent"
 # governance / ops (available once phase 5 CLI exists)

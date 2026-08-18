@@ -201,7 +201,40 @@ def decide_tool(
             that silently showed everything because nothing was installed would be the exact
             failure mode ADR-003 exists to prevent.
     """
-    raise NotImplementedError
+    meta = governed_meta(fn)
+    if meta is None:
+        return ToolDecision(name=name, visible=True, governed=False)
+
+    active = _governor_for(name, meta, governor)
+    try:
+        plan = active.plan(
+            meta.spec,
+            principal=principal,
+            action=meta.action,
+            resource=meta.resource,
+            # No proposed arguments: the model has not proposed any yet. This is what makes
+            # the probe answer an entitlement question and nothing else.
+            proposed=None,
+            environment=environment,
+        )
+    except ENTITLEMENT_ERRORS as exc:
+        _LOGGER.debug(
+            "Hiding tool from the manifest",
+            extra={
+                "tool": name,
+                "principal": str(principal.uid),
+                "action": str(meta.action),
+                "reason": type(exc).__name__,
+            },
+        )
+        return ToolDecision(name=name, visible=False, governed=True, error=exc)
+    except SentrykitError as exc:
+        # An argument-level refusal of an argument-free probe. It says nothing about whether
+        # this principal is entitled to the action, only that the call as probed is
+        # incomplete -- which every such call is. Advertise it; the dispatch path decides once
+        # the model has proposed something to decide about.
+        return ToolDecision(name=name, visible=True, governed=True, error=exc)
+    return ToolDecision(name=name, visible=True, governed=True, plan=plan)
 
 
 def decide_tools(
@@ -225,7 +258,11 @@ def decide_tools(
     Raises:
         ConfigurationError: As for :func:`decide_tool`.
     """
-    raise NotImplementedError
+    entries = tools.items() if isinstance(tools, Mapping) else tools
+    return tuple(
+        decide_tool(name, fn, principal=principal, governor=governor, environment=environment)
+        for name, fn in entries
+    )
 
 
 def permitted_tools(
@@ -251,4 +288,10 @@ def permitted_tools(
     Raises:
         ConfigurationError: As for :func:`decide_tool`.
     """
-    raise NotImplementedError
+    return tuple(
+        decision.name
+        for decision in decide_tools(
+            tools, principal=principal, governor=governor, environment=environment
+        )
+        if decision.visible
+    )

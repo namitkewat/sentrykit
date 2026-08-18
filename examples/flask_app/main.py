@@ -10,6 +10,12 @@ one object rather than two that happen to agree.
 The routes are the same URLs as `examples/fastapi_app`, on purpose: the service layer is
 identical, the policy is identical, and only the twenty lines below differ between the two
 frameworks.
+
+The app is built by a **factory** and never at import: `create_app()` calls `configure()` and
+`install()`, which mutate process-global state. A module-level `app = create_app()` would run
+that wiring for anyone who so much as imported the module — including a test collector, and
+including a second example app in the same process. `pixi run -e web run-flask` invokes the
+factory instead (Flask's own `module:factory` form), and every test builds its own.
 """
 
 from __future__ import annotations
@@ -108,7 +114,3 @@ def create_app() -> Flask:
     protect_blueprint(orders, provider=provider)
     app.register_blueprint(orders)
     return app
-
-
-app = create_app()
-"""The module-level app `flask --app examples.flask_app.main run` looks for."""

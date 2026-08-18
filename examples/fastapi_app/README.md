@@ -28,7 +28,7 @@ reading `context.args.fmt`. That is how an exception is expressed without editin
 ## Running it
 
 ```bash
-pixi run -e web run-fastapi        # uvicorn examples.fastapi_app.main:app --reload
+pixi run -e web run-fastapi        # uvicorn examples.fastapi_app.main:create_app --factory --reload
 ```
 
 Authentication is a stub: the **`x-user`** header names the principal. That is the seam a real
