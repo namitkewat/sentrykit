@@ -5,6 +5,37 @@ All notable changes to this project are documented here. Format follows
 
 ## [Unreleased]
 ### Added
+- The MCP and Pydantic-AI context providers, tool-manifest filtering, and two runnable
+  example agents (phase 4).
+  - `integrations/tools.py` — the framework-free half of an agent boundary. `decide_tool` /
+    `permitted_tools` answer "may this principal be shown this tool?" by running the *same*
+    `Governor.plan` the dispatch path runs, so MCP's `tools/list` and Pydantic-AI's `prepare`
+    cannot drift apart. A tool is hidden if and only if invoking it would be refused
+    (ADR-017); hiding is never the enforcement, and the dispatch path re-decides regardless.
+  - `integrations/tools.proposable` — re-declares the arguments policy supplies as optional,
+    so a model can omit them and receive its per-principal defaults. Both frameworks validate
+    a proposal against the advertised schema before dispatch, which would otherwise put
+    default injection out of reach from an agent entirely (ADR-019).
+  - `integrations/fastmcp.py` — `FastMCPProvider`, `SentrykitToolMiddleware` (establish and
+    release around `tools/call`, filter `tools/list`), `governed_tool` and `protect_server`.
+    Built against **mcp 2.0**'s `MCPServer`; the `fastmcp` name is kept for the module, the
+    extra and the DSN, but nothing imports the standalone `fastmcp` distribution (ADR-018).
+    The principal travels in the request's `_meta`, which is the only carrier that exists on
+    every transport, so a server is drivable over stdio and in memory.
+  - `integrations/pydantic_ai.py` — `PydanticAIProvider` bridging `RunContext.deps` to ambient
+    context per dispatch, `governed_tool`, `tool_adapter`, `tool_prepare` and `tool_filter`.
+    The principal is the human the agent acts for, never a service identity for the agent
+    process, and the model cannot influence it.
+  - `examples/fastmcp_server/` — three protected tools, one of which is invocable only through
+    a four-hop `User -> Team -> Division -> Project` relationship that the permitting policy
+    never mentions. It demonstrates the allow, the denial when the edge is absent, the denial
+    when the edge is severed, and the tool vanishing from the manifest in both cases.
+  - `examples/pydantic_ai_agent/` — an on-behalf-of agent running on a deterministic model, so
+    `pixi run -e agent run-agent` needs no API key and makes no network call. A real model is
+    opt-in through `SENTRYKIT_EXAMPLE_MODEL`.
+  - Both providers are registered under `sentrykit.context_providers` and reachable by DSN
+    (`fastmcp://`, `pydantic-ai://`), indistinguishably from a third-party plugin.
+  - `docs/agents.md`, with every example pinned by a test.
 - The FastAPI and Flask context providers, and two runnable example apps (phase 3).
   - `integrations/base.py` — the shared half of every provider: the exception → HTTP status
     table, the verbosity-aware refusal renderer, and `BaseContextProvider`, which resolves an
@@ -62,6 +93,14 @@ All notable changes to this project are documented here. Format follows
   configuration, and the commit-message enforcement hook.
 
 ### Fixed
+- The FastAPI error handler no longer fails `mypy` in an environment that has starlette but
+  not fastapi — which is the `agent` environment, since mcp depends on starlette. It is the
+  one combination no earlier phase produced: `Response` resolves to a real type while
+  `JSONResponse` is `Any`. No behaviour change.
+- The FastAPI and Flask example apps are built by a factory rather than at import. A
+  module-level `app = create_app()` ran `configure()` and `install()` — both process-global —
+  for anyone who so much as imported the module, including the test collector. `run-fastapi`
+  and `run-flask` invoke the factory instead.
 - `pixi run clean` used `rm -rf`, which fails on `win-64` — a platform the manifest claims to
   support.
 - pre-commit ran its own pinned ruff and mypy, which disagreed with the locked toolchain and

@@ -130,6 +130,50 @@ Two runnable apps — the same three routes, the same policy, the same service l
 frameworks — live in `examples/fastapi_app/` and `examples/flask_app/`. See
 [docs/web-frameworks.md](docs/web-frameworks.md).
 
+### Guard an agent's tools — same decorator, and the model is told what it may attempt
+
+An agent boundary needs one thing a web boundary does not: the **tool manifest is
+per-caller**. sentrykit filters it with the same decision that enforces the call.
+
+```python
+from mcp.server.mcpserver import MCPServer
+
+from sentrykit import install
+from sentrykit.integrations.fastmcp import FastMCPProvider, governed_tool, protect_server
+
+provider = FastMCPProvider(grants=store)
+install(POLICY_TEXT, grant_store=store, context_provider=provider)
+
+server = MCPServer("orders")
+governed_tool(server)(search_orders)         # register the protected callable
+protect_server(server)                       # <- the one extra line
+```
+
+Pydantic-AI is the same shape, and its principal is **the human the agent acts for** — never a
+service identity for the agent process, and never anything the model can write:
+
+```python
+from sentrykit.integrations.pydantic_ai import PydanticAIProvider, governed_tool
+
+agent = Agent(model, deps_type=Caller)
+governed_tool(agent)(search_orders)
+
+await agent.run("what is on order o-1?", deps=Caller(principal="alice"))
+```
+
+The filtering guarantee is stated as an invariant and tested as one:
+
+> **A tool is hidden from a principal if and only if invoking it would be refused.**
+
+Hiding is a courtesy to the model, never the control. A client that skips the manifest and
+calls a hidden tool by name is refused just the same — both halves are asserted in the same
+test, because a filter that *were* the control would be a hole the moment someone skipped
+`tools/list`.
+
+An MCP tool server and an on-behalf-of agent live in `examples/fastmcp_server/` and
+`examples/pydantic_ai_agent/`. Both run offline, with no API key and no network call. See
+[docs/agents.md](docs/agents.md).
+
 ### Relationships are the policy's job
 
 The point is not that sentrykit checks a role. It is that multi-hop relationships are
