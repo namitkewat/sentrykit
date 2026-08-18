@@ -16,12 +16,15 @@ and Pydantic-AI's signature introspection see the original function.
 
 from __future__ import annotations
 
+import functools
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import ParamSpec, TypeVar, overload
+from typing import Any, Final, ParamSpec, TypeVar, cast, overload
 
 from sentrykit.cedar import EntityRef
-from sentrykit.engine import ArgumentSpec, Governor
+from sentrykit.context import Principal, current_principal
+from sentrykit.engine import ArgumentSpec, Governor, derive_action, get_governor
+from sentrykit.errors import ConfigurationError, NoContext
 
 __all__ = [
     "AS_KEYWORD",
@@ -34,8 +37,17 @@ __all__ = [
 P = ParamSpec("P")
 T = TypeVar("T")
 
+_P = ParamSpec("_P")
+_T = TypeVar("_T")
+
 AS_KEYWORD: str = "_as"
 """Call keyword that overrides the ambient principal for a single invocation."""
+
+_META_ATTR: Final = "__sentrykit__"
+"""Attribute under which :class:`ProtectedMeta` is stashed on the wrapper."""
+
+_ABSENT: Final = object()
+"""Sentinel distinguishing ``_as=None`` from no ``_as`` at all."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -120,7 +132,32 @@ def protect(
         ConfigurationError: If ``action`` or ``resource`` cannot be parsed, or the callable's
             signature cannot be introspected.
     """
-    raise NotImplementedError
+
+    def decorate(target: Callable[_P, _T]) -> Callable[_P, _T]:
+        spec = ArgumentSpec.from_callable(target)
+        meta = ProtectedMeta(
+            action=(
+                EntityRef.parse(action, default_type="Action")
+                if action is not None
+                else derive_action(target)
+            ),
+            resource=(
+                EntityRef.parse(resource, default_type="Resource") if resource is not None else None
+            ),
+            spec=spec,
+            governor=governor,
+        )
+        if spec.is_async:
+            asynchronous = _wrap_async(cast("Callable[_P, Awaitable[Any]]", target), meta)
+            wrapped = cast("Callable[_P, _T]", asynchronous)
+        else:
+            wrapped = _wrap_sync(target, meta)
+        setattr(wrapped, _META_ATTR, meta)
+        return wrapped
+
+    if fn is not None:
+        return decorate(fn)
+    return decorate
 
 
 def protected_meta(fn: object) -> ProtectedMeta | None:
@@ -132,12 +169,42 @@ def protected_meta(fn: object) -> ProtectedMeta | None:
     Returns:
         The metadata, or ``None`` when ``fn`` is not protected.
     """
-    raise NotImplementedError
+    meta = getattr(fn, _META_ATTR, None)
+    return meta if isinstance(meta, ProtectedMeta) else None
 
 
 def is_protected(fn: object) -> bool:
     """Whether ``fn`` carries a ``@protect`` wrapper."""
-    raise NotImplementedError
+    return protected_meta(fn) is not None
+
+
+def _resolve_principal(meta: ProtectedMeta, override: object) -> Principal:
+    """Decide who this call acts as.
+
+    Args:
+        meta: The protected callable's metadata, for the error message.
+        override: Whatever came in as ``_as=``, or the absent sentinel.
+
+    Returns:
+        The explicit override when one was passed, otherwise the ambient principal.
+
+    Raises:
+        ConfigurationError: If ``_as=`` was passed something other than a
+            :class:`~sentrykit.context.Principal`.
+        NoContext: If nothing was passed and no principal is ambient. Fail-closed per
+            ADR-003, and deliberately independent of ``fail_mode``: an engine that cannot
+            tell who is calling has nothing to authorize.
+    """
+    if override is not _ABSENT:
+        if not isinstance(override, Principal):
+            raise ConfigurationError(
+                f"{AS_KEYWORD}= must be a Principal, got {type(override).__name__}"
+            )
+        return override
+    principal = current_principal()
+    if principal is None:
+        raise NoContext(str(meta.action))
+    return principal
 
 
 def _wrap_sync(
@@ -145,7 +212,22 @@ def _wrap_sync(
     meta: ProtectedMeta,
 ) -> Callable[P, T]:
     """Build the synchronous wrapper for ``fn``."""
-    raise NotImplementedError
+
+    @functools.wraps(fn)
+    def wrapper(*args: P.args, **kwargs: P.kwargs) -> T:
+        # Stripped before binding: ``_as`` is sentrykit's keyword, not the callable's.
+        principal = _resolve_principal(meta, kwargs.pop(AS_KEYWORD, _ABSENT))
+        active = meta.governor or get_governor()
+        plan = active.plan(
+            meta.spec,
+            principal=principal,
+            action=meta.action,
+            resource=meta.resource,
+            proposed=meta.spec.bind(args, kwargs),
+        )
+        return active.invoke(fn, plan)
+
+    return wrapper
 
 
 def _wrap_async(
@@ -153,4 +235,18 @@ def _wrap_async(
     meta: ProtectedMeta,
 ) -> Callable[P, Awaitable[T]]:
     """Build the asynchronous wrapper for ``fn``."""
-    raise NotImplementedError
+
+    @functools.wraps(fn)
+    async def wrapper(*args: P.args, **kwargs: P.kwargs) -> T:
+        principal = _resolve_principal(meta, kwargs.pop(AS_KEYWORD, _ABSENT))
+        active = meta.governor or get_governor()
+        plan = active.plan(
+            meta.spec,
+            principal=principal,
+            action=meta.action,
+            resource=meta.resource,
+            proposed=meta.spec.bind(args, kwargs),
+        )
+        return await active.ainvoke(fn, plan)
+
+    return wrapper

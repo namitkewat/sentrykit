@@ -47,6 +47,19 @@ class AuthzDenied(SentrykitError):
         determining_policies: list[str],
         engine_errors: list[str] | None = None,
     ) -> None:
+        """Record a refusal.
+
+        Args:
+            action: The full Cedar uid of the refused action, e.g. ``Action::"tool.search"``
+                -- always the uid spelling, never the bare id, so an error message is
+                unambiguous about which entity type was involved.
+            resource: The full Cedar uid of the resource, in the same spelling.
+            determining_policies: Ids of the policies that decided it, named by their ``@id``
+                annotation where they declare one. Empty on a default deny, which means no
+                policy matched at all.
+            engine_errors: Cedar's own errors when this refusal came from an engine failure,
+                and empty when it is an ordinary policy denial.
+        """
         self.action = action
         self.resource = resource
         self.determining_policies = determining_policies

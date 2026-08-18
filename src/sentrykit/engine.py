@@ -21,18 +21,29 @@ call it never invokes, to decide whether to show the tool to a model at all.
 from __future__ import annotations
 
 import inspect
+import logging
 from collections.abc import Awaitable, Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from typing import TypeVar
+from datetime import UTC, datetime
+from typing import Any, Final, NoReturn, TypeVar, get_type_hints
+from uuid import uuid4
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, ValidationError, create_model
 
-from sentrykit.cedar import CedarDecision, Entity, EntityRef, PolicyEngine
-from sentrykit.config import Settings
-from sentrykit.constraints import RejectedArgument
-from sentrykit.context import Invocation, Principal
-from sentrykit.envelope import AuthzEnvelope
+from sentrykit.cedar import CedarDecision, CedarRequest, Entity, EntityRef, PolicyEngine
+from sentrykit.config import Settings, apply_overrides, get_settings
+from sentrykit.constraints import ConstraintSet, RejectedArgument
+from sentrykit.context import Invocation, Principal, current_environment
+from sentrykit.envelope import AuthzEnvelope, attach_envelope, build_envelope, set_last_envelope
+from sentrykit.errors import (
+    ArgumentRejected,
+    AuthzDenied,
+    ConfigurationError,
+    DefaultUnavailable,
+    NoValidArguments,
+    ValidationFailed,
+)
 
 __all__ = [
     "ArgumentSpec",
@@ -47,8 +58,29 @@ __all__ = [
 
 T = TypeVar("T")
 
+_LOGGER: Final = logging.getLogger("sentrykit.engine")
+
 DEFAULT_RESOURCE_TYPE: str = "Resource"
 """Entity type used for the synthetic resource when a protected callable declares none."""
+
+_GOVERNOR: Governor | None = None
+"""The process-default governor. A plain global, not a ``ContextVar``: wiring is a
+process-lifetime concern, and :func:`use_governor` covers the scoped case."""
+
+
+def _qualified_name(fn: Callable[..., object]) -> str:
+    """Render ``<module>.<qualname>`` for a callable, tolerating exotic ones.
+
+    Args:
+        fn: Any callable, including one that carries no ``__qualname__`` (a
+            ``functools.partial``, a callable instance).
+
+    Returns:
+        The qualified name used as the derived action id and in diagnostics.
+    """
+    module = getattr(fn, "__module__", None) or "<unknown>"
+    qualname = getattr(fn, "__qualname__", None) or getattr(fn, "__name__", None) or repr(fn)
+    return f"{module}.{qualname}"
 
 
 @dataclass(frozen=True, slots=True)
@@ -99,7 +131,64 @@ class ArgumentSpec:
             ConfigurationError: If the signature cannot be introspected or its annotations
                 cannot be resolved into a model.
         """
-        raise NotImplementedError
+        name = _qualified_name(fn)
+        try:
+            signature = inspect.signature(fn)
+        except (TypeError, ValueError) as exc:
+            raise ConfigurationError(f"Cannot introspect the signature of {name}: {exc}") from exc
+        try:
+            hints = get_type_hints(fn, include_extras=True)
+        except (NameError, TypeError, AttributeError) as exc:
+            # An unresolvable forward reference is a wiring mistake, not a runtime condition:
+            # surface it at decoration time rather than on the first protected call.
+            raise ConfigurationError(f"Cannot resolve the annotations of {name}: {exc}") from exc
+
+        parameters: list[str] = []
+        positional_only: list[str] = []
+        required: set[str] = set()
+        # ``Any`` because ``create_model`` types its field definitions that way; the values
+        # here are always ``(annotation, default_or_Ellipsis)`` pairs.
+        fields: dict[str, Any] = {}
+        accepts_var_keyword = False
+
+        for parameter_name, parameter in signature.parameters.items():
+            if parameter.kind is inspect.Parameter.VAR_KEYWORD:
+                accepts_var_keyword = True
+                continue
+            if parameter.kind is inspect.Parameter.VAR_POSITIONAL:
+                continue
+            parameters.append(parameter_name)
+            if parameter.kind is inspect.Parameter.POSITIONAL_ONLY:
+                positional_only.append(parameter_name)
+            annotation = hints.get(parameter_name, object)
+            if parameter.default is inspect.Parameter.empty:
+                required.add(parameter_name)
+                fields[parameter_name] = (annotation, ...)
+            else:
+                fields[parameter_name] = (annotation, parameter.default)
+
+        try:
+            model = create_model(
+                f"{getattr(fn, '__name__', 'Protected')}Arguments",
+                # ``extra="allow"`` rather than ``"forbid"``: the engine has already narrowed
+                # the mapping to this callable's own parameters, and forbidding extras would
+                # turn a policy default for a ``**kwargs`` callable into a hard failure.
+                __config__=ConfigDict(arbitrary_types_allowed=True, extra="allow"),
+                **fields,
+            )
+        except Exception as exc:  # re-raised with context below, never swallowed
+            raise ConfigurationError(f"Cannot build an argument model for {name}: {exc}") from exc
+
+        return cls(
+            name=name,
+            signature=signature,
+            parameters=tuple(parameters),
+            positional_only=tuple(positional_only),
+            required=frozenset(required),
+            model=model,
+            is_async=inspect.iscoroutinefunction(fn),
+            accepts_var_keyword=accepts_var_keyword,
+        )
 
     def bind(self, args: Sequence[object], kwargs: Mapping[str, object]) -> dict[str, object]:
         """Map a call's positional and keyword arguments onto parameter names.
@@ -117,7 +206,22 @@ class ArgumentSpec:
         Raises:
             ConfigurationError: If the arguments cannot be bound to the signature at all.
         """
-        raise NotImplementedError
+        try:
+            bound = self.signature.bind_partial(*args, **kwargs)
+        except TypeError as exc:
+            raise ConfigurationError(f"Cannot bind arguments for {self.name}: {exc}") from exc
+
+        proposed: dict[str, object] = {}
+        for parameter_name, value in bound.arguments.items():
+            kind = self.signature.parameters[parameter_name].kind
+            if kind is inspect.Parameter.VAR_KEYWORD and isinstance(value, Mapping):
+                # ``bind_partial`` nests **kwargs under the parameter's own name. Flatten it,
+                # so policy sees the names the caller actually used and :meth:`split` can
+                # reconstruct the call.
+                proposed.update(value)
+                continue
+            proposed[parameter_name] = value
+        return proposed
 
     def split(self, arguments: Mapping[str, object]) -> tuple[list[object], dict[str, object]]:
         """Split a final argument mapping back into positional and keyword form.
@@ -131,7 +235,48 @@ class ArgumentSpec:
         Returns:
             Positional arguments in declaration order, and the keyword remainder.
         """
-        raise NotImplementedError
+        positional: list[object] = []
+        keyword: dict[str, object] = {}
+        # Values bound to ``*args`` force every preceding parameter to be passed
+        # positionally too, otherwise Python cannot reach the variadic slot.
+        variadic: tuple[object, ...] = ()
+        for parameter_name, parameter in self.signature.parameters.items():
+            if parameter.kind is inspect.Parameter.VAR_POSITIONAL:
+                value = arguments.get(parameter_name, ())
+                variadic = tuple(value) if isinstance(value, list | tuple) else (value,)
+                break
+        force_positional = bool(variadic)
+
+        # Positional slots the caller omitted are held back until a later slot turns out to
+        # be present; only then must their Python default be emitted to keep the order.
+        pending: list[object] = []
+        for parameter_name, parameter in self.signature.parameters.items():
+            if parameter.kind is inspect.Parameter.VAR_KEYWORD:
+                continue
+            if parameter.kind is inspect.Parameter.VAR_POSITIONAL:
+                positional.extend(variadic)
+                pending.clear()
+                continue
+            takes_slot = parameter.kind is inspect.Parameter.POSITIONAL_ONLY or (
+                force_positional and parameter.kind is inspect.Parameter.POSITIONAL_OR_KEYWORD
+            )
+            if not takes_slot:
+                if parameter_name in arguments:
+                    keyword[parameter_name] = arguments[parameter_name]
+                continue
+            if parameter_name in arguments:
+                positional.extend(pending)
+                pending.clear()
+                positional.append(arguments[parameter_name])
+            elif parameter.default is not inspect.Parameter.empty:
+                pending.append(parameter.default)
+
+        # Names the signature does not declare reach here only for a ``**kwargs`` callable.
+        known = set(self.signature.parameters)
+        for parameter_name, value in arguments.items():
+            if parameter_name not in known:
+                keyword[parameter_name] = value
+        return positional, keyword
 
     def validate(self, arguments: Mapping[str, object]) -> dict[str, object]:
         """Validate the final argument set against the callable's model.
@@ -145,7 +290,22 @@ class ArgumentSpec:
         Raises:
             ValidationFailed: Carrying pydantic's structured field errors.
         """
-        raise NotImplementedError
+        try:
+            validated = self.model(**arguments)
+        except ValidationError as exc:
+            raise ValidationFailed(
+                [dict(error) for error in exc.errors(include_url=False)]
+            ) from exc
+
+        # Only the keys that were actually passed come back. Letting the model's own
+        # parameter defaults through would make the envelope report values Python would have
+        # supplied anyway, blurring the line between "policy defaulted this" and "the
+        # signature did".
+        fields = type(validated).model_fields
+        return {
+            key: (getattr(validated, key) if key in fields else value)
+            for key, value in arguments.items()
+        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -179,12 +339,31 @@ class Plan:
 
     @property
     def allowed(self) -> bool:
-        """Whether the call may proceed."""
-        raise NotImplementedError
+        """Whether the call may proceed.
+
+        True for a clean Cedar allow, and for an engine failure that ``fail_mode="open"``
+        waved through. A clean policy deny never reaches here — :meth:`Governor.plan` raises
+        instead of returning a refused plan.
+        """
+        if self.decision.allowed:
+            return True
+        return self.decision.failed and self.settings.fail_mode == "open"
 
     def envelope(self) -> AuthzEnvelope | None:
         """Build the caller-facing envelope for this plan, honoring its verbosity."""
-        raise NotImplementedError
+        return build_envelope(
+            decision="allow" if self.allowed else "deny",
+            action=str(self.invocation.action),
+            resource=str(self.invocation.resource),
+            principal=str(self.invocation.principal.uid),
+            processed=self.processed,
+            rejected=self.rejected,
+            defaults_applied=self.defaults_applied,
+            obligations=self.obligations,
+            determining_policies=self.decision.determining_policies,
+            trace=self.trace or None,
+            verbosity=self.settings.verbosity,
+        )
 
 
 class Governor:
@@ -196,13 +375,16 @@ class Governor:
             action at decision time so a per-action override still applies.
     """
 
+    __slots__ = ("_policy", "_settings")
+
     def __init__(self, policy: PolicyEngine, settings: Settings | None = None) -> None:
-        raise NotImplementedError
+        self._policy = policy
+        self._settings = settings
 
     @property
     def policy(self) -> PolicyEngine:
         """The policy engine this governor decides against."""
-        raise NotImplementedError
+        return self._policy
 
     def plan(
         self,
@@ -248,7 +430,313 @@ class Governor:
             ValidationFailed: If the final argument set does not satisfy the callable's
                 model.
         """
-        raise NotImplementedError
+        settings = apply_overrides(self._settings or get_settings(), action.id)
+        resource = resource or EntityRef(DEFAULT_RESOURCE_TYPE, action.id)
+        invocation_id = invocation_id or uuid4().hex
+        proposed_arguments = dict(proposed or {})
+        env = merge_environment(current_environment(), environment, proposed=proposed_arguments)
+
+        context = {
+            "invocation_id": invocation_id,
+            "action": str(action),
+            "resource": str(resource),
+            "principal": str(principal.uid),
+        }
+
+        decision = self._policy.evaluate(
+            CedarRequest(
+                principal=principal.uid,
+                action=action,
+                resource=resource,
+                context=env,
+                # The principal snapshot is a per-request delta so a concurrent decision for
+                # a different principal never sees it.
+                entities=(Entity(principal.uid, principal.attributes, principal.all_parents()),),
+                correlation_id=invocation_id,
+            )
+        )
+
+        self._gate(decision, settings, action, resource, principal, context, env)
+
+        constraints = principal.constraints_for(action)
+        kept, rejected = constraints.filter(proposed_arguments)
+        if rejected:
+            self._report_rejections(rejected, settings, context)
+
+        if proposed_arguments and not kept:
+            # Every argument the caller asked for was refused. Completing the call from
+            # defaults would answer a question they did not ask, so refuse instead.
+            _LOGGER.info(
+                "Every proposed argument was rejected",
+                extra={**context, "arguments": sorted(proposed_arguments)},
+            )
+            raise NoValidArguments(
+                allowed=constraints.describe(),
+                rejected=[item.as_detail() for item in rejected],
+            )
+
+        arguments, defaults_applied = constraints.inject_defaults(kept, spec.parameters)
+
+        missing = self._missing_arguments(spec, constraints, arguments)
+        if missing:
+            _LOGGER.info(
+                "Required argument has no value and no default",
+                extra={**context, "arguments": list(missing)},
+            )
+            raise DefaultUnavailable(missing[0])
+
+        processed = spec.validate(arguments)
+
+        trace: dict[str, object] = {}
+        if settings.verbosity == "debug":
+            trace = {
+                **decision.as_trace(),
+                "invocation_id": invocation_id,
+                "channel": env.get("channel", "internal"),
+                "settings": settings.model_dump(),
+            }
+
+        _LOGGER.debug(
+            "Authorized invocation",
+            extra={
+                **context,
+                "decision": decision.decision,
+                "arguments": sorted(processed),
+                "defaulted": sorted(defaults_applied),
+                "rejected": [item.name for item in rejected],
+            },
+        )
+
+        return Plan(
+            invocation=Invocation(
+                id=invocation_id,
+                principal=principal,
+                action=action,
+                resource=resource,
+                proposed=proposed_arguments,
+                environment=env,
+                callable_name=spec.name,
+            ),
+            decision=decision,
+            settings=settings,
+            spec=spec,
+            processed=processed,
+            rejected=rejected,
+            defaults_applied=defaults_applied,
+            trace=trace,
+        )
+
+    def _gate(
+        self,
+        decision: CedarDecision,
+        settings: Settings,
+        action: EntityRef,
+        resource: EntityRef,
+        principal: Principal,
+        context: Mapping[str, str],
+        environment: Mapping[str, object],
+    ) -> None:
+        """Apply the coarse Cedar gate, refusing unless the call may proceed.
+
+        Separates the two ways a call fails to be authorized. An *engine failure* — a Cedar
+        error, or ``no-decision`` — is a bug in the policy set and is logged at ``ERROR``;
+        ``fail_mode`` decides whether it also refuses. A plain *policy denial* is normal
+        operation, logged at ``INFO``, and refuses under either fail mode.
+
+        Args:
+            decision: What Cedar returned.
+            settings: The effective settings for this action.
+            action: The action being authorized.
+            resource: The resource it was authorized against.
+            principal: Who is acting.
+            context: Pre-built log context.
+            environment: The merged Cedar request context, for the debug trace.
+
+        Raises:
+            AuthzDenied: If the gate denied, or the engine failed under ``fail_mode="closed"``.
+        """
+        if decision.failed:
+            _LOGGER.error(
+                "Cedar evaluation failed",
+                extra={
+                    **context,
+                    "decision": decision.decision,
+                    "engine_errors": list(decision.errors),
+                    "fail_mode": settings.fail_mode,
+                },
+            )
+            if settings.fail_mode == "closed":
+                self._refuse(
+                    decision,
+                    settings,
+                    action,
+                    resource,
+                    principal,
+                    environment,
+                    invocation_id=context["invocation_id"],
+                    reason="Authorization engine failed; refused under fail_mode=closed",
+                    engine_errors=list(decision.errors),
+                )
+            # fail_mode="open": proceed, with the errors preserved in the debug trace.
+            return
+
+        if decision.allowed:
+            return
+
+        _LOGGER.info(
+            "Authorization denied",
+            extra={
+                **context,
+                "decision": decision.decision,
+                "determining_policies": list(decision.determining_policies),
+            },
+        )
+        self._refuse(
+            decision,
+            settings,
+            action,
+            resource,
+            principal,
+            environment,
+            invocation_id=context["invocation_id"],
+            reason=(
+                "Denied by an explicit forbid policy"
+                if decision.determining_policies
+                else "No policy permits this action"
+            ),
+            engine_errors=None,
+        )
+
+    @staticmethod
+    def _refuse(
+        decision: CedarDecision,
+        settings: Settings,
+        action: EntityRef,
+        resource: EntityRef,
+        principal: Principal,
+        environment: Mapping[str, object],
+        *,
+        invocation_id: str,
+        reason: str,
+        engine_errors: list[str] | None,
+    ) -> NoReturn:
+        """Record the deny envelope and raise.
+
+        The envelope is recorded even though nothing is returned to the caller: a framework
+        provider rendering the 403 reads it from :func:`~sentrykit.envelope.last_envelope`,
+        so a denial is as reportable as an allow.
+
+        Args:
+            decision: What Cedar returned.
+            settings: The effective settings for this action.
+            action: The action that was refused.
+            resource: The resource it was refused against.
+            principal: Who was acting.
+            environment: The merged Cedar request context, for the debug trace.
+            invocation_id: Correlation id, so the deny trace joins the operational logs.
+            reason: One-sentence explanation for the envelope.
+            engine_errors: Cedar errors when this refusal came from an engine failure, and
+                ``None`` when it is an ordinary policy denial.
+
+        Raises:
+            AuthzDenied: Always.
+        """
+        trace: dict[str, object] | None = None
+        if settings.verbosity == "debug":
+            trace = {
+                **decision.as_trace(),
+                "invocation_id": invocation_id,
+                "channel": environment.get("channel", "internal"),
+                "settings": settings.model_dump(),
+            }
+        set_last_envelope(
+            build_envelope(
+                decision="deny",
+                action=str(action),
+                resource=str(resource),
+                principal=str(principal.uid),
+                processed={},
+                rejected=(),
+                defaults_applied={},
+                reason=reason,
+                determining_policies=decision.determining_policies,
+                trace=trace,
+                verbosity=settings.verbosity,
+            )
+        )
+        raise AuthzDenied(
+            str(action),
+            str(resource),
+            list(decision.determining_policies),
+            engine_errors=engine_errors,
+        )
+
+    @staticmethod
+    def _report_rejections(
+        rejected: tuple[RejectedArgument, ...],
+        settings: Settings,
+        context: Mapping[str, str],
+    ) -> None:
+        """Log, and under ``strict`` handling raise on, the arguments policy refused.
+
+        Only names, rules and reasons are logged. The offending *value* is exactly the kind
+        of caller-supplied data the logging standards keep out of the operational channel.
+
+        Args:
+            rejected: The rejections the constraint set produced. Never empty.
+            settings: The effective settings for this action.
+            context: Pre-built log context.
+
+        Raises:
+            ArgumentRejected: If ``arg_handling`` is ``strict``.
+        """
+        if settings.arg_handling == "strict":
+            first = rejected[0]
+            _LOGGER.info(
+                "Argument rejected under strict handling",
+                extra={**context, "argument": first.name, "rule": first.rule},
+            )
+            raise ArgumentRejected(first.name, first.reason, first.policy)
+        for item in rejected:
+            _LOGGER.warning(
+                "Argument dropped by policy",
+                extra={
+                    **context,
+                    "argument": item.name,
+                    "rule": item.rule,
+                    "reason": item.reason,
+                    "policy": item.policy,
+                },
+            )
+
+    @staticmethod
+    def _missing_arguments(
+        spec: ArgumentSpec,
+        constraints: ConstraintSet,
+        arguments: Mapping[str, object],
+    ) -> tuple[str, ...]:
+        """Name the arguments that still have no value once defaults have been injected.
+
+        Two sources, because they mean different things: ``spec.required`` is what *Python*
+        cannot call without, and ``ConstraintSet.missing_required`` is what *policy* insists
+        on. Either one unsatisfied is a :class:`~sentrykit.errors.DefaultUnavailable`.
+
+        Args:
+            spec: The target callable's argument spec.
+            constraints: The principal's constraints for this action.
+            arguments: The completed argument mapping.
+
+        Returns:
+            The missing names, ordered by the callable's declaration order so the error
+            names the first hole a reader would notice.
+        """
+        missing = {name for name in spec.required if name not in arguments}
+        missing.update(constraints.missing_required(arguments))
+        if not missing:
+            return ()
+        ordered = [name for name in spec.parameters if name in missing]
+        ordered.extend(sorted(name for name in missing if name not in spec.parameters))
+        return tuple(ordered)
 
     def invoke(self, fn: Callable[..., T], plan: Plan) -> T:
         """Perform a planned call and attach its envelope.
@@ -261,7 +749,9 @@ class Governor:
             Whatever ``fn`` returned, with the ``_authz`` envelope attached when the result
             is a mapping and ``envelope_on_success`` is set.
         """
-        raise NotImplementedError
+        positional, keyword = plan.spec.split(plan.processed)
+        result = fn(*positional, **keyword)
+        return attach_envelope(result, self._success_envelope(plan))
 
     async def ainvoke(self, fn: Callable[..., Awaitable[T]], plan: Plan) -> T:
         """Await a planned call and attach its envelope.
@@ -278,7 +768,29 @@ class Governor:
         Returns:
             Whatever ``fn`` resolved to, with the envelope attached where applicable.
         """
-        raise NotImplementedError
+        positional, keyword = plan.spec.split(plan.processed)
+        result = await fn(*positional, **keyword)
+        return attach_envelope(result, self._success_envelope(plan))
+
+    @staticmethod
+    def _success_envelope(plan: Plan) -> AuthzEnvelope | None:
+        """Build and record the envelope for a call that ran.
+
+        Recorded here rather than only inside
+        :func:`~sentrykit.envelope.attach_envelope` so that a non-mapping return value —
+        which cannot carry the envelope itself — still leaves it on the context for a
+        framework provider to render.
+
+        Args:
+            plan: The plan that was invoked.
+
+        Returns:
+            The envelope, or ``None`` when ``envelope_on_success`` is off or verbosity is
+            ``off``.
+        """
+        envelope = plan.envelope() if plan.settings.envelope_on_success else None
+        set_last_envelope(envelope)
+        return envelope
 
 
 def install(
@@ -306,17 +818,21 @@ def install(
     Raises:
         ConfigurationError: If the policies, entities or schema fail to parse.
     """
-    raise NotImplementedError
+    governor = Governor(PolicyEngine(policies, entities, schema=schema), settings)
+    set_governor(governor)
+    _LOGGER.debug("Installed the process-default governor", extra={"entities": len(entities)})
+    return governor
 
 
 def set_governor(governor: Governor | None) -> None:
     """Install ``governor`` as the process default, or clear it with ``None``."""
-    raise NotImplementedError
+    global _GOVERNOR
+    _GOVERNOR = governor
 
 
 def current_governor() -> Governor | None:
     """Return the process-default governor, or ``None`` if none is installed."""
-    raise NotImplementedError
+    return _GOVERNOR
 
 
 def get_governor() -> Governor:
@@ -330,7 +846,12 @@ def get_governor() -> Governor:
             policy is a configuration mistake, and it fails loudly at call time rather than
             quietly allowing.
     """
-    raise NotImplementedError
+    if _GOVERNOR is None:
+        raise ConfigurationError(
+            "No governor is installed; call sentrykit.install(...) or set_governor(...) "
+            "before invoking a protected callable"
+        )
+    return _GOVERNOR
 
 
 @contextmanager
@@ -343,7 +864,12 @@ def use_governor(governor: Governor) -> Iterator[Governor]:
     Yields:
         The governor, for convenience.
     """
-    raise NotImplementedError
+    previous = current_governor()
+    set_governor(governor)
+    try:
+        yield governor
+    finally:
+        set_governor(previous)
 
 
 def derive_action(fn: Callable[..., object]) -> EntityRef:
@@ -359,7 +885,7 @@ def derive_action(fn: Callable[..., object]) -> EntityRef:
     Returns:
         ``Action::"<module>.<qualname>"``.
     """
-    raise NotImplementedError
+    return EntityRef("Action", _qualified_name(fn))
 
 
 def merge_environment(
@@ -384,4 +910,12 @@ def merge_environment(
     Returns:
         The merged environment, ready for coercion into a Cedar context.
     """
-    raise NotImplementedError
+    environment = dict(ambient)
+    if explicit:
+        environment.update(explicit)
+    environment.setdefault("channel", "internal")
+    environment.setdefault("now", datetime.now(UTC))
+    # Always the *current* proposal: an ``args`` key left over from an enclosing scope would
+    # let a policy decide about the wrong call.
+    environment["args"] = dict(proposed or {})
+    return environment
