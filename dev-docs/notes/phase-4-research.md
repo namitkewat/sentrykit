@@ -335,3 +335,39 @@ its second use is.
 > so both providers and both examples share it, and `governed_meta` unwraps the whole
 > `__wrapped__` chain rather than a single hop (an adapter around a shim around a protected
 > callable is two hops on the Pydantic-AI side). Recorded as ADR-019.
+
+## 11. A refusal can leave the tool body after all — `MCPError` is the one exception mcp re-raises
+
+Integration turned up a correction to §3, and then a way around it.
+
+**The correction.** §3 measured what happens to an exception raised *in the middleware*. What
+happens to one raised *inside a tool* is worse: `Tool.run` wraps anything the body raised in a
+`ToolError`, and `MCPServer._handle_call_tool` turns that into
+`CallToolResult(is_error=True)` with `structured_content=None`. So a `SentrykitError` raised by
+`@protect` **never reaches a `ServerMiddleware` at all** — a middleware that only wrapped
+`call_next` in a `try` would catch nothing, and every refusal would arrive as the string
+`"Error executing tool …"` with no envelope.
+
+**The way around it.** `_handle_call_tool` catches everything *except* `MCPError`, and the
+`ServerMiddleware` contract says as much: "a request-side failure reaches the middleware as a
+raised `MCPError`". Measured with an `MCPError` subclass carrying a payload:
+
+```
+refusing_tool -> isError: True
+                 structured: {'detail': 'denied', '_authz': {'decision': 'deny', 'x': 7}}
+   middleware caught the smuggled refusal: {...}          <- it propagated
+plain_raise   -> isError: True | structured: None         <- contrast: swallowed, as above
+```
+
+> **Consequence.** A refusal does **not** need to be decided ahead of the call in order to be
+> rendered. The shim already sitting between mcp and the protected callable (§10) can catch the
+> `SentrykitError`, re-raise it inside an `MCPError`, and let the middleware unwrap and render
+> it. That matters because deciding ahead of the call means deciding **twice** — measured: one
+> allowed dispatch wrote **two** `allowed` audit records, one per plan. For a library whose
+> positioning is audit-first, and whose Phase 5 ships period aggregation over that log, an
+> allow counted twice makes every aggregate wrong.
+>
+> With §10's shim and this, the MCP dispatch path collapses to: one plan, one audit record, an
+> envelope built from the caller's *real* proposal (so `defaults_applied` is honest rather than
+> reconstructed), and `is_error=True` preserved. The argument write-back and the envelope
+> restoration that a pre-flight forces both become unnecessary.

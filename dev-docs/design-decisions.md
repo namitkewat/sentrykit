@@ -240,3 +240,35 @@ and avoids a broken environment for anyone who reads the module name as an instr
 **Alternatives.** Rename everything to `mcpserver` (churns the DSN and the extra for no
 behavioural gain, and the ecosystem still says "FastMCP"). Support both packages (the
 standalone one does not import; there is nothing to support).
+
+## ADR-019 — An agent tool advertises omittable arguments, and carries its refusal out in an `MCPError`
+**Decision.** A protected callable is registered as an agent tool through a shim
+(`integrations/tools.proposable`) that re-declares the arguments policy supplies as optional,
+and — on MCP — through a translator that re-raises a refusal inside an `MCPError`. Both agent
+integrations expose one registration helper, `governed_tool`, that composes them.
+**Why.** Two framework behaviours, each measured on both boundaries
+(`notes/phase-4-research.md` §10, §11), otherwise break a promise the library makes.
+*First*, both frameworks validate the caller's proposal against the tool's advertised JSON
+schema **before** dispatch, so an argument marked `required` can never be omitted and can
+therefore never be filled from the principal's defaults. Per-principal default injection —
+one of the three things sentrykit does — would be unreachable from an agent, demonstrable only
+by calling the protected function directly and bypassing the boundary the integration exists
+to govern. The shim is the same move the FastAPI example already makes one layer out: declare
+the parameter optional at the boundary and forward only what was actually supplied. An absent
+argument has to be *expressible*, and on an agent boundary the tool signature is the boundary.
+*Second*, mcp's `Tool.run` wraps anything a tool body raises in a `ToolError`, which
+`_handle_call_tool` turns into a result with **no structured content** — so a `SentrykitError`
+never reaches a `ServerMiddleware` and the `_authz` envelope is lost. `MCPError` is the one
+exception it re-raises, so the refusal travels inside one and the middleware renders it.
+**Alternatives.** Deciding the call *before* dispatch, in the middleware, and writing the
+planned arguments back over the request's. It works and was built first, but it decides every
+allowed call twice: measured, one allowed dispatch wrote **two** `allowed` audit records. For a
+library positioned audit-first, whose reporting aggregates that log over a period, an allow
+counted twice makes every aggregate wrong. It also forces the caller-facing envelope to be
+*reconstructed* from the pre-flight plan rather than reported from the real one, so
+`defaults_applied` describes a decision the decorator did not make. Re-deciding *after*
+dispatch instead trades the same defect onto denials.
+**Consequence.** A protected MCP tool **must** be registered through `governed_tool`; a plain
+`@server.tool()` over `@protect` still has its refusal swallowed. That sharp edge is stated in
+the module docstring and in `docs/agents.md` rather than engineered away, because the
+alternative is monkey-patching another library's dispatch.
