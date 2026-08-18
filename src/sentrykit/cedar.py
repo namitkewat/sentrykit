@@ -44,8 +44,11 @@ __all__ = [
     "EntityRef",
     "PolicyAnnotation",
     "PolicyEngine",
+    "PolicyValidation",
+    "PolicyValidationError",
     "coerce_value",
     "policy_annotations",
+    "validate_policies",
 ]
 
 _LOGGER: Final = logging.getLogger("sentrykit.cedar")
@@ -566,3 +569,85 @@ def policy_annotations(policies: str) -> tuple[PolicyAnnotation, ...]:
             )
         )
     return tuple(read)
+
+
+@dataclass(frozen=True, slots=True)
+class PolicyValidationError:
+    """One complaint Cedar's validator made about a policy set.
+
+    Attributes:
+        cedar_id: The generated id of the offending policy, or empty when the failure was a
+            parse error and no policy could be identified.
+        policy_id: That policy's ``@id`` annotation where it declares one, else
+            :attr:`cedar_id`, else ``"<parse>"`` — so a report names policies the way the
+            author does.
+        message: Cedar's own wording.
+    """
+
+    cedar_id: str
+    policy_id: str
+    message: str
+
+
+@dataclass(frozen=True, slots=True)
+class PolicyValidation:
+    """The outcome of validating a policy set against a schema.
+
+    Attributes:
+        passed: Whether Cedar found nothing to complain about.
+        errors: Every complaint, in the order Cedar reported them.
+    """
+
+    passed: bool
+    errors: tuple[PolicyValidationError, ...] = ()
+
+    def grouped(self) -> dict[str, list[str]]:
+        """Group the messages by the policy they belong to.
+
+        One mistake routinely produces several errors — an unrecognized action yields both
+        "unrecognized action" and "unable to find an applicable action" — so error count is
+        not policy count, and a flat list reads as worse than the problem is.
+        """
+        grouped: dict[str, list[str]] = {}
+        for error in self.errors:
+            grouped.setdefault(error.policy_id, []).append(error.message)
+        return grouped
+
+    def describe(self) -> str:
+        """Render every complaint as one line, policies in sorted order."""
+        return "; ".join(
+            f"{policy_id}: {' / '.join(messages)}"
+            for policy_id, messages in sorted(self.grouped().items())
+        )
+
+
+def validate_policies(policies: str, schema: str) -> PolicyValidation:
+    """Type-check ``policies`` against ``schema``, normalizing Cedar's result.
+
+    Cedar's validator **never raises**: an unparseable policy, an unparseable schema and a
+    genuine type error all come back as entries in ``errors`` with ``validation_passed``
+    false. Branching on the flag is the only way to notice, and getting that wrong means a
+    policy set that cannot possibly permit anything sails through wiring and denies every
+    request at runtime instead.
+
+    Args:
+        policies: Cedar policy text.
+        schema: Cedar schema text. The JSON schema form is not accepted — ``Schema.from_str``
+            rejects it — so this is the ``.cedarschema`` surface syntax.
+
+    Returns:
+        The normalized outcome. Callers decide what a failure means; this function does not
+        raise for one, because "the policy set is invalid" is a finding for the phase 5 CLI
+        and a :class:`~sentrykit.errors.ConfigurationError` for a policy source.
+    """
+    result = cedarpy.validate_policies(policies, schema)
+    declared = dict(result.id_annotations_by_policy_id or {})
+    errors = tuple(
+        PolicyValidationError(
+            cedar_id=str(error.policy_id or ""),
+            policy_id=str(declared.get(str(error.policy_id or "")) or error.policy_id or "<parse>"),
+            message=str(error.error),
+        )
+        for error in result.errors
+    )
+    return PolicyValidation(passed=bool(result.validation_passed), errors=errors)

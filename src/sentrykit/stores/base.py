@@ -23,14 +23,15 @@ This module holds only contracts and value objects. It deliberately imports no b
 
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Final, Literal, Protocol, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from sentrykit.cedar import Entity, EntityRef, PolicyEngine
+from sentrykit.cedar import Entity, EntityRef, PolicyAnnotation, PolicyEngine, policy_annotations
 from sentrykit.constraints import ArgumentConstraint
 from sentrykit.context import Principal
 
@@ -110,8 +111,25 @@ class PolicyProvenance:
     obligations: tuple[str, ...] = ()
 
     def as_record(self) -> dict[str, object]:
-        """Render for the audit record's ``provenance`` list."""
-        raise NotImplementedError
+        """Render for the audit record's ``provenance`` list.
+
+        The declaring annotations are carried through when the policy has any, because
+        ``@risk("high")`` on the policy that refused a call is exactly the kind of thing an
+        auditor reads the provenance for. Empty collections are omitted so a record stays
+        readable.
+        """
+        rendered: dict[str, object] = {
+            "cedar_id": self.cedar_id,
+            "policy_id": self.policy_id,
+            "effect": self.effect,
+            "source": self.source,
+            "origin": self.origin,
+        }
+        if self.obligations:
+            rendered["obligations"] = list(self.obligations)
+        if self.annotations:
+            rendered["annotations"] = dict(self.annotations)
+        return rendered
 
 
 @dataclass(frozen=True, slots=True)
@@ -149,7 +167,32 @@ class PolicyBundle:
         Raises:
             ConfigurationError: If any of the three fail to parse.
         """
-        raise NotImplementedError
+        return PolicyEngine(self.policies, self.entities, schema=self.schema)
+
+    def _index(self) -> dict[str, PolicyProvenance]:
+        """Key every provenance entry by each name a decision could report it under.
+
+        Three keys per entry, in precedence order: the (possibly namespaced)
+        :attr:`~PolicyProvenance.policy_id`, Cedar's generated id, and — the awkward one —
+        the *raw* ``@id`` annotation. The third is needed because namespacing happens on our
+        side of Cedar: a bundle loaded with ``namespace="hr"`` records ``hr/btg-read`` while
+        Cedar keeps reporting ``btg-read``, and without the raw key the join would silently
+        find nothing exactly when a composite is in play.
+
+        Earlier entries win, so a duplicate ``@id`` across two sources resolves to the first
+        one rather than raising — the namespaced key already distinguishes them for anyone
+        who asks precisely.
+        """
+        index: dict[str, PolicyProvenance] = {}
+        for entry in self.provenance:
+            index.setdefault(entry.policy_id, entry)
+        for entry in self.provenance:
+            index.setdefault(entry.cedar_id, entry)
+        for entry in self.provenance:
+            declared = entry.annotations.get("id")
+            if isinstance(declared, str) and declared:
+                index.setdefault(declared, entry)
+        return index
 
     def provenance_for(self, determining: Sequence[str]) -> tuple[PolicyProvenance, ...]:
         """Resolve the provenance of the policies that decided a request.
@@ -163,7 +206,11 @@ class PolicyBundle:
             The matching entries, in the order given. Names with no match are skipped rather
             than raising: an audit record must never fail the decision it describes.
         """
-        raise NotImplementedError
+        if not determining or not self.provenance:
+            return ()
+        index = self._index()
+        resolved = [index[name] for name in determining if name in index]
+        return tuple(resolved)
 
     def obligations_for(self, determining: Sequence[str], *, allowed: bool) -> tuple[str, ...]:
         """Collect the obligations attached to the policies that decided a request.
@@ -180,7 +227,16 @@ class PolicyBundle:
         Returns:
             The obligations, de-duplicated, first-seen order preserved.
         """
-        raise NotImplementedError
+        wanted: PolicyEffect = "permit" if allowed else "forbid"
+        # A dict deduplicates while preserving first-seen order, which matters because
+        # obligations are discharged in the order they are reported.
+        collected: dict[str, None] = {}
+        for entry in self.provenance_for(determining):
+            if entry.effect != wanted:
+                continue
+            for obligation in entry.obligations:
+                collected.setdefault(obligation, None)
+        return tuple(collected)
 
     @classmethod
     def from_text(
@@ -211,7 +267,21 @@ class PolicyBundle:
         Raises:
             ConfigurationError: If the policy text does not parse.
         """
-        raise NotImplementedError
+        # One parse of one string produces both halves: the annotation index is keyed by
+        # Cedar's *positional* generated ids, so deriving it from anything other than the
+        # exact text the engine will be built from silently mis-joins every decision.
+        provenance = tuple(
+            _provenance_of(annotation, source=source, origin=origin, namespace=namespace)
+            for annotation in policy_annotations(policies)
+        )
+        return cls(
+            policies=policies,
+            schema=schema,
+            entities=tuple(entities),
+            provenance=provenance,
+            bundle_hash=_bundle_hash(policies, schema),
+            source=source,
+        )
 
 
 @runtime_checkable
@@ -316,12 +386,45 @@ class GrantRecord(BaseModel):
     revoked_reason: str | None = None
 
     def is_active(self, now: datetime) -> bool:
-        """Whether this grant applies at ``now`` — neither revoked nor expired."""
-        raise NotImplementedError
+        """Whether this grant applies at ``now`` — neither revoked nor expired.
+
+        A naive timestamp on either side is read as UTC rather than as local time, for the
+        same reason :func:`~sentrykit.cedar.coerce_value` does it: whether a grant has
+        expired must not depend on the timezone of the host that happened to ask.
+        """
+        if self.revoked_at is not None:
+            return False
+        expires_at = self.spec.expires_at
+        return expires_at is None or _as_utc(expires_at) > _as_utc(now)
 
     def as_record(self) -> dict[str, object]:
-        """Render for an audit mutation record."""
-        raise NotImplementedError
+        """Render for an audit mutation record.
+
+        Rendered by hand rather than dumped, because two fields need shaping: the principal
+        is written as its Cedar uid (a bare ``model_dump`` would emit the underlying
+        two-tuple), and a constraint is *described* rather than dumped, so a per-principal
+        default value cannot leak into the log through the back door.
+        """
+        spec = self.spec
+        rendered: dict[str, object] = {
+            "id": self.id,
+            "principal": str(spec.principal),
+            "kind": spec.kind,
+            "subject": spec.subject,
+            "action": spec.action,
+            "granted_at": self.granted_at.isoformat(),
+            "granted_by": spec.granted_by,
+            "reason": spec.reason,
+            "expires_at": spec.expires_at.isoformat() if spec.expires_at is not None else None,
+            "revoked_at": self.revoked_at.isoformat() if self.revoked_at is not None else None,
+            "revoked_by": self.revoked_by,
+            "revoked_reason": self.revoked_reason,
+        }
+        if spec.value is not None:
+            rendered["value"] = spec.value
+        if spec.constraint is not None:
+            rendered["constraint"] = spec.constraint.describe()
+        return rendered
 
 
 @runtime_checkable
@@ -469,8 +572,24 @@ class AuditWindow(BaseModel):
     limit: int | None = Field(default=None, ge=1)
 
     def matches(self, record: AuthzAuditRecord) -> bool:
-        """Whether ``record`` falls inside this window, ignoring :attr:`limit`."""
-        raise NotImplementedError
+        """Whether ``record`` falls inside this window, ignoring :attr:`limit`.
+
+        The time bounds are half-open — ``start`` inclusive, ``end`` exclusive — so adjacent
+        windows tile a log without double-counting a record on the boundary.
+        """
+        if self.start is not None and _as_utc(record.timestamp) < _as_utc(self.start):
+            return False
+        if self.end is not None and _as_utc(record.timestamp) >= _as_utc(self.end):
+            return False
+        if self.principal is not None and record.principal.uid != self.principal:
+            return False
+        if self.action is not None and not _names_action(self.action, record.action):
+            return False
+        if self.resource is not None and record.resource != self.resource:
+            return False
+        if self.decision is not None and record.decision != self.decision:
+            return False
+        return not (self.kind is not None and record.kind != self.kind)
 
 
 @runtime_checkable
@@ -588,3 +707,81 @@ class ContextProvider(Protocol):
             effective verbosity allows.
         """
         ...
+
+
+# --- helpers -----------------------------------------------------------------------------
+
+
+def _as_utc(moment: datetime) -> datetime:
+    """Read a naive timestamp as UTC so two timestamps are always comparable.
+
+    Mixing an aware and a naive ``datetime`` is a ``TypeError`` in Python, and the places
+    that compare them here — grant expiry, an audit window — must not be able to raise from
+    a caller passing ``datetime.now()`` instead of ``datetime.now(UTC)``.
+    """
+    return moment if moment.tzinfo is not None else moment.replace(tzinfo=UTC)
+
+
+def _names_action(wanted: str, actual: str) -> bool:
+    """Whether ``wanted`` names ``actual``, as either a full uid or a bare action id.
+
+    Compared textually rather than through :meth:`~sentrykit.cedar.EntityRef.parse`, because
+    a mutation record carries an empty action and an unparseable name must read as "does not
+    match" rather than as a configuration fault raised from inside a report query.
+    """
+    if wanted == actual:
+        return True
+    _, separator, quoted = actual.partition('::"')
+    return bool(separator) and quoted.endswith('"') and quoted[:-1] == wanted
+
+
+def _bundle_hash(policies: str, schema: str | None) -> str:
+    """Digest the policy text and schema that a bundle pins.
+
+    Mirrors :func:`sentrykit.cedar.PolicyEngine.policy_set_hash`'s construction — the policy
+    bytes, a separator, then the schema bytes — so a bundle's hash and the hash recorded on a
+    decision made against it agree. Computed here rather than imported, because a digest
+    format the audit trail depends on should not be a private detail of another module.
+    """
+    digest = hashlib.sha256()
+    digest.update(policies.encode("utf-8"))
+    digest.update(b"\x00")
+    digest.update((schema or "").encode("utf-8"))
+    return digest.hexdigest()
+
+
+def _provenance_of(
+    annotation: PolicyAnnotation,
+    *,
+    source: str,
+    origin: str,
+    namespace: str | None,
+) -> PolicyProvenance:
+    """Turn one parsed policy's annotations into a provenance entry.
+
+    Args:
+        annotation: One entry from :func:`~sentrykit.cedar.policy_annotations`.
+        source: Name of the contributing source.
+        origin: Artifact-level provenance for this policy.
+        namespace: Prefix for the declared id, per :meth:`PolicyBundle.from_text`.
+
+    Returns:
+        The entry, with the ``@obligations`` annotation split on commas and stripped. An
+        empty segment is dropped, so a trailing comma is not an obligation named ``""``.
+    """
+    declared = annotation.declared_id
+    declared_obligations = annotation.annotation(OBLIGATIONS_ANNOTATION)
+    obligations = (
+        tuple(part.strip() for part in declared_obligations.split(",") if part.strip())
+        if declared_obligations
+        else ()
+    )
+    return PolicyProvenance(
+        cedar_id=annotation.cedar_id,
+        policy_id=f"{namespace}/{declared}" if namespace else declared,
+        effect=annotation.effect,
+        source=source,
+        origin=origin,
+        annotations=dict(annotation.annotations),
+        obligations=obligations,
+    )
