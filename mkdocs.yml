@@ -1,0 +1,23 @@
+site_name: sentrykit
+site_description: Lightweight, framework-agnostic authorization for Python, built on AWS Cedar.
+theme:
+  name: material
+  features:
+    - navigation.sections
+    - content.code.copy
+plugins:
+  - search
+  - mkdocstrings:
+      handlers:
+        python:
+          options:
+            docstring_style: google
+nav:
+  - Home: index.md
+  - Quickstart: quickstart.md
+  - Concepts: concepts.md
+  - Web frameworks: web-frameworks.md
+  - Agent tooling: agents.md
+  - Policies & patterns: policies.md
+  - Audit & compliance: audit.md
+  - Plugins & extensions: plugins.md

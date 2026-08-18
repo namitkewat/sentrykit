@@ -1,0 +1,117 @@
+[build-system]
+requires = ["hatchling>=1.24"]
+build-backend = "hatchling.build"
+
+[project]
+name = "sentrykit"
+version = "0.0.0"
+description = "Lightweight, framework-agnostic authorization for Python web frameworks and agent tooling, built on AWS Cedar."
+readme = "README.md"
+requires-python = ">=3.11"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+authors = [{ name = "Your Name" }]
+keywords = [
+  "authorization", "authz", "cedar", "access-control", "rbac", "abac", "rebac",
+  "fastapi", "flask", "mcp", "fastmcp", "pydantic-ai", "agents", "llm", "policy",
+]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: Apache Software License",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Security",
+  "Typing :: Typed",
+]
+dependencies = [
+  "cedarpy>=4.1",
+  "pydantic>=2.7",
+  "pydantic-settings>=2.2",
+  "typing-extensions>=4.10",
+]
+
+[project.optional-dependencies]
+fastapi = ["fastapi>=0.110", "starlette>=0.37"]
+flask = ["flask>=3.0"]
+fastmcp = ["mcp>=2,<3"]
+pydantic-ai = ["pydantic-ai"]
+web = ["sentrykit[fastapi,flask]"]
+agents = ["sentrykit[fastmcp,pydantic-ai]"]
+all = ["sentrykit[web,agents]"]
+
+[project.scripts]
+sentrykit = "sentrykit.cli:main"
+
+# --- Plugin discovery groups ------------------------------------------------
+# Third parties publish a `sentrykit-<name>` package registering here; built-ins
+# register the same way. Format: name = "module:Class".
+# Register each entry point WHEN its backend is built (do not leave dangling refs).
+[project.entry-points."sentrykit.policy_sources"]
+# file = "sentrykit.stores.filesystem:FilesystemPolicySource"   # phase 2
+
+[project.entry-points."sentrykit.grant_stores"]
+# memory = "sentrykit.stores.memory:InMemoryGrantStore"          # phase 2
+
+[project.entry-points."sentrykit.audit_sinks"]
+# jsonl = "sentrykit.stores.jsonl:JsonlAuditSink"                # phase 2
+
+[project.entry-points."sentrykit.context_providers"]
+# fastapi = "sentrykit.integrations.fastapi:FastAPIProvider"     # phase 3
+# flask   = "sentrykit.integrations.flask:FlaskProvider"         # phase 3
+
+[project.urls]
+Homepage = "https://github.com/yourname/sentrykit"
+Documentation = "https://github.com/yourname/sentrykit#readme"
+Source = "https://github.com/yourname/sentrykit"
+Changelog = "https://github.com/yourname/sentrykit/blob/main/CHANGELOG.md"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/sentrykit"]
+
+# --- Ruff -------------------------------------------------------------------
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src", "tests", "examples"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "ASYNC", "S", "RET", "C4", "PTH", "TID", "RUF"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S", "B011"]
+"examples/**" = ["S", "T201"]
+
+# --- mypy -------------------------------------------------------------------
+[tool.mypy]
+python_version = "3.11"
+strict = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+files = ["src/sentrykit"]
+
+[[tool.mypy.overrides]]
+module = ["cedarpy.*", "mcp.*", "pydantic_ai.*"]
+ignore_missing_imports = true
+
+# --- pytest -----------------------------------------------------------------
+[tool.pytest.ini_options]
+minversion = "8.0"
+addopts = "-ra --strict-markers --strict-config"
+testpaths = ["tests"]
+asyncio_mode = "auto"
+markers = [
+  "unit: fast, isolated, no network or real frameworks",
+  "integration: exercises a real framework/agent adapter",
+  "scenario: end-to-end policy-pattern scenarios",
+]
+
+# --- coverage ---------------------------------------------------------------
+[tool.coverage.run]
+source = ["sentrykit"]
+branch = true
+
+[tool.coverage.report]
+show_missing = true
+fail_under = 85

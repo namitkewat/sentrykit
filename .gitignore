@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+*.so
+
+# Testing / coverage
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# pixi
+.pixi/
+# keep pixi.lock committed for reproducible dev envs
+
+# Docs build
+site/
+
+# Env / editors
+.venv/
+venv/
+.env
+.idea/
+.vscode/
+.DS_Store
+
+# sentrykit local artifacts (never commit real audit logs or secrets)
+*.audit.jsonl
+secrets.local.*
