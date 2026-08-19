@@ -146,16 +146,19 @@ audit-report = "python -m sentrykit.cli audit-report --from 2026-01-01 --to 2026
 # ---- docs ------------------------------------------------------------------
 # Source is `docs/`; every output lands under `dist/docs/` so the release workflow can
 # attach assets by a path that does not move. See dev-docs/documentation-standards.md.
+# `-d` puts each builder's doctree cache outside its output directory: Sphinx defaults to
+# `<out>/.doctrees`, which would put 8 MB of pickled parse state inside the HTML tree the
+# release zips and hands to a reader.
 # `-W` on the HTML build only: it is the one that gates, and it gates in all four
 # environments because `conf.py` mocks whichever framework packages are absent.
-docs-html = "sphinx-build -W -b html docs dist/docs/html"
+docs-html = "sphinx-build -W -b html -d dist/docs/.doctrees/html docs dist/docs/html"
 # Pure-Python PDF (rinohtype). Deliberately not part of `check`: it is the slowest step by a
 # wide margin, and a PDF that will not render blocks a release rather than a commit.
-docs-pdf = "sphinx-build -b rinoh docs dist/docs/pdf"
+docs-pdf = "sphinx-build -b rinoh -d dist/docs/.doctrees/pdf docs dist/docs/pdf"
 # Intermediate: the resolved doctree rendered to Markdown, which is what `docs-llms` reads.
 # No `-W` -- the Markdown writer warns on nodes it has no spelling for, and none of them
 # affect the text.
-docs-markdown = "sphinx-build -b markdown docs dist/docs/markdown"
+docs-markdown = "sphinx-build -b markdown -d dist/docs/.doctrees/markdown docs dist/docs/markdown"
 docs-llms = { cmd = "python scripts/build_llms_txt.py", depends-on = ["docs-markdown"] }
 docs = { depends-on = ["docs-html", "docs-pdf", "docs-llms"] }
 docs-serve = "sphinx-autobuild docs dist/docs/html"

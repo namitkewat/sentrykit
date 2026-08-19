@@ -21,6 +21,29 @@ relationships are Cedar's job rather than your application's.
 | **Plugins everywhere** | Policy sources, grant stores, audit sinks and framework providers are all [Protocol + DSN + entry point](plugins.md), so a third-party backend is indistinguishable from a built-in. |
 
 **Status.** Everything above is implemented and tested. This is a pre-1.0 library: the public
-API is typed, documented and covered, but it has not yet been through a release cycle, and
-the durable WORM audit backends (S3 Object Lock, Iceberg) described in
-`dev-docs/architecture.md` are a Protocol away rather than shipped.
+API is typed, documented and covered, but it has not yet been through a release cycle. The
+audit sinks that ship write to memory and to an append-only JSONL file; a durable write-once
+backend (S3 Object Lock, an Iceberg table) is a `Protocol` away rather than shipped, which
+matters because until you wire one up the hash chain *detects* tampering rather than
+preventing it. [Audit & compliance](audit.md) covers the chain, and
+[Plugins & extensions](plugins.md) covers writing the sink.
+
+```{toctree}
+:maxdepth: 2
+:caption: Guide
+
+quickstart
+concepts
+web-frameworks
+agents
+policies
+audit
+plugins
+```
+
+```{toctree}
+:maxdepth: 2
+:caption: Reference
+
+api/index
+```
