@@ -269,7 +269,8 @@ See [docs/policies.md](docs/policies.md).
 ```bash
 sentrykit policy validate ./policies
 sentrykit grant 'User::"ana"' --role oncall --expires 2026-09-01 \
-    --store jsonfile://./var/grants.json --as 'User::"root"'
+    --store jsonfile://./var/grants.json --policy file://./policies \
+    --as 'User::"root"'
 sentrykit audit-report --from 2026-01-01 --to 2026-12-31 --out audit.md
 ```
 
@@ -282,8 +283,10 @@ request for the life of the process.
 decided by the same governor the application uses, so a policy governs who may administer
 grants *and which grants they may make* — the spec is built from the policy-processed
 arguments, not from `argv`. An operator entitled only to `oncall` who asks for `--role admin`
-stores `oncall`, and the audit log says so. An allowed mutation leaves two records, the
-decision and the mutation; a refused one leaves the refusal and an untouched store.
+stores `oncall`, and the audit log says so. `--policy` is required on both, with no default:
+the shipped pack ships no permit for the admin actions, so defaulting to it would turn "you
+named no policy source" into "you are not entitled". An allowed mutation leaves two records,
+the decision and the mutation; a refused one leaves the refusal and an untouched store.
 
 `audit-report` makes audit-first literal: the yearly report is a query. It aggregates by
 **outcome** rather than allow/deny, because allow/deny folds six materially different refusals
@@ -324,6 +327,20 @@ git repository first — on a fresh clone it already is.
 
 The user docs cover [policies and grants](docs/policies.md),
 [audit and masking](docs/audit.md), and [writing a plugin](docs/plugins.md).
+
+`pixi run docs` builds them into HTML, a PDF, and `llms.txt` / `llms-full.txt` — the four
+documentation artifacts every release attaches, since the repository is private and there is
+no site to host.
+
+## Security
+
+[SECURITY.md](SECURITY.md) has the disclosure contact and, more usefully, an explicit account
+of **what sentrykit defends and what it does not**. The short version: it authorizes the
+action before the side effect and records a tamper-evident trail of every decision. It does
+not sandbox a tool body — once a call is authorized, the function runs with your process's
+privileges — and without a durable write-once sink behind the `AuditSink` protocol it
+*detects* tampering rather than preventing it. It also does not authenticate: `Principal` is
+whatever your context provider establishes, and sentrykit trusts it.
 
 ## License
 

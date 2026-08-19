@@ -363,16 +363,29 @@ is an ordinary Cedar action, it is **governed by the same engine it administers*
 into the same sink.
 
 ```bash
-sentrykit grant 'User::"ana"' --role oncall --expires 2026-09-01     --reason "on-call rotation"     --store jsonfile://./var/grants.json --as 'User::"root"'
+sentrykit grant 'User::"ana"' --role oncall --expires 2026-09-01 \
+    --reason "on-call rotation" \
+    --store jsonfile://./var/grants.json --policy file://./policies \
+    --as 'User::"root"'
 
 sentrykit grants 'User::"ana"' --store jsonfile://./var/grants.json
-sentrykit revoke <grant-id> --reason "shift ended"     --store jsonfile://./var/grants.json --as 'User::"root"'
+
+sentrykit revoke <grant-id> --reason "shift ended" \
+    --store jsonfile://./var/grants.json --policy file://./policies \
+    --as 'User::"root"'
 ```
 
 `--as` names the operator (or set `SENTRYKIT_ACTOR`). They are resolved through the grant
 store like anyone else, so **an operator the store has never heard of is refused** — there is
 no back door, and forgetting to configure the store surfaces immediately rather than as a
 silent hole.
+
+`--policy` is **required** on `grant` and `revoke`, and deliberately has no default. The
+obvious default would be the shipped `pack://`, which contains no permit for the admin
+actions — so every mutation would be refused, and you would read a message about your own
+entitlement when the truth is that no policy source was ever named. A missing `--policy` is a
+usage error instead, before a store or a sink is opened. `sentrykit grants` is read-only and
+ungoverned, so it takes no `--policy`.
 
 Write the policy that permits it, the same way you would for any other action:
 

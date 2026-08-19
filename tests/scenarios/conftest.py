@@ -26,15 +26,7 @@ import pytest
 from sentrykit.audit import GENESIS_HASH, AuthzAuditRecord
 from sentrykit.cedar import Entity
 from sentrykit.engine import Governor, install
-from sentrykit.registry import (
-    DSN,
-    ENTRY_POINT_GROUPS,
-    clear_registry,
-    register_audit_sink,
-    register_grant_store,
-    registrations,
-    remember,
-)
+from sentrykit.registry import DSN, register_audit_sink, register_grant_store
 from sentrykit.stores.base import AuditWindow, GrantStore
 from sentrykit.stores.memory import InMemoryAuditSink, InMemoryGrantStore
 
@@ -274,21 +266,22 @@ class SharedAuditSink(InMemoryAuditSink):
 
 
 @pytest.fixture(autouse=True)
-def shared_backends() -> Iterator[None]:
-    """Register the shared backends for one scenario, then put the registry back as it was.
+def shared_backends(clean_registry: None) -> Iterator[None]:
+    """Register the shared backends for one scenario, and empty their instances around it.
 
     Autouse for the reason the process-state reset in ``tests/conftest.py`` is autouse: the
     plugin registry and a shared instance are both exactly the hidden state the testing
     standards forbid, and undoing them by hand is exactly what a suite eventually forgets.
 
-    Restored the way ``tests/unit/conftest.py`` restores it — snapshot, clear, and
-    :func:`~sentrykit.registry.remember` each entry back — so a shipped backend keeps its
-    ``builtin`` provenance rather than being rediscovered as an entry point.
+    The registry half is ``clean_registry`` in ``tests/conftest.py`` — one snapshot-and-restore
+    shared with the unit suites rather than a second copy here. It runs first on setup and last
+    on teardown, so the registrations below live exactly as long as the scenario does. What is
+    left here is the part only the scenarios have: the shared *instances* behind the DSN, which
+    must be empty at both ends or a scenario would count another scenario's records.
 
     Yields:
         Nothing; the value of this fixture is its teardown.
     """
-    saved = {kind: dict(registrations(kind)) for kind in ENTRY_POINT_GROUPS}
     SharedGrantStore.forget_all()
     SharedAuditSink.forget_all()
     register_grant_store(SCENARIO_SCHEME)(SharedGrantStore)
@@ -296,10 +289,6 @@ def shared_backends() -> Iterator[None]:
     try:
         yield
     finally:
-        clear_registry()
-        for plugins in saved.values():
-            for plugin in plugins.values():
-                remember(plugin)
         SharedGrantStore.forget_all()
         SharedAuditSink.forget_all()
 

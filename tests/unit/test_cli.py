@@ -834,12 +834,37 @@ def test_the_parser_can_be_inspected_without_running_anything() -> None:
 def test_the_admin_resource_is_the_one_both_commands_are_decided_against() -> None:
     parser = build_parser()
 
-    grant = parser.parse_args(["grant", str(ANA), "--role", "x", "--store", "memory://"])
-    revoke = parser.parse_args(["revoke", "abc", "--store", "memory://"])
+    grant = parser.parse_args(
+        ["grant", str(ANA), "--role", "x", "--store", "memory://", "--policy", "file://./p"]
+    )
+    revoke = parser.parse_args(["revoke", "abc", "--store", "memory://", "--policy", "file://./p"])
 
-    assert grant.policy == "pack://"
-    assert revoke.policy == "pack://"
+    assert grant.policy == "file://./p"
+    assert revoke.policy == "file://./p"
     assert ADMIN_RESOURCE == 'Resource::"admin.grants"'
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["grant", str(ANA), "--role", "x", "--store", "memory://"],
+        ["revoke", "abc", "--store", "memory://"],
+    ],
+    ids=["grant", "revoke"],
+)
+def test_omitting_the_policy_source_is_a_usage_error(argv: list[str]) -> None:
+    """A missing ``--policy`` must fail as usage, not as a refusal.
+
+    There is an obvious default -- the shipped pack -- and taking it would be the wrong
+    kindness: the pack contains no permit for the admin actions, so every mutation would be
+    refused and the operator would read a message about their own entitlement when the truth
+    is that they never named a policy source. Argparse says the useful thing instead, before
+    a store or a sink is even opened.
+    """
+    with pytest.raises(SystemExit) as raised:
+        build_parser().parse_args(argv)
+
+    assert raised.value.code == 2
 
 
 def test_naming_no_command_is_a_usage_error() -> None:

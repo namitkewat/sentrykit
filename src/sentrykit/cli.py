@@ -102,14 +102,6 @@ EXIT_FAILED: Final = 1
 ACTOR_ENV: Final = "SENTRYKIT_ACTOR"
 """Environment variable naming the operator, when ``--as`` is omitted."""
 
-DEFAULT_POLICY_DSN: Final = "pack://"
-"""Policy source ``grant`` and ``revoke`` decide against when ``--policy`` is omitted.
-
-The shipped pack, because the admin actions have to be decidable out of the box: a governor
-with no policy at all denies every mutation, which reads as a broken install rather than as
-the fail-closed default it is.
-"""
-
 DEFAULT_POLICY_GLOB: Final = "*.cedar"
 """Which files ``policy validate`` reads, unless ``--pattern`` says otherwise."""
 
@@ -845,7 +837,7 @@ def _install_from(args: argparse.Namespace) -> tuple[Governor, GrantStore]:
         ConfigurationError: If a DSN names an unknown backend or the store cannot be built.
     """
     store_dsn: str = args.store
-    policy_dsn: str = args.policy or DEFAULT_POLICY_DSN
+    policy_dsn: str = args.policy
     sink_dsn = _resolve_sink_dsn(args.sink)
     governor = install(policy_source=policy_dsn, grant_store=store_dsn, audit_sink=sink_dsn)
     store = governor.grants
@@ -1282,11 +1274,20 @@ def _add_admin_arguments(parser: argparse.ArgumentParser) -> None:
         help=f"Who is acting (default: ${ACTOR_ENV}). Refused when neither is set.",
     )
     parser.add_argument("--store", required=True, metavar="DSN", help="Grant store DSN.")
+    # Required, with no default. The obvious default is the shipped pack, and the shipped
+    # pack deliberately contains no permit for the admin actions -- so defaulting to it makes
+    # every mutation refuse, and the operator reads a refusal about their entitlement when
+    # the truth is that they never named a policy source. A usage error says what is actually
+    # missing, at the only moment it is cheap to fix.
     parser.add_argument(
         "--policy",
-        default=DEFAULT_POLICY_DSN,
+        required=True,
         metavar="DSN",
-        help="Policy source deciding the mutation (default: %(default)s).",
+        help=(
+            "Policy source deciding the mutation, e.g. file://./policies. The shipped "
+            f"pack:// contains no permit for {GRANT_ACTION} / {REVOKE_ACTION}; write one "
+            "and name it here."
+        ),
     )
     parser.add_argument(
         "--sink",

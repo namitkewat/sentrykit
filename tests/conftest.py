@@ -23,6 +23,7 @@ from sentrykit.config import ENV_PREFIX, reset_settings
 from sentrykit.constraints import ArgumentConstraint, ConstraintSet
 from sentrykit.context import Principal, clear_context
 from sentrykit.engine import Governor, set_governor
+from sentrykit.registry import ENTRY_POINT_GROUPS, clear_registry, registrations, remember
 
 SEARCH_ACTION = EntityRef("Action", "tool.search_orders")
 """Permitted for anyone in ``Role::"support"`` on ``Tool::"orders"``."""
@@ -95,6 +96,39 @@ def _reset() -> None:
     reset_settings()
     clear_context()  # also drops the last decision envelope
     set_governor(None)
+
+
+@pytest.fixture
+def clean_registry() -> Iterator[None]:
+    """Let a test register, clear and rebuild the plugin registry without leaking.
+
+    ``register_*`` writes into a process-wide dict, and built-ins reach it by importing their
+    module — so a test that calls :func:`~sentrykit.registry.clear_registry` and then returns
+    would leave every later test without ``jsonl``, because re-importing an already-imported
+    module re-runs no decorator. This snapshots the registrations and puts them back through
+    the public :func:`~sentrykit.registry.remember`, which also preserves each backend's
+    ``builtin`` provenance rather than letting it be rediscovered as an entry point.
+
+    It lives here rather than in a suite's own conftest because three suites need the same
+    guarantee — the registry tests, the CLI tests and the scenarios all register a backend
+    under a scheme that must not outlive them — and three copies of a teardown is three places
+    for one of them to drift into leaking.
+
+    Not autouse: most tests never touch the registry, and a snapshot per test would be work
+    done to protect against something that did not happen. A test that registers anything
+    depends on this explicitly.
+
+    Yields:
+        Nothing; the value of this fixture is its teardown.
+    """
+    saved = {kind: dict(registrations(kind)) for kind in ENTRY_POINT_GROUPS}
+    try:
+        yield
+    finally:
+        clear_registry()
+        for plugins in saved.values():
+            for plugin in plugins.values():
+                remember(plugin)
 
 
 @pytest.fixture
