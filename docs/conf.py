@@ -34,10 +34,12 @@ from pygments.token import (
     String,
     Whitespace,
 )
+from sphinx_markdown_builder.translator import MarkdownTranslator
 
 from sentrykit import __version__
 
 if TYPE_CHECKING:
+    from docutils.nodes import Element
     from sphinx.application import Sphinx
 
 # --- Project metadata -------------------------------------------------------
@@ -415,8 +417,35 @@ def _process_docstring(
     lines[:] = _markdown_to_rst(lines)
 
 
+class SignatureMarkerTranslator(MarkdownTranslator):
+    """The Markdown writer, taught to emit the ``*`` and ``/`` separators in a signature.
+
+    Sphinx renders a keyword-only or positional-only marker as an ``abbreviation`` node — the
+    marker itself, carrying "Keyword-only parameters separator (PEP 3102)" as its tooltip.
+    The Markdown writer has no handler for that node, and its fallback raises ``SkipNode``,
+    which discards the marker *and* the text under it. The parameter it lived in is still
+    emitted, so a signature comes out with an empty slot: ``install(policies=None, ,
+    entities=...)``, and ``protect(*, action=...)`` becomes ``protect(, action=...)``.
+
+    That is a correctness problem rather than a cosmetic one, because these signatures are
+    what ``llms-full.txt`` is read for. A reader cannot tell from ``, ,`` that the arguments
+    after it are keyword-only, and the text is not valid Python either way.
+
+    Visiting the node and departing it without raising lets its child text render normally —
+    so the marker comes from the doctree Sphinx built out of the real signature, and is right
+    by construction rather than by a rule guessing which separator went missing. HTML and the
+    PDF already render both markers; this brings the third builder in line.
+    """
+
+    def visit_abbreviation(self, node: Element) -> None:
+        """Descend into the node, so its text is written like any other."""
+
+    def depart_abbreviation(self, node: Element) -> None:
+        """Leave it, having written nothing of our own."""
+
+
 def setup(app: Sphinx) -> dict[str, Any]:
-    """Register the Cedar lexer and the Markdown-docstring translation.
+    """Register the Cedar lexer, the Markdown-docstring translation and the writer override.
 
     Args:
         app: The Sphinx application.
@@ -429,4 +458,5 @@ def setup(app: Sphinx) -> dict[str, Any]:
     # Priority 400 puts this ahead of napoleon's default 500, so napoleon parses `Args:` and
     # `Returns:` out of text that is already reStructuredText.
     app.connect("autodoc-process-docstring", _process_docstring, priority=400)
+    app.set_translator("markdown", SignatureMarkerTranslator, override=True)
     return {"parallel_read_safe": True, "parallel_write_safe": True}

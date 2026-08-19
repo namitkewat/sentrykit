@@ -111,18 +111,14 @@ noise in a file meant to be read as text."""
 LINK_TEXT: Final = re.compile(r"\[([^\]]+)\]\([^)]*\)")
 """A Markdown link, used to reduce one to its text when building a plain description."""
 
-KEYWORD_ONLY_MARKER: Final = re.compile(r"\(, ")
-"""A parameter list that opens with a comma — a ``*`` the Markdown writer dropped.
+DROPPED_MARKER: Final = re.compile(r"\(, |, , |,\)\s*→")
+"""The scar a dropped ``*`` or ``/`` separator leaves in a signature: an empty parameter slot.
 
-Unambiguous: nothing valid opens a parameter list with a comma, and every occurrence in this
-corpus is in a signature heading."""
-
-POSITIONAL_ONLY_MARKER: Final = re.compile(r",\)(\s*→)")
-"""A parameter list that ends with a comma immediately before the return arrow — a ``/``.
-
-Deliberately narrower than the rule above. A trailing ``,)`` is a one-element tuple far more
-often than a dropped marker (the pack's ``PATTERNS`` default is full of them), so this matches
-only where the comma *terminates the parameter list*, which a tuple literal never does."""
+`docs/conf.py` overrides the Markdown writer so the separators render, which is where this is
+fixed — from the doctree Sphinx built out of the real signature, rather than by a rule here
+guessing which one went missing. This pattern exists to prove that override is still in
+effect: a signature that lost its marker no longer says its arguments are keyword-only, and
+that is exactly the kind of quiet wrongness this file must not ship."""
 
 
 def slug(title: str) -> str:
@@ -138,6 +134,23 @@ def slug(title: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", cleaned.lower()).strip("-")
 
 
+def _signatures_missing_a_marker(text: str) -> list[str]:
+    """Return the signature headings that lost a `*` or `/` separator.
+
+    Only headings are examined: this builder writes every signature as one, and restricting
+    the search there keeps a comma in ordinary prose from reading as a defect.
+
+    Args:
+        text: One rendered page.
+
+    Returns:
+        The offending heading lines, in order. Empty when the page is sound.
+    """
+    return [
+        line for line in text.splitlines() if line.startswith("#") and DROPPED_MARKER.search(line)
+    ]
+
+
 def read_pages() -> dict[str, str]:
     """Read every expected page, failing loudly when one is missing or unexpanded.
 
@@ -148,8 +161,9 @@ def read_pages() -> dict[str, str]:
         Page name to file contents.
 
     Raises:
-        SystemExit: If a page is absent, empty, or does not contain the marker that proves
-            the markdown builder expanded its directives.
+        SystemExit: If a page is absent, empty, carries a signature that lost a `*` or `/`
+            separator, or does not contain the marker that proves the markdown builder
+            expanded its directives.
     """
     if not MARKDOWN_DIR.is_dir():
         sys.exit(f"build_llms_txt: {MARKDOWN_DIR} is missing; run `sphinx-build -b markdown` first")
@@ -164,6 +178,14 @@ def read_pages() -> dict[str, str]:
         text = path.read_text(encoding="utf-8").strip()
         if not text:
             problems.append(f"{page.name}: rendered empty")
+            continue
+        scarred = _signatures_missing_a_marker(text)
+        if scarred:
+            problems.append(
+                f"{page.name}: {len(scarred)} signature(s) lost a `*` or `/` separator, e.g. "
+                f"{scarred[0][:90]!r} — the Markdown writer override in docs/conf.py is not "
+                f"in effect"
+            )
             continue
         if page.must_contain and page.must_contain not in text:
             problems.append(
@@ -232,31 +254,6 @@ def description_of(text: str) -> str:
     return sentence.removesuffix(":") + "." if sentence.endswith(":") else sentence
 
 
-def restore_signature_markers(heading: str) -> str:
-    """Put back the ``*`` and ``/`` the Markdown writer drops from a signature.
-
-    Sphinx renders a keyword-only or positional-only marker as its own node, and the Markdown
-    writer emits nothing for it — so ``protect(*, action=...)`` arrives as
-    ``protect(, action=...)`` and ``protect(fn, /)`` as ``protect(fn,)``. Both are worse than
-    cosmetic in this file: it is meant to be sufficient to implement against, and a signature
-    that lost its marker no longer says the arguments are keyword-only, while one that kept
-    the marker's orphaned comma is not valid Python at all. Eighteen of the shipped
-    signatures are affected, including ``protect`` itself.
-
-    The restored ``*`` is escaped, because the writer escapes every other literal asterisk in
-    the corpus and an unescaped one in a heading that already contains ``*class*`` would pair
-    with it and italicise half the signature.
-
-    Args:
-        heading: One heading line.
-
-    Returns:
-        The heading, with any dropped marker restored.
-    """
-    heading = KEYWORD_ONLY_MARKER.sub(r"(\\*, ", heading)
-    return POSITIONAL_ONLY_MARKER.sub(r", /)\1", heading)
-
-
 def clean(text: str, *, demote: int, anchors: dict[str, str]) -> str:
     """Normalise one rendered page for concatenation.
 
@@ -294,7 +291,7 @@ def clean(text: str, *, demote: int, anchors: dict[str, str]) -> str:
         heading = HEADING.match(line)
         if heading:
             level = min(len(heading.group(1)) + demote, MAX_HEADING_LEVEL)
-            line = "#" * level + restore_signature_markers(heading.group(2))
+            line = "#" * level + heading.group(2)
         line = DOC_LINK.sub(relink, line)
 
         if not line and out and not out[-1]:
