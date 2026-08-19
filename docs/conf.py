@@ -23,6 +23,7 @@ import re
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, ClassVar, Final
 
+from pydantic_settings import BaseSettings
 from pygments.lexer import RegexLexer, words
 from pygments.token import (
     Comment,
@@ -395,6 +396,71 @@ def _markdown_to_rst(lines: list[str]) -> list[str]:
     return out
 
 
+def _settings_signature(model: type[BaseSettings]) -> str:
+    """Build a signature for a settings model out of the fields it declares itself.
+
+    Args:
+        model: The `BaseSettings` subclass being documented.
+
+    Returns:
+        A parenthesised, keyword-only parameter list, in declaration order.
+    """
+    parameters: list[str] = []
+    # `__annotations__` rather than `model_fields`: it holds only what *this* class declares,
+    # in declaration order, spelled the way the source spells it — so an alias stays
+    # `Verbosity` instead of expanding to the Literal behind it. The default comes from
+    # `model_fields`, which is the only place it survives.
+    for name, annotation in model.__annotations__.items():
+        field = model.model_fields.get(name)
+        if field is None:
+            continue
+        parameter = f"{name}: {annotation}"
+        if not field.is_required():
+            parameter += f" = {field.default!r}"
+        parameters.append(parameter)
+    return "(*, " + ", ".join(parameters) + ")" if parameters else "()"
+
+
+def _process_signature(
+    app: Sphinx,
+    what: str,
+    name: str,
+    obj: object,
+    options: object,
+    signature: str | None,
+    return_annotation: str | None,
+) -> tuple[str, str | None] | None:
+    """Replace a settings model's inherited constructor with its own fields.
+
+    A `BaseSettings` subclass inherits its `__init__` from pydantic-settings, and autodoc
+    documents what it finds: twenty-nine `_env_*` and `_cli_*` machinery parameters ahead of
+    the eight this project actually offers, one of them defaulting to a `WindowsPath` — so the
+    reference would bury its own content and leak the platform it was built on. None of those
+    parameters is how the class is used, either: settings arrive from the environment or from
+    `configure()`.
+
+    Rewriting the signature rather than hiding it keeps the field names, their types and their
+    defaults in the one place a reader looks for them, since the fields carry no docstrings of
+    their own and are not rendered as members. What each knob *means* is already prose in the
+    class docstring.
+
+    Args:
+        app: The Sphinx application. Unused.
+        what: The kind of object being documented.
+        name: The object's fully qualified name. Unused.
+        obj: The object itself.
+        options: The directive options. Unused.
+        signature: The signature autodoc derived, which this may replace.
+        return_annotation: The return annotation, passed through untouched.
+
+    Returns:
+        The replacement pair for a settings model, or `None` to leave everything else alone.
+    """
+    if what != "class" or not isinstance(obj, type) or not issubclass(obj, BaseSettings):
+        return None
+    return _settings_signature(obj), return_annotation
+
+
 def _process_docstring(
     app: Sphinx,
     what: str,
@@ -445,7 +511,7 @@ class SignatureMarkerTranslator(MarkdownTranslator):
 
 
 def setup(app: Sphinx) -> dict[str, Any]:
-    """Register the Cedar lexer, the Markdown-docstring translation and the writer override.
+    """Register the lexer, the docstring and signature rewrites, and the writer override.
 
     Args:
         app: The Sphinx application.
@@ -458,5 +524,6 @@ def setup(app: Sphinx) -> dict[str, Any]:
     # Priority 400 puts this ahead of napoleon's default 500, so napoleon parses `Args:` and
     # `Returns:` out of text that is already reStructuredText.
     app.connect("autodoc-process-docstring", _process_docstring, priority=400)
+    app.connect("autodoc-process-signature", _process_signature)
     app.set_translator("markdown", SignatureMarkerTranslator, override=True)
     return {"parallel_read_safe": True, "parallel_write_safe": True}
