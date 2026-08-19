@@ -25,10 +25,11 @@ from sentrykit.registry import (
     clear_registry,
     parse_dsn,
     register_audit_sink,
+    register_policy_source,
     registrations,
     resolve,
 )
-from sentrykit.stores.base import AuditWindow
+from sentrykit.stores.base import AuditWindow, PolicyBundle
 from sentrykit.stores.composite import CompositeAuditSink
 from sentrykit.stores.filesystem import FilesystemPolicySource
 from sentrykit.stores.jsonl import JsonlAuditSink
@@ -266,6 +267,52 @@ def test_a_third_party_sink_registered_in_process_is_routed_like_a_built_in(
     assert isinstance(built, ProbeSink)
     assert built.dsn.target == "somewhere"
     assert built.dsn.option("depth") == "2"
+
+
+@pytest.mark.unit
+def test_a_third_party_policy_source_registered_in_process_is_routed_like_a_built_in(
+    clean_registry: None,
+) -> None:
+    """The same claim as the sink above, for the one kind whose backends all ship with us.
+
+    Policy sources are the kind a host is most likely to add — a bundle in object storage, a
+    config service — and the only kind for which every registered implementation is currently
+    ours. That makes it the kind where a break in the registration path would go unnoticed
+    longest, which is why the DSN is driven all the way through to a loaded bundle rather than
+    stopping at the type check.
+    """
+
+    @register_policy_source("probe")
+    class ProbeSource:
+        """A policy source that exists only for this test, registered the built-in way."""
+
+        def __init__(self, dsn: DSN) -> None:
+            self.dsn = dsn
+
+        @property
+        def name(self) -> str:
+            return "probe"
+
+        @classmethod
+        def from_dsn(cls, dsn: DSN) -> ProbeSource:
+            return cls(dsn)
+
+        def load(self) -> PolicyBundle:
+            return PolicyBundle.from_text(POLICY, source=self.name)
+
+        def current_hash(self) -> str:
+            return self.load().bundle_hash
+
+    assert "probe" in available("policy_source")
+
+    built = build_policy_source("probe://anywhere?depth=2")
+
+    assert isinstance(built, ProbeSource)
+    assert built.dsn.target == "anywhere"
+    assert built.dsn.option("depth") == "2"
+    # Driven through to a bundle: a source that resolves but cannot load is a backend that
+    # fails at the first decision rather than at wiring time.
+    assert built.load().bundle_hash == built.current_hash()
 
 
 @pytest.mark.unit

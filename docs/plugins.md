@@ -148,6 +148,41 @@ class OurDatabaseSink:
 In-process registrations win over entry points, so this also overrides a shipped backend
 without uninstalling the package that provides it.
 
+Every kind registers the same way. A policy source is the one hosts add most often — a bundle
+in object storage, a config service — and it needs three members: a `name` to namespace policy
+ids with, a `load()` returning a `PolicyBundle`, and a `current_hash()` cheap enough to poll:
+
+```python
+from sentrykit import register_policy_source
+from sentrykit.stores.base import PolicyBundle
+
+
+@register_policy_source("ourbundle")
+class OurBundleSource:
+    def __init__(self, dsn):
+        self.dsn = dsn
+
+    @property
+    def name(self) -> str:
+        return "ourbundle"
+
+    @classmethod
+    def from_dsn(cls, dsn):
+        return cls(dsn)
+
+    def load(self) -> PolicyBundle:
+        text = fetch(self.dsn.target)  # your storage
+        return PolicyBundle.from_text(text, source=self.name)
+
+    def current_hash(self) -> str:
+        return self.load().bundle_hash
+```
+
+`install(policy_source="ourbundle://prod")` now resolves it, and
+`install(policy_source=["pack://", "ourbundle://prod"])` unions it with the shipped pack.
+Source order cannot change a decision — an override is a Cedar `forbid`, and forbid always
+wins — so the names exist to namespace policy ids, not to establish precedence.
+
 ## Inspecting what is installed
 
 ```python

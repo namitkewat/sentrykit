@@ -27,7 +27,15 @@ from sentrykit import (
     install,
     protect,
 )
-from sentrykit.cli import EXIT_OK, build_report, main, render_markdown
+from sentrykit.cli import (
+    ADMIN_RESOURCE,
+    EXIT_OK,
+    GRANT_ACTION,
+    REVOKE_ACTION,
+    build_report,
+    main,
+    render_markdown,
+)
 from sentrykit.errors import SentrykitError
 from sentrykit.policy import PATTERNS, LinkedPolicySource, link_template, pack_template
 from sentrykit.stores import InMemoryAuditSink
@@ -397,6 +405,28 @@ def admin_policy(tmp_path: Path) -> Path:
         encoding="utf-8",
     )
     return directory
+
+
+@pytest.mark.unit
+def test_the_three_admin_names_the_page_tabulates_are_the_ones_the_cli_decides_against(
+    admin_policy: Path,
+) -> None:
+    """The page tabulates three constants and then shows a permit that spells them out.
+
+    Both halves are pinned here, and the second is the one that matters: the shipped pack
+    ships no permit for the admin actions on purpose, so a host writes this policy, and a
+    policy naming anything else authorizes nothing at all. A table that drifted from the
+    constants would send someone to write a permit that silently never fires.
+    """
+    assert GRANT_ACTION == 'Action::"admin.grant"'
+    assert REVOKE_ACTION == 'Action::"admin.revoke"'
+    assert ADMIN_RESOURCE == 'Resource::"admin.grants"'
+
+    permit = (admin_policy / "00-admin.cedar").read_text(encoding="utf-8")
+
+    assert GRANT_ACTION in permit
+    assert REVOKE_ACTION in permit
+    assert ADMIN_RESOURCE in permit
 
 
 @pytest.fixture

@@ -387,9 +387,28 @@ entitlement when the truth is that no policy source was ever named. A missing `-
 usage error instead, before a store or a sink is opened. `sentrykit grants` is read-only and
 ungoverned, so it takes no `--policy`.
 
+### The three names your permit has to spell
+
+The shipped pack contains **no permit for the admin actions**, deliberately: a permit for the
+action that hands out authority is not something a library gets to write on your behalf. So
+you write it, and it has to name exactly the action and resource the CLI decides against:
+
+| constant | value |
+| --- | --- |
+| `GRANT_ACTION` | `Action::"admin.grant"` |
+| `REVOKE_ACTION` | `Action::"admin.revoke"` |
+| `ADMIN_RESOURCE` | `Resource::"admin.grants"` |
+
+All three are importable from `sentrykit.cli`, so a test of your own policy can assert against
+the constants rather than against a string you retyped:
+
+```python
+from sentrykit.cli import ADMIN_RESOURCE, GRANT_ACTION, REVOKE_ACTION
+```
+
 Write the policy that permits it, the same way you would for any other action:
 
-```
+```cedar
 @id("root-may-administer-grants")
 permit (
   principal in Role::"admin",
@@ -397,6 +416,11 @@ permit (
   resource == Resource::"admin.grants"
 );
 ```
+
+`principal in Role::"admin"` is the only part that is a choice: the action and resource are
+fixed by the CLI, and a permit naming anything else authorizes nothing. Narrow it however you
+narrow any other permit — a different role, a group edge, an expiry, a `when` clause on
+`context.channel == "cli"`.
 
 ### The proposed grant is argument-filtered, not just gated
 

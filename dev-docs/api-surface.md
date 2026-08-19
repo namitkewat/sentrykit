@@ -190,21 +190,26 @@ or removed:
 - `register_policy_source` is **one leg of a four-way symmetric contract**. Its three siblings
   are used; breaking the symmetry would make the plugin model teach a rule with an exception.
 
-### Flags — gaps to close, not changes made here
+### Flags
 
-1. **`register_policy_source` has no test and no documented example**, while
-   `register_audit_sink` (16 external references), `register_grant_store` (6) and
-   `register_context_provider` (2) all do. Nothing suggests it is broken; it is simply the one
-   registration decorator nothing exercises. `docs/plugins.md` should show it, and a unit test
-   should register a dummy source — the same shape the other three already have.
-2. **`GRANT_ACTION` / `REVOKE_ACTION` / `ADMIN_RESOURCE` are undocumented in `docs/`.** They
-   are the three strings a host must name to write the admin permit the shipped pack omits,
-   and a reader currently has to find them by reading `src/sentrykit/cli.py`. They belong on
-   the admin-surface page next to the worked policy.
-3. **`sentrykit.cli` is on the public list but is not re-exported from `sentrykit`.** That is
-   the right call — the CLI should not be imported by an application — but it means the
-   module's `__all__` is the only statement of its surface. The API reference now renders it,
-   which is enough; noting it so a future loop does not "fix" it by re-exporting.
+Two of the three gaps recorded here have since been closed; neither needed a behaviour change.
 
-None of the above changes behaviour, and none was applied: this session hardens the release and
-does not add or alter library capability.
+1. ~~**`register_policy_source` has no test and no documented example.**~~ **Closed.**
+   `tests/unit/test_registry.py` now registers a policy source in-process and drives its DSN
+   through to a loaded bundle, mirroring the audit-sink test beside it, and `docs/plugins.md`
+   shows the same registration with the three members a source owes: `name`, `load()` and
+   `current_hash()`. It was the one registration decorator nothing exercised — and the kind a
+   host is most likely to add, which is why it went to the front of the queue.
+2. ~~**`GRANT_ACTION` / `REVOKE_ACTION` / `ADMIN_RESOURCE` are undocumented in `docs/`.**~~
+   **Closed.** `docs/policies.md` tabulates all three with their exact values next to the
+   worked permit, states that they are importable from `sentrykit.cli`, and says which part of
+   the permit is a host's choice and which part is fixed. A doc-example test pins the table to
+   the constants and the constants to the permit the page prints, so the three cannot drift
+   apart silently — a permit naming anything else authorizes nothing at all.
+3. **`sentrykit.cli` is on the public list but is not re-exported from `sentrykit`.** Still
+   open, and deliberately: the CLI should not be imported by an application. It means the
+   module's `__all__` is the only statement of its surface. The API reference renders it,
+   which is enough; noted so a future loop does not "fix" it by re-exporting.
+
+No entry in the tables above changed. Closing the first two added a test and documentation for
+names that were already public, which is what they needed.
