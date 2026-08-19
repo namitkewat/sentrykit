@@ -4,7 +4,8 @@ This file is the contract for any coding-agent session working in this repo. Rea
 fully before doing anything. The detailed, phase-by-phase plan lives in
 `dev-docs/implementation.md`; the "why" behind the shape lives in
 `dev-docs/architecture.md` and `dev-docs/design-decisions.md`; the rules you code by
-live in `dev-docs/*-standards.md`.
+live in `dev-docs/*-standards.md` — including
+`dev-docs/documentation-standards.md`, which governs everything you write down.
 
 ---
 
@@ -102,9 +103,15 @@ Every phase in `dev-docs/implementation.md` is executed with this loop. Do not s
 4. **Review** — check the work against the original goal in §1 and the phase's acceptance
    criteria. Ask explicitly: does this preserve the positioning, the plugin boundaries, and
    the audit invariants? Record gaps.
-5. **Fix & document** — apply fixes, then update docs in the same pass: user docs in
-   `docs/`, internal docs in `dev-docs/`, and `README.md`. Docs are part of "done," not a
-   follow-up.
+5. **Fix & document** — apply fixes, then update docs in the same pass, per
+   `dev-docs/documentation-standards.md`: user docs in `docs/`, the docstrings the API
+   reference is generated from, internal docs in `dev-docs/`, `README.md` and `CHANGELOG.md`.
+   Then **rebuild the docs** — `pixi run docs` — so the HTML, the PDF and both `llms.txt`
+   files reflect what just changed; regenerating `llms.txt` is part of documenting, not a
+   release chore, because it is generated *from* the docs and stale output disagrees with the
+   pages it came from. Shipped text describes the present: no phase numbers, ADR citations or
+   references to how the code was built (`dev-docs/` and `CHANGELOG.md` hold that history).
+   Docs are part of "done," not a follow-up.
 6. **Repeat** — run the loop again (2–3 iterations total per phase) until acceptance
    criteria pass and `pixi run check` is green.
 
@@ -137,9 +144,12 @@ This keeps the main session's context small enough to carry all phases in one se
 ## 6. Definition of done (per phase and overall)
 
 A phase is done when: its acceptance criteria (in `dev-docs/implementation.md`) pass;
-`pixi run check` is green in every relevant environment; new/changed public API is typed and
-documented; `docs/`, `dev-docs/`, and `README.md` reflect the change; and the example apps
-for in-scope frameworks run.
+`pixi run check` is green in every relevant environment (it builds the HTML docs under `-W`,
+so a documentation warning fails the gate); new/changed public API is typed and documented;
+`docs/`, `dev-docs/`, and `README.md` reflect the change and satisfy
+`dev-docs/documentation-standards.md`; `pixi run docs` produces HTML, PDF, `llms.txt` and
+`llms-full.txt` cleanly, with `llms-full.txt` still sufficient to implement against on its
+own; and the example apps for in-scope frameworks run.
 
 The project is done when all phases are done, the four example apps (FastAPI, Flask, FastMCP
 server, Pydantic-AI) each demonstrate gate + argument filtering + default injection + a
@@ -158,8 +168,9 @@ pixi.toml                     ← environments + governance tasks
 pyproject.toml                ← packaging, extras, entry-point groups, tool config
 .pre-commit-config.yaml       ← ruff, mypy, commit-message gate
 scripts/check_commit_msg.py   ← mechanical commit-rule enforcement
+SECURITY.md                   ← disclosure contact + what sentrykit does and does not defend
 dev-docs/                     ← internal: architecture, decisions, standards, the plan
-docs/                         ← user docs (mkdocs-material)
+docs/                         ← user docs (Sphinx + MyST → HTML, PDF, llms.txt, llms-full.txt)
 src/sentrykit/                ← the library (core has NO framework imports)
   stores/                     ← PolicySource / GrantStore / AuditSink + reference impls
   policy/pack/                ← shipped Cedar policy pack + schema (data)
