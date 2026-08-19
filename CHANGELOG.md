@@ -58,6 +58,30 @@ under *Changed*; everything else is packaging, documentation and CI.
 - The registry snapshot-and-restore fixture is now one `clean_registry` in `tests/conftest.py`
   instead of two copies, with isolation unchanged.
 
+### Fixed
+- **Signatures in the generated Markdown lost their `*` and `/` separators.** Sphinx renders
+  a keyword-only or positional-only marker as an `abbreviation` node, and the Markdown
+  writer's fallback discarded it along with its text — leaving `install(policies=None, ,
+  entities=...)` in `llms-full.txt`, across 62 signatures. `docs/conf.py` now gives that node
+  a pass-through visit, so the marker comes from the doctree Sphinx built out of the real
+  signature and is correct in every position; `scripts/build_llms_txt.py` refuses to write the
+  corpus if a scarred signature reappears. HTML and the PDF were never affected.
+- **The `Settings` reference documented pydantic-settings instead of sentrykit.** As a
+  `BaseSettings` subclass it inherited an `__init__` carrying twenty-nine `_env_*` / `_cli_*`
+  machinery parameters — one defaulting to a `WindowsPath`, so the reference leaked the
+  platform it was built on — ahead of the eight fields the class offers. The signature is now
+  rebuilt from the model's own fields, in declaration order with the source spelling of each
+  type: 37 parameters became 8.
+
+### Documented
+- The three constants a host must name to write the admin permit the shipped pack omits —
+  `GRANT_ACTION`, `REVOKE_ACTION`, `ADMIN_RESOURCE` — are tabulated on the policies page next
+  to the worked permit, with a doc-example test pinning the table to the constants and the
+  constants to the permit. A permit naming anything else authorizes nothing.
+- Registering a policy source, which was the one registration decorator with neither a test
+  nor a documented example. `docs/plugins.md` shows the three members a source owes, and a
+  unit test drives a registered source's DSN through to a loaded bundle.
+
 ### Removed
 - mkdocs, mkdocs-material and mkdocstrings, and `mkdocs.yml`.
 

@@ -146,7 +146,9 @@ where the extension produced the raw directive.
 
 Clean Markdown, real signatures, real docstrings. It emitted one warning on the probe
 (`unknown node type: <abbreviation>`), which is why the markdown build runs **without** `-W`
-— only the HTML build gates.
+— only the HTML build gates. That warning turned out to be the visible end of a real defect
+in the rendered signatures, fixed in §8; the markdown build is warning-free now, and the `-W`
+asymmetry stays only because this builder is an intermediate rather than a published asset.
 
 > **Decision.** `sphinx-build -b markdown` into an intermediate directory, then
 > `scripts/build_llms_txt.py` concatenates it. Owning the concatenation is what buys the two
@@ -266,3 +268,71 @@ dist/docs/pdf/sentrykit.pdf
 dist/docs/llms.txt
 dist/docs/llms-full.txt
 ```
+
+---
+
+## 8. Two things measured while fixing the generated reference
+
+### The Markdown writer was dropping `*` and `/` from every signature
+
+Sphinx renders a keyword-only or positional-only separator as an `abbreviation` node — the
+marker, carrying "Keyword-only parameters separator (PEP 3102)" as its tooltip.
+`sphinx_markdown_builder` has no handler for that node, and its fallback
+(`MarkdownTranslator.unknown_visit`) warns once per document and then raises `SkipNode`, which
+discards the node *and* the text under it. The empty parameter is still emitted, so a
+signature comes out scarred: `install(policies=None, , entities=...)` mid-list, `protect(,
+action=...)` at the front, `protect(fn,)` at the end. Sixty-two of them.
+
+The first attempt at this repaired the two positional cases with string rules in
+`scripts/build_llms_txt.py`. That was the wrong seam and it showed: the rules fixed the
+eighteen signatures whose marker was first or last and left the sixty in the middle, because
+a mid-list `, ,` is the one position where a rule has to *guess* whether the missing separator
+was `*` or `/`.
+
+> **Decision.** Fix it in `docs/conf.py`, by subclassing the writer and giving
+> `abbreviation` a pass-through visit/depart pair. The marker then comes from the doctree
+> Sphinx built out of the real signature, so it is right by construction in all three
+> positions, and the four `unknown node type: <abbreviation>` warnings go away with it. The
+> string rules were deleted; what replaced them is a check in `build_llms_txt.py` that
+> *refuses to write the corpus* if a scarred signature reappears — an invariant rather than a
+> repair, so the next regression stops the build instead of shipping quietly.
+
+Verified against `inspect.signature()` of the real objects, which preserves both separators.
+
+### autodoc-pydantic renders `Settings` properly, and could not be adopted here
+
+`Settings` subclasses `BaseSettings`, so autodoc documents pydantic-settings' own `__init__`:
+twenty-nine `_env_*` / `_cli_*` machinery parameters ahead of the eight knobs the class
+offers, one of them defaulting to a `WindowsPath` — the reference was leaking the platform it
+was built on.
+
+`autodoc_pydantic` 2.2.0 was evaluated properly, in a throwaway venv, and it works: it builds
+`-W`-clean against Sphinx 9.1, and its output survives all three builders — HTML, the Markdown
+writer (a "Fields:" summary plus per-field entries with types and defaults) and rinoh. Its
+dependencies are Sphinx, pydantic and pydantic-settings, all already present. One caveat: it
+does **not** take over `automodule` or `autoclass` under this Sphinx, so it would have to be
+named explicitly with `.. autopydantic_settings::` and the class excluded from the module
+sweep.
+
+It was not adopted, for a reason that has nothing to do with the extension:
+
+> **`pixi lock` cannot re-solve this manifest on `win-64`.** Adding any dependency fails with
+> `failed to solve the pypi requirements of environment 'py311-agent' for platform
+> 'linux-64': build dispatch initialization failed: there is no compatible Python interpreter
+> for 'win-64'`. The twelve version-pinned environments added for the CI matrix are
+> `linux-64` only, and re-solving them needs to build metadata for the editable
+> `sentrykit = { path = ".", editable = true }` against a Linux interpreter this machine does
+> not have. The existing lock stays valid — `pixi lock` reports it up to date and every
+> environment installs — so this bites only when a dependency changes.
+
+That is a real constraint on the repository, not a one-off: **no dependency can be added or
+bumped from Windows while those environments exist.** Options when it next matters, in
+increasing order of cost: re-lock from Linux or CI and commit the result; drop the twelve
+environments and get the interpreter matrix another way; or make the editable install a
+non-editable one for the version-pinned environments only.
+
+`Settings` was instead fixed with an `autodoc-process-signature` handler in `conf.py` that
+rebuilds the signature from the model's own `__annotations__` (declaration order, source
+spelling, so `Verbosity` stays `Verbosity`) and `model_fields` (the defaults). 1812 characters
+and 37 parameters became 434 and 8. No dependency, and nothing else in the reference changed —
+the handler returns `None` for every class that is not a `BaseSettings`.
