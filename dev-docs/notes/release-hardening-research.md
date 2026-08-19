@@ -236,13 +236,22 @@ Sub-agents build against these; they are the coordination point and do not chang
 
 | task | command | writes |
 | --- | --- | --- |
-| `docs-html` | `sphinx-build -W -b html docs dist/docs/html` | `dist/docs/html/` |
-| `docs-pdf` | `sphinx-build -b rinoh docs dist/docs/pdf` | `dist/docs/pdf/sentrykit.pdf` |
-| `docs-markdown` | `sphinx-build -b markdown docs dist/docs/markdown` | `dist/docs/markdown/` (intermediate) |
+| `docs-html` | `sphinx-build -W -b html -d dist/docs/.doctrees/html docs dist/docs/html` | `dist/docs/html/` |
+| `docs-pdf` | `sphinx-build -b rinoh -d dist/docs/.doctrees/pdf docs dist/docs/pdf` | `dist/docs/pdf/sentrykit.pdf` |
+| `docs-markdown` | `sphinx-build -b markdown -d dist/docs/.doctrees/markdown docs dist/docs/markdown` | `dist/docs/markdown/` (intermediate) |
 | `docs-llms` | `python scripts/build_llms_txt.py` (after `docs-markdown`) | `dist/docs/llms.txt`, `dist/docs/llms-full.txt` |
 | `docs` | aggregate of `docs-html`, `docs-pdf`, `docs-llms` | all of the above |
 | `docs-serve` | `sphinx-autobuild docs dist/docs/html` | live-reload preview |
 | `docs-clean` | `python scripts/clean.py --docs` | removes `dist/docs` |
+
+The `-d` flags were added after the first full build measured the result: Sphinx defaults its
+doctree cache to `<outdir>/.doctrees`, which put 7.8 MB of pickled parse state inside the
+12.4 MB HTML tree the release zips and hands to a reader. Moved out, the site is 4.6 MB.
+
+Two build by-products are left where they land, deliberately. rinohtype writes a 17 MB
+`sentrykit.stylelog` and a `sentrykit.rtc` next to the PDF; both are under `dist/`, both go
+with `docs-clean`, and the release attaches `sentrykit.pdf` by name rather than zipping the
+directory — so the cost is disk on a build machine and nothing else.
 
 `check` depends on `docs-html` (not `docs`), so documentation breakage fails the gate without
 paying for a PDF on every commit.
