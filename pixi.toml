@@ -1,12 +1,12 @@
 # pixi manifest — dev environments + governance tasks.
-# The `[workspace]` form below is confirmed against pixi 0.70.2 (see
-# dev-docs/notes/phase-1-research.md). Older pixi versions used `[project]`.
+# The `[workspace]` form below is confirmed against pixi 0.70.2. Older pixi versions
+# used `[project]`.
 
 [workspace]
 name = "sentrykit"
 version = "0.1.0"
 description = "Lightweight, framework-agnostic authorization for Python web frameworks and agent tooling, built on AWS Cedar."
-authors = ["Your Name <you@example.com>"]
+authors = ["Namit Kewat <namitkewat@gmail.com>"]
 channels = ["conda-forge"]
 platforms = ["linux-64", "osx-arm64", "osx-64", "win-64"]
 
@@ -55,15 +55,60 @@ build = ">=1.2"
 # falls back to an isolated build and skips wherever there is no index -- and a packaging
 # check that skips is exactly how a wheel ships without its policy pack.
 hatchling = ">=1.24"
-mkdocs = ">=1.6"
-mkdocs-material = ">=9.5"
-mkdocstrings = { version = ">=0.25", extras = ["python"] }
+# Docs. `sphinx>=9,<10` is the one pin that spans 3.11-3.13: 9.1 requires 3.12, so a 3.11
+# environment resolves 9.0.x, and both are the same extension API and the same `-W`
+# semantics. See dev-docs/notes/release-hardening-research.md.
+sphinx = ">=9,<10"
+myst-parser = ">=5"
+furo = "*"
+sphinx-autobuild = "*"
+# Renders the *resolved* doctree to Markdown, so the autodoc'd API reference is expanded
+# rather than left as a directive -- which is what makes llms-full.txt implementable-from.
+sphinx-markdown-builder = ">=0.6.11"
+# Pure-Python PDF: no LaTeX toolchain, identical on all four platforms and on a CI runner.
+# AGPL-3.0-only, and confined to this dev feature: it is never imported by, linked into, or
+# shipped inside the wheel, so it does not reach sentrykit's Apache-2.0 licensing. It must
+# never be added to `[project.optional-dependencies]`.
+rinohtype = ">=0.5.6"
+
+# ---- Features: interpreter versions, for reproducing the CI matrix ----------
+# Narrowed to linux-64 deliberately. These twelve environments exist so a contributor can
+# reproduce a specific CI job locally; solving them for four platforms would quadruple the
+# lock file to describe combinations nothing runs.
+[feature.py311]
+platforms = ["linux-64"]
+[feature.py311.dependencies]
+python = "3.11.*"
+
+[feature.py312]
+platforms = ["linux-64"]
+[feature.py312.dependencies]
+python = "3.12.*"
+
+[feature.py313]
+platforms = ["linux-64"]
+[feature.py313.dependencies]
+python = "3.13.*"
 
 [environments]
+# The four a developer types. Python floats to the newest the manifest allows.
 default = ["core", "dev"]
 web = ["core", "web", "dev"]
 agent = ["core", "agent", "dev"]
 all = ["core", "web", "agent", "dev"]
+# The twelve the CI matrix runs: every feature set against every supported interpreter.
+py311-default = ["py311", "core", "dev"]
+py311-web = ["py311", "core", "web", "dev"]
+py311-agent = ["py311", "core", "agent", "dev"]
+py311-all = ["py311", "core", "web", "agent", "dev"]
+py312-default = ["py312", "core", "dev"]
+py312-web = ["py312", "core", "web", "dev"]
+py312-agent = ["py312", "core", "agent", "dev"]
+py312-all = ["py312", "core", "web", "agent", "dev"]
+py313-default = ["py313", "core", "dev"]
+py313-web = ["py313", "core", "web", "dev"]
+py313-agent = ["py313", "core", "agent", "dev"]
+py313-all = ["py313", "core", "web", "agent", "dev"]
 
 # ---------------------------------------------------------------------------
 # Governance tasks — run with `pixi run <name>` (add `-e web|agent|all` as needed).
@@ -72,10 +117,10 @@ all = ["core", "web", "agent", "dev"]
 # setup
 setup = "pre-commit install --install-hooks && pre-commit install --hook-type commit-msg"
 # quality gates
-fmt = "ruff format src tests examples scripts"
-fmt-check = "ruff format --check src tests examples scripts"
-lint = "ruff check src tests examples scripts"
-lint-fix = "ruff check --fix src tests examples scripts"
+fmt = "ruff format src tests examples scripts docs"
+fmt-check = "ruff format --check src tests examples scripts docs"
+lint = "ruff check src tests examples scripts docs"
+lint-fix = "ruff check --fix src tests examples scripts docs"
 typecheck = "mypy src"
 # tests
 test = "pytest"
@@ -85,7 +130,7 @@ coverage-gate = "python scripts/coverage_gate.py"
 test-unit = "pytest -m unit tests/unit"
 test-integration = "pytest -m integration tests/integration"
 test-scenarios = "pytest -m scenario tests/scenarios"
-# example apps (built in phases 3-4)
+# example apps
 run-fastapi = "uvicorn examples.fastapi_app.main:create_app --factory --reload"
 run-flask = "flask --app examples.flask_app.main:create_app run --debug"
 run-mcp = "python -m examples.fastmcp_server.server"
@@ -97,11 +142,27 @@ policy-validate = "python -m sentrykit.cli policy validate"
 # The sink is named explicitly so the task runs out of the box against a dev log; in a
 # deployment `SENTRYKIT_AUDIT_SINK` supplies it and the flag comes off.
 audit-report = "python -m sentrykit.cli audit-report --from 2026-01-01 --to 2026-12-31 --sink jsonl://./dist/audit.jsonl --out dist/audit-report.md"
-# docs
-docs = "mkdocs build --strict"
-docs-serve = "mkdocs serve"
+
+# ---- docs ------------------------------------------------------------------
+# Source is `docs/`; every output lands under `dist/docs/` so the release workflow can
+# attach assets by a path that does not move. See dev-docs/documentation-standards.md.
+# `-W` on the HTML build only: it is the one that gates, and it gates in all four
+# environments because `conf.py` mocks whichever framework packages are absent.
+docs-html = "sphinx-build -W -b html docs dist/docs/html"
+# Pure-Python PDF (rinohtype). Deliberately not part of `check`: it is the slowest step by a
+# wide margin, and a PDF that will not render blocks a release rather than a commit.
+docs-pdf = "sphinx-build -b rinoh docs dist/docs/pdf"
+# Intermediate: the resolved doctree rendered to Markdown, which is what `docs-llms` reads.
+# No `-W` -- the Markdown writer warns on nodes it has no spelling for, and none of them
+# affect the text.
+docs-markdown = "sphinx-build -b markdown docs dist/docs/markdown"
+docs-llms = { cmd = "python scripts/build_llms_txt.py", depends-on = ["docs-markdown"] }
+docs = { depends-on = ["docs-html", "docs-pdf", "docs-llms"] }
+docs-serve = "sphinx-autobuild docs dist/docs/html"
+docs-clean = "python scripts/clean.py --docs"
+
 # aggregate
-check = { depends-on = ["fmt-check", "lint", "typecheck", "test-cov", "coverage-gate", "docs"] }
+check = { depends-on = ["fmt-check", "lint", "typecheck", "test-cov", "coverage-gate", "docs-html"] }
 ci = { depends-on = ["check"] }
 build = "python -m build"
 # Needs the network: builds the artifacts and installs the wheel with each extra into a

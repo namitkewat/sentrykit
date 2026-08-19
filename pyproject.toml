@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.11"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
-authors = [{ name = "Your Name" }]
+authors = [{ name = "Namit Kewat", email = "namitkewat@gmail.com" }]
 keywords = [
   "authorization", "authz", "cedar", "access-control", "rbac", "abac", "rebac",
   "fastapi", "flask", "mcp", "fastmcp", "pydantic-ai", "agents", "llm", "policy",
@@ -66,11 +66,14 @@ flask = "sentrykit.integrations.flask:FlaskProvider"
 fastmcp = "sentrykit.integrations.fastmcp:FastMCPProvider"
 pydantic-ai = "sentrykit.integrations.pydantic_ai:PydanticAIProvider"
 
+# The repository is private, so the documentation is shipped as release assets -- HTML,
+# PDF, llms.txt and llms-full.txt -- rather than hosted. Documentation therefore points at
+# the releases page, which is where those assets actually are.
 [project.urls]
-Homepage = "https://github.com/yourname/sentrykit"
-Documentation = "https://github.com/yourname/sentrykit#readme"
-Source = "https://github.com/yourname/sentrykit"
-Changelog = "https://github.com/yourname/sentrykit/blob/main/CHANGELOG.md"
+Homepage = "https://github.com/namitkewat/sentrykit"
+Documentation = "https://github.com/namitkewat/sentrykit/releases"
+Source = "https://github.com/namitkewat/sentrykit"
+Changelog = "https://github.com/namitkewat/sentrykit/blob/main/CHANGELOG.md"
 
 # The version lives in the package, so `sentrykit.__version__` and the distribution metadata
 # cannot drift apart.
@@ -84,7 +87,11 @@ packages = ["src/sentrykit"]
 [tool.ruff]
 line-length = 100
 target-version = "py311"
-src = ["src", "tests", "examples"]
+src = ["src", "tests", "examples", "docs"]
+# ruff formats Python inside Markdown fences. The pages under `docs/` carry examples whose
+# exact text is pinned by `tests/**/test_documented_examples*.py`, so reflowing them here
+# would silently move an assertion out from under its test. `docs/conf.py` is still checked.
+extend-exclude = ["*.md"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM", "ASYNC", "S", "RET", "C4", "PTH", "TID", "RUF"]
@@ -107,7 +114,7 @@ files = ["src/sentrykit"]
 # and `agent` environments the real packages are found and these overrides do nothing.
 # The MCP integration must subclass ``mcp.shared.exceptions.MCPError``: it is the one exception
 # mcp re-raises rather than swallowing, which is what lets a refusal leave a tool body carrying
-# its envelope (ADR-019). In an environment without the ``fastmcp`` extra that base resolves to
+# its envelope. In an environment without the ``fastmcp`` extra that base resolves to
 # ``Any``, and strict mode refuses to subclass ``Any`` -- so the check is environment-dependent
 # noise here rather than signal. It stays on everywhere else, including for this module in the
 # ``agent`` and ``all`` environments, where the real class is found.

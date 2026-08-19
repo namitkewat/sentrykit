@@ -19,9 +19,6 @@ htmlcov/
 .pixi/
 # keep pixi.lock committed for reproducible dev envs
 
-# Docs build
-site/
-
 # Env / editors
 .venv/
 venv/
