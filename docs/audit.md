@@ -2,7 +2,7 @@
 
 sentrykit emits one tamper-evident record per authorization decision — allow *and* refusal —
 and per admin grant mutation. The yearly audit report is meant to be a query over that
-stream, not an afternoon of reading logs (ADR-006).
+stream, not an afternoon of reading logs.
 
 The audit log is **not** the operational log. `logging` output is ephemeral, may be verbose,
 and never contains sensitive values. The audit stream is a data product: masked before it is
@@ -66,7 +66,7 @@ The callable received `ACCT-4417-9930`. The sink never did.
 
 ## Masking runs before the write
 
-ADR-007, and it is the invariant the rest of this page rests on: anything written to an
+This is the invariant the rest of this page rests on: anything written to an
 append-only store is permanent, so a raw sensitive value there cannot be withdrawn, and
 masking at read or report time is too late by definition.
 
@@ -74,7 +74,7 @@ masking at read or report time is too late by definition.
 way in. That is a structural property, not a convention — a unit test scans the source tree
 and fails if any other module writes to a sink.
 
-The `redaction` setting does **not** disable it (ADR-014). `redaction` governs the
+The `redaction` setting does **not** disable it. `redaction` governs the
 caller-facing `_authz` envelope and the operational logs; the immutable write is the one
 place masking must not be configurable away.
 
@@ -169,7 +169,7 @@ The sink holds one handle open, serializes writes behind a lock, and opens with
 `newline="\n"`. All three are forced by measurement rather than taste — on Windows,
 `open(path, "a")` per write is not atomic (8 threads × 200 records produced 1346 of 1600
 lines, three of them malformed), and default text mode writes CRLF, which would make the same
-record hash differently per platform. See ADR-013.
+record hash differently per platform.
 
 `fsync` costs about 3.7 ms per record against 0.007 ms for a flush, so it is opt-in
 (`jsonl://path?fsync=true`). A flush already survives process death; only a machine crash

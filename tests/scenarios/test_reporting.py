@@ -1,8 +1,8 @@
 """The yearly report, over a log whose every record is known.
 
-ADR-006's claim is that the compliance report is a *query*, not a second system. What makes
-that claim testable is that :func:`~sentrykit.cli.build_report` is pure — an iterable in, a
-value out, no sink and no clock — so a seeded log has exactly one correct aggregate and this
+The compliance report is a *query*, not a second system. What makes that claim testable is
+that :func:`~sentrykit.cli.build_report` is pure — an iterable in, a value out, no sink and
+no clock — so a seeded log has exactly one correct aggregate and this
 module asserts it item by item, ordering included.
 
 The seed spans everything the report has to keep apart: allows, four refusals across three

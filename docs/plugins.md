@@ -2,8 +2,7 @@
 
 Everything sentrykit talks to on the outside is a plugin: where policies come from, where
 grants live, where audit records go, and how a framework establishes context. All four use
-the same four pieces, so *add a sink* and *add a framework* are the same shape of task
-(ADR-004).
+the same four pieces, so *add a sink* and *add a framework* are the same shape of task.
 
 1. A `Protocol` contract in `sentrykit.stores.base`.
 2. A name, which doubles as a DSN scheme.

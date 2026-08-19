@@ -1,6 +1,6 @@
 """A third-party backend reaches the registry with no change to sentrykit.
 
-This is the one ADR-004 claim that cannot be tested from inside the package: everything else
+This is the one plugin claim that cannot be tested from inside the package: everything else
 about the plugin machinery can be exercised through the ``register_*`` decorators, but "an
 installed distribution is discovered" is a statement about ``importlib.metadata`` and
 ``sys.path``, and only a real distribution on disk proves it.

@@ -1,7 +1,6 @@
 # Policies & patterns
 
-Cedar separates *policy logic* from *entity data*, and sentrykit leans on that split hard
-(ADR-005):
+Cedar separates *policy logic* from *entity data*, and sentrykit leans on that split hard:
 
 - **Policy logic lives in files** under version control. It changes by review, and git
   history is the change-control evidence an auditor asks for.
@@ -82,7 +81,7 @@ distinguishable.
 
 An obligation says what must *also* happen when a call is permitted. It is declared on the
 policy, because "you may do this, provided X" is reviewed logic rather than mutable grant
-data (ADR-012).
+data.
 
 ```
 @id("support-may-look-up-accounts")
@@ -167,7 +166,7 @@ declares what it requires, the *grant store* supplies the principal's edges and 
 and the *context* supplies `now`, `break_glass`, `on_behalf_of` and `justification`.
 
 Adopting a pattern is therefore a matter of putting an attribute on an entity — which is
-data, which is ADR-005 restated for the pack.
+data. The pack's own logic stays reviewed in version control, exactly like your own.
 
 | Pattern | What it decides | Data it reads |
 | --- | --- | --- |

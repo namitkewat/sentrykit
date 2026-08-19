@@ -14,7 +14,7 @@ a value that policy did not sanction — and so a validation failure is genuinel
 not about authorization.
 
 The split between :meth:`Governor.plan` and :meth:`Governor.invoke` exists so the decision
-can be made without performing the side effect. Phase 4's ``list_tools`` filtering plans a
+can be made without performing the side effect. Agent-side ``list_tools`` filtering plans a
 call it never invokes, to decide whether to show the tool to a model at all.
 """
 
@@ -412,9 +412,9 @@ class Governor:
             the audit trail existed.
         bundle: The loaded policy bundle, when the governor was built from a
             :class:`~sentrykit.stores.base.PolicySource`. Supplies the per-policy annotation
-            index obligations are read from (ADR-012) and the provenance the audit record
-            carries. Without one, obligations stay empty and provenance is unavailable —
-            which is exactly the phase 1 behaviour, unchanged.
+            index obligations are read from, and the provenance the audit record carries.
+            Without one, obligations stay empty and provenance is unavailable, which is
+            exactly how a governor wired from raw policy text behaves.
         grants: The grant store principals were materialized from, when there is one. The
             decision path never consults it — a principal arrives already materialized, by
             way of :func:`~sentrykit.context.establish` — but the admin surface needs to
@@ -841,18 +841,17 @@ class Governor:
 
     # --- audit ---------------------------------------------------------------------------
     #
-    # The whole reach of phase 2 into the decision pipeline is these three methods plus the
-    # two calls that reach them. They are no-ops unless a trail was wired, so a governor
-    # built the phase 1 way — ``Governor(policy_engine)`` — takes exactly the path it always
-    # did, allocating nothing and touching no masking code.
+    # The whole reach of the audit trail into the decision pipeline is these three methods
+    # plus the two calls that reach them. They are no-ops unless a trail was wired, so a bare
+    # ``Governor(policy_engine)`` takes exactly the path it would without auditing at all,
+    # allocating nothing and touching no masking code.
 
     def _obligations(self, decision: CedarDecision, *, allowed: bool) -> tuple[str, ...]:
         """Read the obligations the determining policies attached to this decision.
 
-        Per ADR-012 obligations live in an ``@obligations`` annotation, which Cedar exposes
-        only through the policy *text*. The bundle owns that index, so a governor wired from
-        raw policy text — with no bundle — reports no obligations, which is the phase 1
-        behaviour unchanged.
+        Obligations live in an ``@obligations`` annotation, which Cedar exposes only through
+        the policy *text*. The bundle owns that index, so a governor wired from raw policy
+        text — with no bundle — reports no obligations.
 
         Args:
             decision: What Cedar returned.
@@ -914,8 +913,8 @@ class Governor:
         is already being refused, so raising
         :class:`~sentrykit.errors.AuditUnavailable` would replace a precise
         :class:`~sentrykit.errors.AuthzDenied` — the answer the caller actually needs — with
-        an operational error, and would change what phase 1 raises. Failing closed is already
-        the outcome; the only thing left to protect is the diagnosis.
+        an operational error. Failing closed is already the outcome; the only thing left to
+        protect is the diagnosis.
         """
         trail = self._audit
         if trail is None or not trail.enabled:
@@ -949,7 +948,7 @@ class Governor:
 
         Args:
             fn: The protected callable.
-            plan: The plan produced by :meth:`plan` for this call.
+            plan: The :class:`Plan` produced by :meth:`plan` for this call.
 
         Returns:
             Whatever ``fn`` returned, with the ``_authz`` envelope attached when the result
@@ -969,7 +968,7 @@ class Governor:
 
         Args:
             fn: The protected coroutine function.
-            plan: The plan produced by :meth:`plan` for this call.
+            plan: The :class:`Plan` produced by :meth:`plan` for this call.
 
         Returns:
             Whatever ``fn`` resolved to, with the envelope attached where applicable.
@@ -988,7 +987,7 @@ class Governor:
         framework provider to render.
 
         Args:
-            plan: The plan that was invoked.
+            plan: The :class:`Plan` that was invoked.
 
         Returns:
             The envelope, or ``None`` when ``envelope_on_success`` is off or verbosity is
@@ -1013,15 +1012,15 @@ def install(
 ) -> Governor:
     """Wire a governor and make it the process default.
 
-    One call covers both ends of the range. Hand it a policy string and it behaves exactly as
-    it did in phase 1 — the wiring for tests and for a service whose policy fits in a literal.
+    One call covers both ends of the range. Hand it a policy string and it wires an in-memory
+    governor — the shape for tests and for a service whose policy fits in a literal.
     Hand it DSNs instead and the same call assembles the pluggable substrate: policy sources
     unioned, grant stores merged, audit sinks fanned out, each resolved through the registry
     so a third-party backend is reachable by name alone.
 
     Either way the result is one :class:`Governor`, because multiplicity is a composite that
-    satisfies the same Protocol (ADR-004) — the decision path never learns how many sources
-    were configured.
+    satisfies the same Protocol — the decision path never learns how many sources were
+    configured.
 
     Args:
         policies: Cedar policy text. Mutually exclusive with ``policy_source``.
@@ -1226,7 +1225,7 @@ def merge_environment(
 
     Layers the explicit environment over the ambient one, fills in ``now`` and ``channel``
     when neither supplied them, and exposes the proposed arguments under ``args`` so a Cedar
-    ``forbid`` can inspect them directly. That last part is ADR-002's defense in depth: the
+    ``forbid`` can inspect them directly. That last part is the defense in depth: the
     Python-side filter is the enforcement, and an argument-aware ``forbid`` is the backstop
     that catches a filter that was never configured.
 

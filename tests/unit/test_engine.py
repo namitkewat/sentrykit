@@ -770,7 +770,7 @@ def test_no_envelope_is_attached_when_the_host_turned_it_off(
     assert "_authz" not in result
 
 
-# --- the plan's envelope --------------------------------------------------------------
+# --- the envelope a plan produces -----------------------------------------------------
 
 
 @pytest.mark.unit

@@ -1,7 +1,7 @@
 """Masking strategies and the three ways a field selects one.
 
 Precedence is the part worth pinning down: a policy obligation beats a signature annotation,
-which beats the configured default. That ordering is ADR-014's — an obligation is *reviewed
+which beats the configured default. That ordering is deliberate — an obligation is *reviewed
 logic*, so it must be able to tighten what a developer declared, and it must not be possible
 for a signature to loosen what a policy demanded.
 

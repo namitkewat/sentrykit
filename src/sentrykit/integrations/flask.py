@@ -1,7 +1,7 @@
 """The Flask context provider.
 
-The WSGI half of ADR-009. Same decorator, same envelope, same statuses — a different pair of
-hooks:
+The WSGI half of one-decorator-N-providers. Same decorator, same envelope, same statuses — a
+different pair of hooks:
 
 ```python
 from flask import Flask
@@ -13,8 +13,7 @@ protect_app(app, provider=FlaskProvider(identify=lambda request: request.headers
 
 ## Establish in `before_request`, release in `teardown_request`
 
-`dev-docs/notes/phase-3-research.md` §4 pinned the ordering that makes this work. For a
-request whose view raises, Flask runs:
+Flask's hook ordering is what makes this work. For a request whose view raises, Flask runs:
 
 ```
 before_request  ->  view raises  ->  errorhandler renders  ->  teardown_request

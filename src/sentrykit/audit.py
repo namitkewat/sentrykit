@@ -1,6 +1,6 @@
 """The audit record, the hash chain, and the one path from a decision to a sink.
 
-ADR-006 asks for a log that survives scrutiny, which means four properties this module owns:
+An audit log has to survive scrutiny, which means four properties this module owns:
 
 * **Reproducible.** The record pins ``policy_set_hash`` and snapshots the principal's
   *effective* attributes at decision time, so a replay is possible even after the policy set
@@ -10,14 +10,13 @@ ADR-006 asks for a log that survives scrutiny, which means four properties this 
 * **Tamper-evident.** Each record carries the previous record's hash, so altering any record
   invalidates every record after it. Detection, not prevention; prevention is the sink's job
   (S3 Object Lock, WORM).
-* **Safe to keep forever.** Sensitive values are masked *before* the write (ADR-007), never
-  after.
+* **Safe to keep forever.** Sensitive values are masked *before* the write, never after.
 
 That last property is structural rather than conventional: :class:`AuditTrail` is the only
 thing in sentrykit that calls :meth:`~sentrykit.stores.base.AuditSink.write`, and it masks on
-the way in. A unit test asserts that statically — the audit-side analogue of the phase 1
-import scan — so a future caller that reaches around it fails the suite rather than the
-compliance review.
+the way in. A unit test asserts that statically — the audit-side analogue of the import scan
+that keeps web frameworks out of the core — so a future caller that reaches around it fails
+the suite rather than the compliance review.
 """
 
 from __future__ import annotations
@@ -122,7 +121,7 @@ class PrincipalSnapshot(BaseModel):
 
     A snapshot, not a reference. Grants change, roles are revoked, attributes are corrected —
     and a record that merely *pointed* at a principal would silently start describing a
-    different one. This is what makes ADR-006's reproducibility claim hold.
+    different one. This is what makes a decision replayable long after the fact.
 
     Attributes:
         uid: The principal's Cedar uid.
@@ -199,7 +198,7 @@ class AuthzAuditRecord(BaseModel):
         processed: What the callable actually ran with, masked.
         rejected: Arguments the policy refused, with reasons and masked values.
         defaults_applied: Arguments filled in from the principal's grants, masked.
-        obligations: Obligations the determining policies attached (ADR-012).
+        obligations: Obligations the determining policies attached.
         determining_policies: The policies that decided it.
         provenance: Where each determining policy came from.
         policy_set_hash: Digest of the policy logic evaluated, so the decision replays.
@@ -398,10 +397,10 @@ class AuditTrail:
     """Masks, chains, and writes — the only path from a decision to an
     :class:`~sentrykit.stores.base.AuditSink`.
 
-    Funnelling every write through one object is what makes ADR-007 enforceable rather than
-    aspirational. Nothing else in sentrykit calls ``sink.write``, so "masking runs before the
-    write" is a property of one function instead of a rule every future caller has to
-    remember.
+    Funnelling every write through one object is what makes masking-before-the-write
+    enforceable rather than aspirational. Nothing else in sentrykit calls ``sink.write``, so
+    "masking runs before the write" is a property of one function instead of a rule every
+    future caller has to remember.
 
     Args:
         sink: Where records go. ``None`` disables auditing entirely — the trail then builds

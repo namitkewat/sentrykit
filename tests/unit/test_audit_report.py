@@ -1,7 +1,6 @@
 """The audit report: the aggregate, the document, and the window that produces both.
 
-ADR-006's claim is that "the yearly report is a query, not a feature". These tests hold that
-claim to three specifics:
+The yearly report is a query, not a feature. These tests hold that claim to three specifics:
 
 * **It aggregates by outcome, not by decision.** ``allow``/``deny`` collapses six materially
   different refusals and both admin mutations into two buckets. So the aggregates are
@@ -100,7 +99,7 @@ def test_the_totals_separate_decisions_from_mutations(
 def test_a_mutation_is_counted_as_a_mutation_and_never_as_an_allow(
     seeded: tuple[AuthzAuditRecord, ...],
 ) -> None:
-    """The collapse ADR-006 exists to prevent, asserted directly."""
+    """The collapse the outcome buckets exist to prevent, asserted directly."""
     report = build_report(seeded, window=JANUARY)
 
     assert report.by_outcome == {"allowed": 2, "denied": 1, "granted": 1}

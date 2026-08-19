@@ -391,7 +391,7 @@ def test_an_emergency_resource_is_refused_outright_when_the_flag_is_absent() -> 
 
 @pytest.mark.unit
 def test_the_flag_alone_authorizes_nobody() -> None:
-    # The hole phase 5 research found and closed: `break_glass` is caller-supplied, so a
+    # The hole this pattern closes: `break_glass` is caller-supplied, so a
     # permit conditioned on it alone lets any client let itself in.
     decision = decide(
         user("sam"), OPEN_VAULT, thing("vault"), entities=BTG_GRAPH, context=EMERGENCY

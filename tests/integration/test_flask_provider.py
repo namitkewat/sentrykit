@@ -40,7 +40,7 @@ def _report_principal() -> dict[str, object]:
 def test_the_shared_web_contract_holds_over_flask(
     flask_client: Any, web_contract_case: Callable[[Any], None]
 ) -> None:
-    """Every row of the phase-3 behaviour table, answered by the WSGI stack."""
+    """Every row of the shared web behaviour table, answered by the WSGI stack."""
     web_contract_case(flask_client)
 
 

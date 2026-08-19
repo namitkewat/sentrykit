@@ -3,7 +3,6 @@
 `mcp.Client` accepts an `MCPServer` directly and runs it in-process, so every test here is a
 real client/server round trip — real JSON-RPC framing, real ``_meta`` propagation, real
 ``CallToolResult`` deserialization — with no socket, no subprocess and no live model.
-`dev-docs/notes/phase-4-research.md` §6 is where that is measured.
 
 The client is entered with ``async with`` inside each test rather than yielded from a fixture.
 That is not a style preference: ``mcp.Client`` holds an AnyIO task group, and pytest-asyncio
@@ -49,8 +48,8 @@ from sentrykit.stores.memory import InMemoryAuditSink
 PRINCIPAL_KEY = DEFAULT_PRINCIPAL_HEADER
 """The ``_meta`` key the example server and every client below carry the principal in.
 
-``_meta`` rather than a header because it is the only carrier that exists on *every* transport,
-in-memory included — research §2. The name is the web providers' for continuity.
+``_meta`` rather than a header because it is the only carrier that exists on *every*
+transport, in-memory included. The name is the web providers' for continuity.
 """
 
 
@@ -214,8 +213,8 @@ async def test_a_principal_without_the_role_is_refused_with_a_structured_envelop
     """Bob is an auditor; only support may search.
 
     The refusal is a ``CallToolResult`` and not a raised error precisely so this assertion is
-    possible — research §3 measured that a propagating error arrives with
-    ``structured_content=None`` and the envelope gone.
+    possible: a propagating error arrives with ``structured_content=None`` and the envelope
+    gone.
     """
     async with serving() as caller:
         result = await caller.call("search_orders", user="bob")
@@ -375,8 +374,8 @@ async def test_a_four_hop_relationship_permits_a_call_no_policy_names_directly()
     """User → Team → Division → Project ∋ Order, resolved by Cedar and by nothing else.
 
     The permitting policy names ``Project::"orders-eu"`` at both ends and mentions neither
-    alice nor ``Order::"o-1"``. This is the relationship resolution ``CLAUDE.md`` §1 says is
-    offloaded to policy rather than inferred by a model or scattered across ``if`` statements.
+    alice nor ``Order::"o-1"``. This is the relationship resolution sentrykit offloads to
+    policy rather than letting a model infer it or scattering it across ``if`` statements.
     """
     async with serving() as caller:
         result = await caller.call("read_order", {"order_id": "o-1"}, user="alice")

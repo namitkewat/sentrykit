@@ -1,6 +1,7 @@
 """The framework-independent half of the web integration suite.
 
-ADR-009's claim is that a FastAPI 403 and a Flask 403 are the *same* 403. A claim like that is
+One decorator and N providers means a FastAPI 403 and a Flask 403 are the *same* 403. A
+claim like that is
 only tested if both frameworks are asked exactly the same questions, so the questions live
 here — as plain functions over a :class:`WebCaller` — and each framework module answers them
 with its own client. Duplicating thirteen assertions twice would let the two copies drift, and
@@ -299,7 +300,7 @@ WEB_CONTRACT: tuple[Callable[[WebCaller], None], ...] = (
     check_the_non_route_callable_refuses_a_principal_the_policy_denies,
     check_the_non_route_callable_refuses_an_unauthenticated_caller,
 )
-"""Every row of the phase-3 behaviour table, in the order the plan lists them."""
+"""Every row of the shared web behaviour table, in the order it is stated above."""
 
 
 # --- verbosity trimming, seen through HTTP ------------------------------------------------

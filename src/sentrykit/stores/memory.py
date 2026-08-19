@@ -19,7 +19,7 @@ Two properties are worth stating plainly, because "in-memory" invites the wrong 
 
 Nothing here is durable. :class:`InMemoryAuditSink` is a fine target for a test asserting
 what was written and a bad one for anything that has to survive a restart — that is what
-:class:`~sentrykit.stores.jsonl.JsonlAuditSink` and the phase 5 backends are for.
+:class:`~sentrykit.stores.jsonl.JsonlAuditSink` and the durable backends are for.
 """
 
 from __future__ import annotations
@@ -374,7 +374,7 @@ class InMemoryTokenVault:
     """The reversible mapping behind ``tokenize`` masking, held in a dict.
 
     Satisfies :class:`~sentrykit.masking.TokenVault`. Deliberately *not* an audit sink: the
-    whole reason ADR-007 splits them is that this half must stay mutable, so an erasure
+    whole reason the two are separate is that this half must stay mutable, so an erasure
     request can drop a mapping and leave the hash chain intact but no longer resolvable.
 
     Tokens are minted per ``(field, value)`` pair rather than per value, for the same reason

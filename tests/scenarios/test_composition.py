@@ -4,7 +4,7 @@ Nothing about the pack is privileged: it is a DSN in a list, unioned by the same
 unions two of your own directories. What the union has to preserve is *attribution*. A decision
 the pack made must name the pack, and a decision your own directory made must name your
 directory, or the audit trail cannot answer "which artifact, at which version, produced this"
-— which is the whole of ADR-006.
+— which is the whole point of an audit trail.
 
 The two spellings are both asserted here because they are genuinely different things. Cedar
 reports the ``@id`` as declared, because namespacing is applied to sentrykit's provenance index

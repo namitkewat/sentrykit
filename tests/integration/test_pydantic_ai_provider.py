@@ -3,8 +3,8 @@
 No live model and no API key anywhere: :class:`~pydantic_ai.models.function.FunctionModel`
 scripts the exact tool call a test needs and reports back the exact tool manifest the model
 was offered, and :class:`~pydantic_ai.models.test.TestModel` calls whatever it is shown.
-Research §6 is why those two are the right pair — one gives control of the *proposal*, the
-other makes the *manifest* observable through the output.
+Those two are the right pair — one gives control of the *proposal*, the other makes the
+*manifest* observable through the output.
 
 What is peculiar to this integration, and what these tests are mostly about:
 
@@ -207,7 +207,7 @@ def unfiltered_agent() -> Agent[Caller, str]:
 
 @pytest.mark.integration
 def test_a_run_is_authorized_as_the_human_the_agent_acts_for(agent: Agent[Caller, str]) -> None:
-    """ADR-008: the principal on the decision is alice, not an identity for the agent process.
+    """The principal on the decision is alice, not an identity for the agent process.
 
     Nothing in the agent, the model or the tool named a principal; the run's ``deps`` did, and
     the envelope reports the entity Cedar actually decided about. That is the whole claim.

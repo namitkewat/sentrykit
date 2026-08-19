@@ -15,13 +15,14 @@ The knobs and their meaning:
     ``lenient`` silently drops arguments the policy rejects; ``strict`` raises
     :class:`~sentrykit.errors.ArgumentRejected` on the first violation.
 ``fail_mode``
-    What to do when the *engine* fails (unparseable policies, a Cedar evaluation error, and
-    from Phase 2 an unavailable audit sink) — ``closed`` refuses the call, ``open`` proceeds
+    What to do when the *engine* fails (unparseable policies, a Cedar evaluation error, an
+    unavailable audit sink) — ``closed`` refuses the call, ``open`` proceeds
     and records the failure. A policy *denial* is not an engine failure: it denies under both
     modes, as does a missing principal.
 ``redaction``
-    Whether sensitive argument values are masked before they leave the engine. Phase 1 wires
-    the flag through the envelope; the masking strategies themselves land in Phase 2.
+    Whether sensitive argument values are masked before they leave the engine. The flag is
+    carried through the envelope; the strategies themselves live in
+    :mod:`sentrykit.masking`.
 ``envelope_on_success``
     Whether a successful invocation gets an envelope attached at all. Denials always carry
     their detail on the raised error, regardless.
@@ -38,8 +39,8 @@ The knobs and their meaning:
     correlatable without keeping the value.
 
 Note that ``redaction`` governs the caller-facing envelope and the operational logs only. It
-does **not** reach the audit path: per ADR-014 masking before an immutable write is not
-configurable, because that write is the one that cannot be taken back.
+does **not** reach the audit path: masking before an immutable write is not configurable,
+because that write is the one that cannot be taken back.
 """
 
 from __future__ import annotations

@@ -9,7 +9,7 @@ It runs **fully offline**. No API key, no network call, no live model.
 
 ## On-behalf-of is the whole point
 
-ADR-008: an agent acting for a human **is** that human, as far as the policy is concerned.
+An agent acting for a human **is** that human, as far as the policy is concerned.
 There is no bot identity, no service account, and no `delegated_by` anywhere in `policy.py` —
 `alice`'s role edge and `alice`'s argument constraints are what govern the call *her agent's
 model* proposed. The delegation is expressed by the application choosing whose `deps` it runs

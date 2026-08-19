@@ -1,4 +1,4 @@
-"""``@protect`` — the one decorator, per ADR-009.
+"""``@protect`` — one decorator, and N context providers behind it.
 
 Everything a framework contributes is a context provider. Everything a developer writes is
 this decorator. A Flask view, a background reconciliation job and a FastMCP tool are all
@@ -55,7 +55,7 @@ class ProtectedMeta:
     """What ``@protect`` records on the callable it wraps.
 
     Attached as ``__sentrykit__`` so that tooling can introspect a protected callable without
-    calling it — which is exactly what Phase 4's ``list_tools`` filtering does to decide
+    calling it — which is exactly what the agent-side ``list_tools`` filtering does to decide
     whether a principal should be shown a tool at all.
 
     Attributes:
@@ -110,7 +110,7 @@ def protect(
     :func:`~sentrykit.context.establish` where that matters.
 
     **No ambient principal and no ``_as=`` means the call is denied**, not run unguarded.
-    That is ADR-003's fail-closed rule, and it is why forgetting to wire a provider surfaces
+    That is the fail-closed rule, and it is why forgetting to wire a provider surfaces
     immediately rather than as a silent hole.
 
     Args:
@@ -191,8 +191,8 @@ def _resolve_principal(meta: ProtectedMeta, override: object) -> Principal:
     Raises:
         ConfigurationError: If ``_as=`` was passed something other than a
             :class:`~sentrykit.context.Principal`.
-        NoContext: If nothing was passed and no principal is ambient. Fail-closed per
-            ADR-003, and deliberately independent of ``fail_mode``: an engine that cannot
+        NoContext: If nothing was passed and no principal is ambient. Fail-closed, and
+            deliberately independent of ``fail_mode``: an engine that cannot
             tell who is calling has nothing to authorize.
     """
     if override is not _ABSENT:

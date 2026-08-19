@@ -1,6 +1,6 @@
 """The protected callables — ordinary functions that know nothing about Flask.
 
-That is the claim ADR-009 makes and this module is where it is visible: there is no request
+One decorator, N context providers — and this module is where that shows: there is no request
 object here, no header, no framework import. The principal arrives ambiently, established by
 :class:`~sentrykit.integrations.flask.FlaskProvider` at the boundary, so the same three
 functions would work unchanged behind FastAPI, an MCP tool, or a cron job.

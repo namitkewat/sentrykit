@@ -44,7 +44,7 @@ EXPECTED_ENTRY_POINTS = {
 
 A backend that is registered in Python but missing from this table is unreachable by DSN in an
 installed distribution — the core finds built-ins through exactly the entry points a third
-party publishes (ADR-004), so an absent line here is a backend that silently does not exist.
+party publishes, so an absent line here is a backend that silently does not exist.
 """
 
 
@@ -158,7 +158,7 @@ def test_the_shipped_pack_is_reachable_as_a_policy_source(
     entry_points: configparser.ConfigParser,
 ) -> None:
     # Spelled out on its own because this is the line that makes `install(policy_source=
-    # "pack://")` work in an installed distribution, and it is new in this phase.
+    # "pack://")` work in an installed distribution.
     assert (
         entry_points.get("sentrykit.policy_sources", "pack")
         == "sentrykit.policy.loader:PackPolicySource"

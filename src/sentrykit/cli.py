@@ -21,7 +21,8 @@ Reachable as the ``sentrykit`` console script and as ``python -m sentrykit.cli``
 :mod:`argparse` from the standard library, and nothing else. Three command groups over a
 stdlib parser is a few dozen lines of wiring, and a dependency bought with every install of a
 library whose entire pitch is that it is thin is a bad trade. Nothing here imports a web
-framework or an agent SDK either — the CLI is core (CLAUDE.md §2).
+framework or an agent SDK either: the CLI is part of the core, and the core stays
+framework-free.
 
 ## The admin surface governs itself
 
@@ -120,7 +121,7 @@ PARSE_SENTINEL: Final = "<parse>"
 
 :func:`~sentrykit.cedar.validate_policies` uses it for a parse error, which by definition has
 no ``@id`` to name. Printing "policy ``<parse>`` failed" would tell an operator nothing, so
-these are reported at file level instead (phase 5 research §1).
+these are reported at file level instead.
 """
 
 CHANNEL: Final = "cli"
@@ -140,7 +141,8 @@ grant record does not already expose."""
 
 @dataclass(frozen=True, slots=True)
 class AuditReport:
-    """A period's decisions, aggregated — ADR-006's "the yearly report is a query", realized.
+    """A period's decisions, aggregated — the yearly audit report as a query, not as manual
+    log-reading.
 
     Aggregated by **outcome** rather than by decision, because ``allow``/``deny`` collapses
     six materially different refusals (and both admin mutations) into two buckets, and an
@@ -232,8 +234,8 @@ def build_report(
         if record.verify():
             verified += 1
         if record.kind == "mutation":
-            # Counted here and nowhere else. Folding a grant into "allowed" is the collapse
-            # ADR-006 exists to prevent: an admin conferring a role is not a call that was
+            # Counted here and nowhere else. Folding a grant into "allowed" would collapse
+            # two different things: an admin conferring a role is not a call that was
             # permitted, it is a change to what will be permitted next.
             mutations += 1
             continue
@@ -398,8 +400,8 @@ def _counts(heading: str, column: str, counts: Mapping[str, int]) -> list[str]:
 def _mutations(report: AuditReport) -> list[str]:
     """Render admin mutations as their own section.
 
-    Separate from the decisions for the reason ADR-006 gives: a grant is not a permitted
-    call, and a report that showed one as an "allow" would understate both.
+    Separate from the decisions, because a grant is not a permitted call, and a report that
+    showed one as an "allow" would understate both.
     """
     lines = ["## Mutations", ""]
     counted = {

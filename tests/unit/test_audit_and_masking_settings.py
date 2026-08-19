@@ -1,4 +1,4 @@
-"""The settings phase 2 adds: where records go, what keys them, and how they are masked.
+"""The audit and masking settings: where records go, what keys them, and how they are masked.
 
 ``MaskDefault`` in :mod:`sentrykit.config` and ``MaskStrategyName`` in
 :mod:`sentrykit.masking` spell out the same four strategies twice. That duplication is
@@ -111,7 +111,7 @@ def test_the_debug_trace_settings_dump_cannot_carry_the_key(
 
 
 @pytest.mark.unit
-def test_the_phase_two_settings_can_be_configured_explicitly() -> None:
+def test_the_audit_and_masking_settings_can_be_configured_explicitly() -> None:
     settings = configure(
         audit_sink="memory://",
         hmac_key=SecretStr(SECRET),

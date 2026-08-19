@@ -36,7 +36,7 @@ model.
 
 ## On-behalf-of is the whole point, and it is not a special mechanism
 
-ADR-008: an agent acting for a human **is** that human, as far as the policy is concerned. The
+An agent acting for a human **is** that human, as far as the policy is concerned. The
 principal established here is the one named in ``deps`` — never a service identity for the
 agent process — so a delegation chain, a team edge or an expiry granted to *alice* is what
 governs the call the model proposed on alice's behalf. Cedar resolves the chain; the model
@@ -52,10 +52,9 @@ wrong three times over, and the last one raises.
 
 So the tool you write is a plain, ``ctx``-free, ``@protect``-ed function, and
 :func:`tool_adapter` builds the ``ctx``-taking callable Pydantic-AI actually registers. The
-adapter carries a synthesized ``__signature__`` that prepends ``ctx``, which
-`dev-docs/notes/phase-4-research.md` §5 verified produces exactly the right tool definition:
-``ctx`` absent from the JSON schema, the docstring's argument descriptions intact. The author
-still writes one decorator, which is the promise in ``CLAUDE.md`` §1.
+adapter carries a synthesized ``__signature__`` that prepends ``ctx``, which produces exactly
+the right tool definition: ``ctx`` absent from the JSON schema, the docstring's argument
+descriptions intact. The author still writes one decorator, which is the whole promise.
 
 ## …and why the adapter re-declares the arguments as optional
 

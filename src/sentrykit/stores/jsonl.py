@@ -1,7 +1,7 @@
 """The append-only JSONL audit sink — one record per line, one writer per file.
 
-Every design choice here is ADR-013, and every one of them was forced by measurement on the
-``win-64`` platform this repo targets rather than chosen for taste:
+Every design choice here was forced by measurement on the ``win-64`` platform this repo
+targets, rather than chosen for taste:
 
 * **``newline="\\n"``, always.** Default text-mode append writes ``\\r\\n`` on Windows. A hash
   chain is over bytes, so left at the default the same record would hash differently per
@@ -13,7 +13,7 @@ Every design choice here is ADR-013, and every one of them was forced by measure
 * **Single writer per file.** Not a shortcut: ``record_hash`` depends on ``prev_hash``, so a
   writer must know the file's tail before it can build the next record, and that state cannot
   be shared across processes without a distributed lock. Concurrent writers get separate files
-  (or a fan-out composite); multi-process durability is what the phase 5 backends are for.
+  (or a fan-out composite); multi-process durability is what a database-backed sink is for.
 * **Flush always, fsync on request.** ``fsync`` costs 3.71 ms per record against 0.007 ms for
   ``flush`` alone. Paying that on every authorization decision to defend against machine
   crash — process crash is already covered by ``flush`` — is the wrong default for a

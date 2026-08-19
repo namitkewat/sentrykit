@@ -3,8 +3,8 @@
 Everything here exists so a test starts from a known-empty world. sentrykit keeps
 process-wide state — the cached :class:`~sentrykit.config.Settings`, per-action overrides,
 the ambient principal and environment, and the installed governor — and a test that inherits
-any of it from whichever test ran before it is exactly the hygiene failure
-``dev-docs/testing-standards.md`` names. The reset is autouse so nobody has to remember it.
+any of it from whichever test ran before it is exactly the hygiene failure this fixture
+exists to prevent. The reset is autouse so nobody has to remember it.
 
 The Cedar policy set below is deliberately small and every policy carries an ``@id``
 annotation, because "the determining policy is reported by its annotation, not by Cedar's

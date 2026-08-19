@@ -1,6 +1,7 @@
 """The example's authorization data: Cedar policy logic, plus the grants that feed it.
 
-The split is ADR-005 in miniature. :data:`POLICY_TEXT` is *logic* — it would live in a
+The split is policies-as-code, grants-as-data in miniature. :data:`POLICY_TEXT` is
+*logic* — it would live in a
 reviewed file under version control and never be rewritten at runtime. :func:`build_grants`
 seeds *data* — who holds which role, and which argument values each principal may pass — the
 only half an admin surface is ever allowed to mutate.

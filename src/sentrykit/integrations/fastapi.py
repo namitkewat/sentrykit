@@ -17,8 +17,7 @@ available separately for apps that want to place them by hand.
 
 ## Why a pure-ASGI middleware, and never a sync dependency
 
-`dev-docs/notes/phase-3-research.md` §1 measured the four places a provider could establish
-context, and only three of them work:
+There are four places a provider could establish context, and only three of them work:
 
 | Established in | reaches an `async def` route | reaches a `def` route |
 | --- | --- | --- |

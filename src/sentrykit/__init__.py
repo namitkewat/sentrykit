@@ -29,8 +29,7 @@ with establish(Principal(id="alice", roles=("support",)), channel="agent"):
     search_orders(customer_id="c-1")
 ```
 
-The caller proposes; the policy decides. See ``dev-docs/architecture.md`` for how the pieces
-fit and ``dev-docs/design-decisions.md`` for why.
+The caller proposes; the policy decides.
 """
 
 from __future__ import annotations

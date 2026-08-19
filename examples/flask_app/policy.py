@@ -1,4 +1,5 @@
-"""Policy logic and grant data for the Flask example — the ADR-005 split, in miniature.
+"""Policy logic and grant data for the Flask example — policies-as-code, grants-as-data,
+in miniature.
 
 The Cedar text below is *code*: it is authored here, reviewed in version control, and never
 rewritten at runtime. Everything that changes per person — who is support, who is an auditor,

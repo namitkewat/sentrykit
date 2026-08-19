@@ -5,10 +5,11 @@ Cedar", and the rest of the core is built on that being true: everything downstr
 `CedarDecision`, a normalized value object, which is what keeps the decision path unit-testable
 without a policy set and what leaves room for a different engine binding behind that seam.
 
-Phase 2 nearly broke it. `FilesystemPolicySource` needs Cedar's validator, and reaching for
-`cedarpy.validate_policies` directly would have put a second import in a second module — at
-which point the claim becomes a comment rather than a property. `cedar.validate_policies` and
-`cedar.policy_annotations` exist so the policy layer can get what it needs through the seam.
+The policy layer is where it is easiest to break. `FilesystemPolicySource` needs Cedar's
+validator, and reaching for `cedarpy.validate_policies` directly would put a second import in
+a second module — at which point the claim becomes a comment rather than a property.
+`cedar.validate_policies` and `cedar.policy_annotations` exist so the policy layer can get
+what it needs through the seam.
 
 Checked statically, for the same reason `test_core_imports.py` is: walking `sys.modules` would
 pass vacuously.

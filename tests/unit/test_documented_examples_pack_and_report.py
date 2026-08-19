@@ -1,13 +1,13 @@
-"""The examples in the Phase 5 docs do what those pages say they do.
+"""The shipped-pack and audit-report examples in the docs do what those pages say they do.
 
-Same reason as its predecessors, restated once more because it keeps being the thing that
-matters: documentation that has drifted from the code is worse than none, because a reader
-trusts it, copies it, and then debugs the wrong thing.
+Same reason as the other pinning modules, restated once more because it keeps being the thing
+that matters: documentation that has drifted from the code is worse than none, because a
+reader trusts it, copies it, and then debugs the wrong thing.
 
-This file pins what Phase 5 added to `docs/policies.md` (the shipped policy pack, the schema
-opt-in, template-linked grants, administering grants) and to `docs/audit.md` (the audit
-report). Every literal asserted here appears verbatim on one of those pages. If a page and
-this file disagree, one of them is a bug.
+This file pins the pack half of `docs/policies.md` (the shipped policy pack, the schema
+opt-in, template-linked grants, administering grants) and the report half of
+`docs/audit.md`. Every literal asserted here appears verbatim on one of those pages. If a
+page and this file disagree, one of them is a bug.
 """
 
 from __future__ import annotations

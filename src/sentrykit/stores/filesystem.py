@@ -1,8 +1,8 @@
 """The zero-config policy source: Cedar policy logic read from a directory on disk.
 
-ADR-005 makes policy *logic* an artifact that is authored in git and reviewed before it
-ships. This is the local end of that pipeline — the same directory a developer edits, and the
-same one a build step syncs out of a versioned S3 prefix — so what runs in a test is loaded
+Policy *logic* is an artifact: authored in git and reviewed before it ships. This is the
+local end of that pipeline — the same directory a developer edits, and the same one a build
+step syncs out of a versioned S3 prefix — so what runs in a test is loaded
 by the identical code path that will later load the deployed bundle.
 
 Three details are load-bearing rather than incidental:
@@ -11,8 +11,8 @@ Three details are load-bearing rather than incidental:
   parsed, so the concatenation order decides the generated ``policyN`` ids. A load in
   directory order would produce a different provenance index per machine.
 * **The bundle is built from one string.** The combined text is assembled first, and both the
-  :class:`~sentrykit.cedar.PolicyEngine` and the annotation index come out of it — per phase
-  2 research §3, deriving the index from anything else silently mis-joins every decision.
+  :class:`~sentrykit.cedar.PolicyEngine` and the annotation index come out of it. Deriving
+  the index from anything else silently mis-joins every decision.
   Per-file ``origin`` is then stitched back on by counting how many policies each file
   contributed, which is the one thing the combined parse cannot tell us.
 * **Validation is reported, not raised.** Cedar reports a policy parse error, a schema
@@ -42,8 +42,8 @@ _LOGGER: Final = logging.getLogger("sentrykit.stores.filesystem")
 SCHEMA_PATTERN: Final = "*.cedarschema"
 """What a schema file is called when the source is left to find one itself.
 
-Cedar *schema syntax*, not the JSON form: phase 2 research established that
-``cedarpy.Schema.from_str`` rejects the JSON schema with ``unexpected token '{'``.
+Cedar *schema syntax*, not the JSON form: ``cedarpy.Schema.from_str`` rejects the JSON
+schema with ``unexpected token '{'``.
 """
 
 

@@ -1,7 +1,7 @@
-"""The phase-4 examples in the docs do what they say, down to the printed values.
+"""The agent examples in the docs do what they say, down to the printed values.
 
-`tests/unit/test_documented_examples*.py` pin the phase 1 and 2 pages and
-`test_documented_examples_phase3.py` pins the web page; this pins the two agent examples —
+The unit-suite `test_documented_examples*.py` modules pin the quickstart and the store pages
+and `test_documented_examples_web.py` pins the web page; this pins the two agent examples —
 `examples/fastmcp_server/README.md`, `examples/pydantic_ai_agent/README.md` — and the module
 docstrings of `sentrykit.integrations.fastmcp`, `sentrykit.integrations.pydantic_ai` and
 `sentrykit.integrations.tools`.
@@ -439,8 +439,8 @@ def test_a_manifest_probe_with_no_governor_refuses_rather_than_showing_everythin
     """The docstring's fail-closed rule, applied to the manifest.
 
     "A manifest that silently showed everything because nothing was installed would be the
-    exact failure mode ADR-003 exists to prevent" — so a protected tool with no governor is a
-    `ConfigurationError`, not a shrug.
+    exact failure the fail-closed rule exists to prevent" — so a protected tool with no
+    governor is a `ConfigurationError`, not a shrug.
     """
     with pytest.raises(sentrykit.ConfigurationError, match="no governor is installed"):
         decide_tool("search_orders", agent_search_orders, principal=sentrykit.Principal(id="alice"))
@@ -574,7 +574,7 @@ async def test_the_mcp_readme_argument_filtering_prints_what_it_says() -> None:
 
     Also pins the second "detail worth copying": the caller's own proposal reaches the
     decorator untouched, which is why `cn` is in `rejected` at all rather than having been
-    quietly overwritten by the plan.
+    quietly overwritten before the decision.
     """
     async with serving() as client:
         result = await client.call_tool("search_orders", {"region": "cn", "limit": 5}, meta=ALICE)
@@ -785,7 +785,7 @@ def test_the_fastmcp_module_docstring_example_wires_a_server_as_written() -> Non
 
 @pytest.mark.integration
 def test_the_standalone_fastmcp_distribution_is_never_imported() -> None:
-    """Pins the module docstring's warning, `docs/agents.md`'s admonition, and research §0.
+    """Pins the module docstring's warning and `docs/agents.md`'s admonition.
 
     Three places say it, so it is worth being sure once: `sentrykit[fastmcp]` installs
     `mcp>=2,<3` and the separately published `fastmcp` distribution — which is in this
@@ -816,7 +816,7 @@ def test_the_standalone_fastmcp_distribution_is_never_imported() -> None:
 
 # --- docs/agents.md -----------------------------------------------------------------------------
 #
-# The page a reader arrives at before either README. `test_documented_examples_phase3.py` pins
+# The page a reader arrives at before either README. `test_documented_examples_web.py` pins
 # `docs/web-frameworks.md` the same way, and for the same reason: a page is a promise, and an
 # unchecked promise drifts.
 

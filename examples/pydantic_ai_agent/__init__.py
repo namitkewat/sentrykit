@@ -1,1 +1,1 @@
-"""Example: pydantic_ai_agent — built in the phased plan (see dev-docs/implementation.md)."""
+"""Example: a Pydantic-AI agent whose tools are protected by sentrykit."""

@@ -1,8 +1,9 @@
 """The examples in `docs/web-frameworks.md` and the README's web section do what they say.
 
-`tests/unit/test_documented_examples*.py` pin the phase 1 and phase 2 pages; this pins the web
-page. Same reason, restated because it keeps mattering: documentation that has drifted from the
-code is worse than none, because a reader trusts it, copies it, and then debugs the wrong thing.
+The unit-suite `test_documented_examples*.py` modules pin the quickstart and the store pages;
+this pins the web page. Same reason, restated because it keeps mattering: documentation that
+has drifted from the code is worse than none, because a reader trusts it, copies it, and then
+debugs the wrong thing.
 
 Every literal asserted here appears verbatim on one of those two pages. If a page and this file
 disagree, one of them is a bug.
@@ -248,7 +249,7 @@ def test_a_response_model_really_does_strip_the_authz_envelope() -> None:
 
 @pytest.mark.integration
 def test_a_synchronous_dependency_really_cannot_establish_context() -> None:
-    """Pins the page's warning, and the measurement in `dev-docs/notes/phase-3-research.md` §1.
+    """Pins the page's warning about where context can and cannot be established.
 
     A `def` dependency runs in its own AnyIO worker thread with a copy of the context, so its
     establishment is discarded on return and the route sees nothing. The async yield-dependency

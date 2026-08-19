@@ -23,8 +23,8 @@ its policies name any. Each pattern reads the *shape* of the request instead:
 * the **grant store** supplies the principal's edges and attributes;
 * the **context** supplies ``now``, ``break_glass``, ``on_behalf_of`` and ``justification``.
 
-So adopting a pattern is a matter of putting an attribute on an entity, which is data — which
-is the whole of ADR-005 restated for the pack.
+So adopting a pattern is a matter of putting an attribute on an entity, which is data. The
+policy logic itself stays reviewed in version control and is never rewritten at runtime.
 
 ## The schema is opt-in, and the reason matters
 
@@ -32,9 +32,9 @@ is the whole of ADR-005 restated for the pack.
 it on the bundle unless asked (``pack://?schema=true``). A composite concatenates its members'
 schemas, and a Cedar engine built *with* a schema validates every request against it — so a
 pack that contributed a schema by default would make every request naming an action the pack
-never heard of fail to parse, in an application that was working a moment earlier. Phase 5
-research measured the pack's decisions to be identical with and without the schema, so the
-default costs nothing and the opt-in is a real choice rather than a workaround.
+never heard of fail to parse, in an application that was working a moment earlier. The pack's
+decisions are identical with and without the schema, so the default costs nothing and the
+opt-in is a real choice rather than a workaround.
 
 When you do opt in, your own schema must declare only what the pack does not: redeclaring
 ``User``, ``Role``, ``Group`` or ``Resource`` is a Cedar schema parse error
@@ -43,8 +43,8 @@ When you do opt in, your own schema must declare only what the pack does not: re
 
 ## Templates are linked here, not by Cedar
 
-``cedarpy`` 4.8.7 exposes no template-linking API at all (phase 5 research §5), and an
-unlinked template in a policy set is inert. :func:`link_template` therefore performs the
+``cedarpy`` 4.8.7 exposes no template-linking API at all, and an unlinked template in a
+policy set is inert. :func:`link_template` therefore performs the
 link on our side — textual substitution of ``?principal`` and ``?resource`` — and returns the
 concrete policy *and* the matching :class:`~sentrykit.stores.base.GrantSpec` together, since
 a time-boxed grant is a rule and a piece of data at the same time.
@@ -126,7 +126,7 @@ class PackPattern:
         requires: The entity attributes and context keys the pattern reads, so a host can
             tell what data adopting it needs. Spelled ``resource.owner``, ``context.now``,
             ``principal.elevation_until``.
-        obligations: The obligations the pattern's permits carry, if any (ADR-012).
+        obligations: The obligations the pattern's permits carry, if any.
     """
 
     name: str
@@ -536,7 +536,7 @@ def link_template(
 ) -> TemplateLink:
     """Link a Cedar template into a concrete policy, and the grant that records it.
 
-    ``cedarpy`` has no linking API (phase 5 research §5), so the link is textual: every
+    ``cedarpy`` has no linking API, so the link is textual: every
     ``?principal`` becomes the principal's uid and every ``?resource`` becomes the resource's,
     an ``@id(link_id)`` annotation is prepended, and — when ``expires_at`` is given — a
     ``when { context has now && context.now <= <epoch> }`` condition is appended so the policy

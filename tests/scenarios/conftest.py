@@ -5,9 +5,9 @@ governor with ``install(policy_source="pack://", ...)``, establishes a real prin
 real ``@protect``-ed function, and then asserts two things: what the pack decided, and **how
 many audit records the decision wrote**.
 
-The second half is not decoration. In phase 4 a double-write of the audit record satisfied every
-behavioural assertion in the suite — the call was allowed, the envelope was right, the record
-was there — and was caught only by counting. So every scenario ends on
+The second half is not decoration. A double-write of the audit record satisfies every
+behavioural assertion in the suite — the call is allowed, the envelope is right, the record is
+there — and is caught only by counting. So every scenario ends on
 :attr:`AuditLog.outcomes`, which reads the log back through the public query path and returns
 the exact ``(kind, outcome)`` sequence. One governed call through ``@protect`` is one record.
 
@@ -186,7 +186,7 @@ def govern(sink: InMemoryAuditSink) -> Install:
 # are two unrelated worlds, so a ``grant`` followed by a ``revoke`` could never be asserted end
 # to end. These two backends are the same in-memory implementations reached through a DSN that
 # resolves to one instance per target, registered exactly the way a third-party backend
-# registers (ADR-004). The CLI cannot tell them apart from ``memory://``, which is the point.
+# registers. The CLI cannot tell them apart from ``memory://``, which is the point.
 #
 # Registration happens per test, in :func:`shared_backends`, and is undone afterwards. It is
 # process-global state, and a unit test elsewhere asserts that the documented backend list is

@@ -1,6 +1,6 @@
 """Both web providers are reachable by name, through the same door a third party would use.
 
-ADR-004 says built-ins are not special-cased: ``fastapi`` reaches the registry by exactly the
+Built-ins are not special-cased: ``fastapi`` reaches the registry by exactly the
 path ``sentrykit-django`` would. That is only demonstrated if the in-process registration the
 ``@register_context_provider`` decorator made at import time is taken *away* first — otherwise
 every assertion below would pass on the decorator alone and the published entry point could be

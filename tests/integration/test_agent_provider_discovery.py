@@ -1,7 +1,7 @@
 """Both agent providers are reachable by name, through the same door a third party would use.
 
 The mirror of `tests/integration/test_web_provider_discovery.py`, and it makes the same point
-for the same reason. ADR-004 says built-ins are not special-cased: ``fastmcp`` reaches the
+for the same reason. Built-ins are not special-cased: ``fastmcp`` reaches the
 registry by exactly the path ``sentrykit-langchain`` would. That is only demonstrated if the
 in-process registration the ``@register_context_provider`` decorator made at import time is
 taken *away* first — otherwise every assertion below would pass on the decorator alone and the

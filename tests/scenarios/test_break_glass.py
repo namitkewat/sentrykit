@@ -1,11 +1,10 @@
 """Break-the-glass: an entitlement, a flag *and* a justification — never a flag alone.
 
-The middle test is the one this file exists for. Phase 5 research measured the obvious draft of
-this pattern — a permit conditioned on ``context.break_glass`` — and found it authorized
-literally anyone, because the flag is caller-supplied and a Cedar permit needs no base
-entitlement to fire. So the last scenario here sets the flag from a principal who holds no
-emergency role and asserts the refusal. If that ever starts passing as an allow, the pack has
-grown the hole back.
+The middle test is the one this file exists for. The obvious draft of this pattern — a permit
+conditioned on ``context.break_glass`` — authorizes literally anyone, because the flag is
+caller-supplied and a Cedar permit needs no base entitlement to fire. So the last scenario
+here sets the flag from a principal who holds no emergency role and asserts the refusal. If
+that ever starts passing as an allow, the pack has grown the hole back.
 """
 
 from __future__ import annotations
@@ -72,7 +71,7 @@ def test_a_break_glass_call_carries_both_obligations(govern: Install, log: Audit
     ):
         open_vault()
 
-    # ADR-012: the obligation rides on the permit, so a call that proceeded under the glass
+    # The obligation rides on the permit, so a call that proceeded under the glass
     # cannot proceed quietly — both the caller-facing envelope and the immutable record say so.
     envelope = last_envelope()
     assert envelope is not None

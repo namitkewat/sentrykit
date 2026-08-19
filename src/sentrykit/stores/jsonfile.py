@@ -21,8 +21,8 @@ Four decisions, and none of them is taste:
   A write that dies halfway leaves the previous grants untouched, which is the property a
   store of "who may do what" has to have. Unlike
   :class:`~sentrykit.stores.jsonl.JsonlAuditSink`, ``fsync`` is unconditional here: a grant is
-  a rare administrative event, not a per-decision cost, so ADR-013's 3.71 ms measurement buys
-  durability where it is cheap.
+  a rare administrative event, not a per-decision cost, so the 3.71 ms an ``fsync`` costs on
+  this platform buys durability where it is cheap.
 * **Records round-trip through pydantic with ``exclude_unset=True``.** Not an optimization —
   a correctness requirement. :attr:`~sentrykit.constraints.ArgumentConstraint.has_default`
   is derived from ``model_fields_set``, so a full ``model_dump`` writes ``"default": null``
@@ -33,8 +33,8 @@ Four decisions, and none of them is taste:
   on the hot path of every governed call, so the file is re-read only when its
   ``st_mtime_ns`` **or** ``st_size`` differs from the pair recorded at the last read.
 
-**One writing process at a time.** Stated as plainly as ADR-013 states it for the audit sink:
-this is a store for a single-node deployment, a development loop, and the CLI. Two processes
+**One writing process at a time.** As with the JSONL audit sink, this is a store for a
+single-node deployment, a development loop, and the CLI. Two processes
 writing concurrently can lose a grant, because each replaces the whole document with its own
 view of it and no lock is taken — ``fcntl`` does not exist on Windows and a cross-platform
 lock file would be a distributed-locking protocol wearing a disguise. Readers are safe against
@@ -514,7 +514,7 @@ class JsonFileGrantStore(InMemoryGrantStore):
         # temp name even though they are not allowed to collide on the document.
         temp = self._path.with_name(f"{self._path.name}.{os.getpid()}-{uuid4().hex[:8]}.tmp")
         try:
-            # newline="\n" for the same reason ADR-013 pins it in the audit sink: text mode
+            # newline="\n" for the same reason the audit sink pins it: text mode
             # writes \r\n on Windows, and a file this library both writes and reads should not
             # differ byte for byte per platform.
             with temp.open("w", encoding="utf-8", newline="\n") as handle:

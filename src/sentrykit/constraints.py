@@ -1,9 +1,9 @@
 """Per-(principal, action) argument constraints: the layer that filters what a caller may pass.
 
 Cedar's gate is boolean — it answers "may this principal perform this action on this
-resource", not "with which arguments". ADR-002 keeps argument-level enforcement in Python,
-driven by attribute data resolved from the grant store, with a Cedar ``forbid`` backstop as
-defense in depth. This module is that enforcement, and nothing in it knows about Cedar, the
+resource", not "with which arguments". So argument-level enforcement stays in Python, driven
+by attribute data resolved from the grant store, with a Cedar ``forbid`` backstop as defense
+in depth. This module is that enforcement, and nothing in it knows about Cedar, the
 engine, or the decorator: it is a pure function from constraints plus proposed arguments to
 kept, rejected and defaulted arguments.
 
@@ -100,8 +100,7 @@ class RejectedArgument(BaseModel):
         reason: A sentence-case explanation suitable for showing to the caller.
         policy: Id of the policy or grant that carried the constraint, when known.
         value: The offending value. Emitted only at ``verbose`` verbosity or above, and
-            masked before any audit write once Phase 2's masking lands — never assume this
-            is safe to log.
+            masked before any audit write — never assume this is safe to log.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")

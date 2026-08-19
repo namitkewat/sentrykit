@@ -13,7 +13,8 @@ change profiles and three different guarantees:
   fan out.
 
 They are :class:`~typing.Protocol` s, not base classes, so a third-party backend satisfies
-them structurally without importing anything from sentrykit — the discovery half of ADR-004.
+them structurally without importing anything from sentrykit — the discovery half of the
+plugin mechanism.
 Every reference implementation in this package registers through the same decorator a
 third-party package would use, so the core cannot tell them apart.
 
@@ -69,7 +70,7 @@ GrantKind = Literal["role", "parent", "attribute", "constraint"]
 """
 
 OBLIGATIONS_ANNOTATION: Final = "obligations"
-"""The Cedar annotation obligations are declared in, per ADR-012.
+"""The Cedar annotation obligations are declared in.
 
 One comma-separated value, because Cedar rejects a repeated annotation key outright
 (``ValueError: duplicate annotation``).
@@ -147,7 +148,8 @@ class PolicyBundle:
         entities: The stable entity graph the source contributes — roles, teams, resources.
             Principals come from a :class:`GrantStore`, never from here.
         provenance: One entry per static policy, in Cedar's numbering order.
-        bundle_hash: Digest pinning the exact logic a decision was made against, per ADR-006.
+        bundle_hash: Digest pinning the exact logic a decision was made against, so the
+            decision replays.
         source: Name of the source (or composite) that produced this bundle.
     """
 
@@ -215,8 +217,8 @@ class PolicyBundle:
     def obligations_for(self, determining: Sequence[str], *, allowed: bool) -> tuple[str, ...]:
         """Collect the obligations attached to the policies that decided a request.
 
-        Per ADR-012, only the determining **permit** policies contribute obligations to a
-        call that proceeds — an obligation on a ``forbid`` describes what must happen about a
+        Only the determining **permit** policies contribute obligations to a call that
+        proceeds — an obligation on a ``forbid`` describes what must happen about a
         refusal, and belongs to the denial record instead.
 
         Args:
@@ -288,8 +290,8 @@ class PolicyBundle:
 class PolicySource(Protocol):
     """Where Cedar policy logic comes from.
 
-    Read-mostly by construction: policy *logic* is reviewed in version control (ADR-005), so
-    a source's job is to fetch an artifact and say which artifact it fetched — never to
+    Read-mostly by construction: policy *logic* is reviewed in version control, so a
+    source's job is to fetch an artifact and say which artifact it fetched — never to
     author or mutate policy at runtime.
 
     Implementations are addressed by DSN and registered under the
@@ -328,7 +330,7 @@ class PolicySource(Protocol):
 class GrantSpec(BaseModel):
     """A grant to make: what to confer on whom, and for how long.
 
-    Grants are *data* (ADR-005). Nothing here changes reviewed policy logic — a role is a
+    Grants are *data*, never logic. Nothing here changes reviewed policy — a role is a
     parent edge, an expiry is a timestamp the store enforces at materialization, and an
     argument constraint is an attribute of the grant. That separation is what lets an admin
     API exist without an approval workflow around every call.
@@ -543,7 +545,7 @@ class GrantStore(Protocol):
 
 
 class AuditWindow(BaseModel):
-    """A filter over an audit log — the query half of ADR-006's "the report is a query".
+    """A filter over an audit log — the query half of "the yearly report is a query".
 
     Every field narrows; an empty window matches everything. Filtering lives on the window
     rather than in each sink so that a third-party backend can push down what it can and lean
@@ -596,9 +598,9 @@ class AuditWindow(BaseModel):
 class AuditSink(Protocol):
     """Where audit records are written, and read back from.
 
-    Append-only and tamper-evident (ADR-006). A sink never updates or deletes a record, and
-    never masks one: by the time a record reaches :meth:`write` its sensitive values are
-    already masked, because ADR-007 puts masking upstream of the immutable write and
+    Append-only and tamper-evident. A sink never updates or deletes a record, and never
+    masks one: by the time a record reaches :meth:`write` its sensitive values are already
+    masked, because masking runs upstream of the immutable write and
     :class:`~sentrykit.audit.AuditTrail` is the only thing that calls this method.
 
     Implementations are addressed by DSN and registered under the ``sentrykit.audit_sinks``
@@ -667,16 +669,16 @@ class NullAuditSink:
         return iter(())
 
 
-# --- context provider (phase 3) ----------------------------------------------------------
+# --- context provider ---------------------------------------------------------------------
 
 
 @runtime_checkable
 class ContextProvider(Protocol):
     """How a framework establishes ambient context and renders sentrykit's refusals.
 
-    Stubbed here so the plugin machinery is uniform across all four entry-point groups from
-    the start (ADR-004): phases 3 and 4 add implementations under
-    ``sentrykit/integrations/``, and the registry needs the contract to exist before they do.
+    Declared here, with the other three contracts, so the plugin machinery is uniform across
+    all four entry-point groups. The implementations live under ``sentrykit/integrations/``,
+    behind optional extras, and the core must not import them to know the contract.
     Registered under the ``sentrykit.context_providers`` entry-point group.
     """
 

@@ -1,8 +1,8 @@
 """Tool-manifest filtering: deciding what a principal is even *shown*.
 
-The agent half of ADR-009. A web provider has one job — establish context at the boundary —
-because an HTTP client already knows which URLs exist. An agent boundary has a second job: it
-tells the model what it may *attempt*, and that manifest is per-caller.
+The agent half of one-decorator-N-providers. A web provider has one job — establish context
+at the boundary — because an HTTP client already knows which URLs exist. An agent boundary
+has a second job: it tells the model what it may *attempt*, and that manifest is per-caller.
 
 This module is the shared half of that, and it is deliberately framework-free. It imports no
 `mcp` and no `pydantic_ai`; MCP's ``tools/list`` and Pydantic-AI's ``prepare`` are two
@@ -110,7 +110,7 @@ class ToolDecision:
             means no decision was made and :attr:`visible` is ``True`` by default — see the
             module docstring.
         error: The refusal that hid it, or the argument-level refusal that did not. ``None``
-            when the plan succeeded or the tool is ungoverned.
+            when planning succeeded or the tool is ungoverned.
         plan: The successful plan, when there was one. Carries the action, the resource and
             the principal's argument constraints, which is what an optional schema-narrowing
             pass reads.
@@ -130,8 +130,8 @@ def governed_meta(fn: object) -> ProtectedMeta | None:
     :func:`proposable` shim; Pydantic-AI registers a ``ctx``-taking adapter around that shim,
     which is **two** hops. Each layer records what it wraps under ``__wrapped__``, so the whole
     chain is walked rather than a fixed number of links -- a filter that stopped one hop short
-    would read a governed tool as ungoverned and advertise it to everybody, which is ADR-017's
-    failure mode exactly.
+    would read a governed tool as ungoverned and advertise it to everybody — exactly the
+    failure the manifest filter exists to prevent.
 
     Args:
         fn: The registered tool callable.
@@ -210,7 +210,7 @@ def decide_tool(
     Raises:
         ConfigurationError: If ``fn`` is protected but no governor can be resolved. A manifest
             that silently showed everything because nothing was installed would be the exact
-            failure mode ADR-003 exists to prevent.
+            failure the fail-closed rule exists to prevent.
     """
     meta = governed_meta(fn)
     if meta is None:
@@ -345,11 +345,10 @@ def proposable(
 
     Both agent frameworks validate a proposal against the tool's advertised JSON schema
     *before* dispatch, so an argument the schema marks ``required`` can never be left out and
-    can therefore never be filled in from the principal's defaults --
-    `dev-docs/notes/phase-4-research.md` §10 measured it on each of them independently. Without
-    this shim, default injection is unreachable from an agent at all, which would leave one of
-    the three things sentrykit does undemonstrable at the very boundary Phase 4 exists to
-    govern.
+    can therefore never be filled in from the principal's defaults -- and that holds on each
+    of the two frameworks independently. Without this shim, default injection is unreachable
+    from an agent at all, which would leave one of the three things sentrykit does unusable at
+    the very boundary the agent integrations exist to govern.
 
     This is the same move the FastAPI example already makes one layer out: its route declares
     ``region: str | None = None`` and forwards only what the caller actually supplied. An

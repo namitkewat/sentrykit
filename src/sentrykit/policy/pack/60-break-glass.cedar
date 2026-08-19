@@ -1,7 +1,7 @@
 // Emergency access: an entitlement, a flag *and* a justification -- never a flag alone.
 //
-// Phase 5 research measured the obvious draft, a permit conditioned on `context.break_glass`
-// only, and found that it authorizes literally anyone: the flag is caller-supplied, and a
+// The obvious draft -- a permit conditioned on `context.break_glass` only -- authorizes
+// literally anyone: the flag is caller-supplied, and a
 // Cedar permit needs no base entitlement to fire. So the resource declares an
 // `emergency_role`, the principal must be in it, and the context must carry a non-empty
 // justification.

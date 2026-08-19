@@ -1,10 +1,10 @@
 """Masking — the step that runs immediately before every audit write.
 
-ADR-007's reasoning in one line: anything written to an append-only store is permanent, so a
-raw sensitive value written there cannot be withdrawn, and masking at read or report time is
-too late by definition. ADR-014 adds the consequence: masking on the audit path is *not*
-configurable. The ``redaction`` setting governs the caller-facing envelope and the
-operational logs; it cannot switch off the mask before an immutable write.
+The reasoning in one line: anything written to an append-only store is permanent, so a raw
+sensitive value written there cannot be withdrawn, and masking at read or report time is too
+late by definition. The consequence: masking on the audit path is *not* configurable. The
+``redaction`` setting governs the caller-facing envelope and the operational logs; it cannot
+switch off the mask before an immutable write.
 
 Four strategies, trading recoverability against exposure:
 
@@ -62,7 +62,7 @@ __all__ = [
 ]
 
 MaskStrategyName = Literal["redact", "partial", "hmac", "tokenize"]
-"""The four masking strategies, per ADR-007."""
+"""The four masking strategies a value can be written through."""
 
 MASK_VERBS: Final[frozenset[str]] = frozenset({"mask", "redact", "partial", "hmac", "tokenize"})
 """Obligation verbs that select a masking strategy.
@@ -233,7 +233,8 @@ class TokenVault(Protocol):
 
     Deliberately *not* an audit store: it is mutable, so a subject-erasure request can drop
     the mapping and leave the audit chain intact but no longer resolvable. Putting it in the
-    append-only store would make the erasure impossible, which is the whole point of ADR-007.
+    append-only store would make the erasure impossible, which is the whole point of masking
+    upstream of the write.
     """
 
     def tokenize(self, value: str, *, field: str) -> str:
@@ -369,8 +370,7 @@ class Masker:
                 consumed; anything else is ignored here and left for the host.
 
         Returns:
-            Field name to the strategy that will mask it. An obligation beats a declaration,
-            per ADR-014.
+            Field name to the strategy that will mask it. An obligation beats a declaration.
         """
         resolved: dict[str, MaskStrategyName] = {}
         for name, declared_strategy in (declared or {}).items():

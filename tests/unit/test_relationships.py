@@ -1,12 +1,12 @@
 """Multi-hop authorization relationships are resolved by Cedar, not by application code.
 
-This is the claim sentrykit is built around (``CLAUDE.md`` §1, ADR-008): a principal may
+This is the claim sentrykit is built around: a principal may
 reach a resource through a chain of entity edges — user in team, team in division, division
 on project, project owns the record — and that chain is walked deterministically by Cedar's
 entity hierarchy, never inferred by a model and never reimplemented as a ladder of ``if``
 statements in the caller.
 
-The mechanism is Phase 1's, so it is proved here rather than deferred to the Phase 4
+The mechanism belongs to the core, so it is proved here rather than left to the agent
 showcase: :meth:`~sentrykit.context.Principal.all_parents` turns roles and teams into parent
 edges, :class:`~sentrykit.cedar.Entity` carries the rest of the graph, and Cedar computes the
 transitive closure. Nothing in ``sentrykit`` walks the chain itself — which is exactly why

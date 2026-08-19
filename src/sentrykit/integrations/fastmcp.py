@@ -27,9 +27,8 @@ invoke.
 The name is the one the extra, the entry point and the docs commit to — ``sentrykit[fastmcp]``,
 ``fastmcp://``. What it is built against is **mcp 2.0**, where the ergonomic server class was
 renamed `mcp.server.fastmcp.FastMCP` → :class:`mcp.server.mcpserver.MCPServer`. Nothing here
-imports the standalone `fastmcp` distribution, which does not import against mcp 2.0 at all
-(`dev-docs/notes/phase-4-research.md` §0). If you have installed it hoping to use this module,
-you do not need it.
+imports the standalone `fastmcp` distribution, which does not import against mcp 2.0 at all.
+If you have installed it hoping to use this module, you do not need it.
 
 ## Register protected tools with `governed_tool`, and nothing else
 
@@ -66,16 +65,16 @@ happens, which is architecture §8 made concrete. The refusal then travels out a
 structured content, so the model gets a structured reason it can act on instead of an opaque
 error string.
 
-Deciding it *here* instead — planning the call in the middleware ahead of ``call_next`` — also
-works, and was how this module was built first. It was replaced because it decides every
-allowed call twice: measured, one allowed dispatch wrote **two** ``allowed`` audit records, and
-a library positioned audit-first cannot have its own log double-count. It also forced the
-caller-facing envelope to be *reconstructed* from the pre-flight plan, so ``defaults_applied``
-described a decision the decorator had not made. Both problems disappear when the refusal is
-carried out rather than predicted (ADR-019).
+Deciding it *here* instead — planning the call in the middleware ahead of ``call_next`` —
+also works, and is not what this module does, because it decides every allowed call twice:
+one allowed dispatch then writes **two** ``allowed`` audit records, and a library positioned
+audit-first cannot have its own log double-count. It also forces the caller-facing envelope
+to be *reconstructed* from the pre-flight plan, so ``defaults_applied`` describes a decision
+the decorator had not made. Both problems disappear when the refusal is
+carried out rather than predicted.
 
 What the middleware still owns is the *rendering*, and that shape is not a style choice.
-Research §3 measured all three options against a live client:
+Measured against a live client, the three options differ:
 
 | the middleware… | what the client sees |
 | --- | --- |
@@ -609,8 +608,7 @@ class SentrykitToolMiddleware:
     For a ``tools/call`` the lifecycle is the web providers' exactly: establish on the way in,
     release in a ``finally``. The release is not tidiness — a dispatch that kept the previous
     caller's principal would authorize the next model call as somebody else, which is the
-    worst failure this library can have. `dev-docs/notes/phase-4-research.md` §1 measured it
-    on this transport specifically.
+    worst failure this library can have.
 
     Args:
         server: The server whose tools are being governed, used to resolve an advertised tool

@@ -12,7 +12,7 @@ pip install sentrykit
 
 ## 1. Write the policy
 
-Cedar policy logic lives in files under version control (ADR-005). For a first run a string
+Cedar policy logic lives in files under version control. For a first run a string
 literal is fine.
 
 ```python

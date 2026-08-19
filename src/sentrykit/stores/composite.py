@@ -1,4 +1,4 @@
-"""Many backends behind one Protocol — the second half of ADR-004.
+"""Many backends behind one Protocol — the second half of the plugin mechanism.
 
 Multiplicity never reaches the core. Configure three audit sinks and the governor still holds
 exactly one :class:`~sentrykit.stores.base.AuditSink`; configure two policy directories and it
@@ -11,10 +11,10 @@ The three compose differently, because the three stores guarantee different thin
 * **Policy sources union.** Their bundles are concatenated in a fixed order and reparsed as
   one policy text. There is deliberately **no source precedence, and no "later source wins"
   rule**: in Cedar an override is expressed as a ``forbid``, and forbid always beats permit
-  no matter where either policy sits in the text. That property — confirmed by experiment in
-  the phase 2 research notes — is exactly what makes merging sources safe at all. Ordering is
-  fixed only because Cedar numbers policies *positionally*, so the provenance index and the
-  engine must be built from one identical string.
+  no matter where either policy sits in the text. That property is exactly what makes
+  merging sources safe at all. Ordering is fixed only because Cedar numbers policies
+  *positionally*, so the provenance index and the engine must be built from one identical
+  string.
 * **Grant stores merge or route.** Merge-by-precedence when the members are overlapping views
   of the same population (earlier members win per field); route-by-namespace when every member
   declares one and each owns a disjoint population.

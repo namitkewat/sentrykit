@@ -20,8 +20,8 @@ callers who should not see either:
     Adds the trace: determining policies, the policy-set hash, timings, and the effective
     settings. For development and incident response.
 
-The envelope is a report, not the audit record. The audit record (Phase 2) is written
-append-only, masked, and hash-chained regardless of what verbosity shows the caller.
+The envelope is a report, not the audit record. The audit record is written append-only,
+masked, and hash-chained regardless of what verbosity shows the caller.
 """
 
 from __future__ import annotations
@@ -69,8 +69,8 @@ class AuthzEnvelope(BaseModel):
             so the field keeps one shape at every verbosity and a caller can always read
             ``defaults_applied.keys()``.
         obligations: Obligations the policy attached to the decision — break-the-glass
-            justification, review requirements. Carried through in Phase 1 and discharged
-            by the policy pack in Phase 5.
+            justification, review requirements. Carried through from the determining
+            policies; the shipped policy pack is what attaches them.
         reason: Why a denial happened, in one sentence.
         determining_policies: The policies that decided it. ``debug`` only, since policy ids
             describe the shape of the rule set.
@@ -208,7 +208,7 @@ def attach_envelope(result: T, envelope: AuthzEnvelope | None) -> T:
     the report travels with the answer. Any other result is returned untouched: rewrapping
     it would change the protected callable's return type and break both static typing and
     every caller. Those callers read :func:`last_envelope` instead, which is how the
-    framework providers in Phase 3 attach it to an HTTP response.
+    web framework providers attach it to an HTTP response.
 
     Args:
         result: Whatever the protected callable returned.

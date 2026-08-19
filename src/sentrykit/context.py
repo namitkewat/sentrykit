@@ -5,9 +5,9 @@ a request, an agent tool takes the arguments the model proposed, a background jo
 none. Threading a principal through every signature between the boundary and the call would
 be the tax that stops teams from protecting the inner functions at all.
 
-So sentrykit follows ADR-003: a context provider calls :func:`establish` once at the
-boundary, and ``@protect`` reads the ambient principal wherever the callable happens to
-live. Three rules follow from that, and they are load-bearing:
+So sentrykit makes the principal ambient instead: a context provider calls
+:func:`establish` once at the boundary, and ``@protect`` reads the ambient principal
+wherever the callable happens to live. Three rules follow from that, and they are load-bearing:
 
 * An explicit ``_as=`` on the call beats the ambient principal.
 * **No principal means deny.** Not "run unauthenticated", not "skip the check".
@@ -112,7 +112,7 @@ class Principal(BaseModel):
         id: The entity id.
         type: The entity type. ``User`` covers the common case; an agent acting for a human
             is still modelled as that human, with the delegation recorded in
-            :attr:`attributes`, per ADR-008.
+            :attr:`attributes`.
         roles: Convenience for the most common parent edge. Each entry ``r`` becomes a
             parent ``Role::"r"``.
         parents: Any other direct parent edges — teams, projects, delegation targets.
@@ -120,8 +120,8 @@ class Principal(BaseModel):
             Values are coerced for Cedar, so ``None`` entries are dropped.
         constraints: Argument constraints keyed by action. The key may be a full uid
             (``Action::"tool.search"``), a bare action id (``tool.search``), or ``"*"`` for
-            constraints that apply to every action. In Phase 2 these are materialized from
-            the grant store rather than constructed by hand.
+            constraints that apply to every action. In a wired application these are
+            materialized from the grant store rather than constructed by hand.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -332,8 +332,8 @@ def require_principal(action: str) -> Principal:
         The ambient principal.
 
     Raises:
-        NoContext: If no principal is ambient. This is the fail-closed rule from ADR-003 and
-            it holds regardless of ``fail_mode``: an engine that cannot tell who is calling
+        NoContext: If no principal is ambient. This is the fail-closed rule, and it holds
+            regardless of ``fail_mode``: an engine that cannot tell who is calling
             has nothing to authorize.
     """
     principal = _principal_var.get()

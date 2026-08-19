@@ -1,6 +1,6 @@
-"""Phase 2 fixtures, additive to ``tests/conftest.py``.
+"""Plugin-registry and audit-record fixtures, additive to ``tests/conftest.py``.
 
-Two kinds of shared state phase 2 introduces and phase 1 did not have to think about:
+Two kinds of shared state the store and audit suites have to think about:
 
 * **The plugin registry.** ``register_*`` writes into a process-wide dict and built-ins reach
   it by importing their module — so a test that calls

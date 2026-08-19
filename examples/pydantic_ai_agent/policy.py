@@ -1,12 +1,13 @@
 """The example's authorization data: Cedar policy logic, plus the grants that feed it.
 
-The split is ADR-005 in miniature. :data:`POLICY_TEXT` is *logic* — it would live in a
+The split is policies-as-code, grants-as-data in miniature. :data:`POLICY_TEXT` is
+*logic* — it would live in a
 reviewed file under version control and never be rewritten at runtime. :func:`build_grants`
 seeds *data* — who holds which role, and which argument values each principal may pass — the
 only half an admin surface is ever allowed to mutate.
 
 Read it and notice what is **missing**: there is no agent, no bot, no service account, and no
-``delegated_by`` anywhere. That absence is ADR-008 working. An agent acting for alice *is*
+``delegated_by`` anywhere. That absence is the point. An agent acting for alice *is*
 alice as far as the policy is concerned, so alice's role edge and alice's argument constraints
 are what govern the call her agent's model proposed. The delegation is expressed by the
 application choosing whose ``deps`` it runs with, not by a second vocabulary in the policy —

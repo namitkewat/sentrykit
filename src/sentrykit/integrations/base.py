@@ -1,6 +1,6 @@
 """What every framework provider shares: identity resolution, lifecycle, and refusal rendering.
 
-ADR-009 says there is **one decorator and N context providers**. A provider is small on
+sentrykit has **one decorator and N context providers**. A provider is small on
 purpose — it does exactly two things, and both of them are the same on every framework:
 
 1. **Establish** ambient context at the boundary, from the framework's request plus an
@@ -18,10 +18,10 @@ envelope renderer live here so a FastAPI 403 and a Flask 403 are the *same* 403.
 ## The per-request lifecycle is establish-then-reset, and the reset is correctness
 
 A provider **must** release the context it established, in a `finally` or in the framework's
-teardown hook. This is not tidiness. `dev-docs/notes/phase-3-research.md` §5 measured the
-failure: Flask runs a request on a pooled worker thread and its test client runs one in the
-caller's own context, so an un-reset :class:`~contextvars.ContextVar` from request *N* is
-still ambient when request *N+1* starts. Request *N+1* would then be authorized as request
+teardown hook. This is not tidiness — it is the failure mode: Flask runs a request on a
+pooled worker thread and its test client runs one in the caller's own context, so an
+un-reset :class:`~contextvars.ContextVar` from request *N* is still ambient when request
+*N+1* starts. Request *N+1* would then be authorized as request
 *N*'s principal — the worst failure this library can have.
 
 So the contract is:
@@ -39,18 +39,19 @@ one, clears the ambient context outright when there is not, and drops the last e
 either way, so nothing about request *N* survives into request *N+1*.
 
 An **unauthenticated** request establishes no principal and gets no scope. That is the
-fail-closed rule from ADR-003 doing its job: every protected call inside such a request
+fail-closed rule doing its job: every protected call inside such a request
 raises :class:`~sentrykit.errors.NoContext`, which renders as a 403. The provider still
 clears the context on the way in, because "no principal" must mean *no* principal rather than
 "whatever the last request left behind".
 
 ## Refusals are rendered from the exception, not from ambient state
 
-`dev-docs/notes/phase-3-research.md` §2 pinned why. A sync FastAPI route runs in an AnyIO
-worker thread, which receives a *copy* of the context — so a ``ContextVar`` written inside it,
-including the one :func:`~sentrykit.envelope.last_envelope` reads, is discarded on return and
-is simply not there when the exception handler runs. FastAPI's yield-dependency teardown has
-the same problem from the other direction: it unwinds *before* the exception handler.
+Ambient state is not reliably there when a refusal is rendered. A sync FastAPI route runs in
+an AnyIO worker thread, which receives a *copy* of the context — so a ``ContextVar`` written
+inside it, including the one :func:`~sentrykit.envelope.last_envelope` reads, is discarded
+on return and is simply not there when the exception handler runs. FastAPI's
+yield-dependency teardown has the same problem from the other direction: it unwinds *before*
+the exception handler.
 
 Every sentrykit error already carries structured detail — the refused action and its
 determining policies, the offending argument name and reason, the allowed set, pydantic's
@@ -380,7 +381,7 @@ class BaseContextProvider(Generic[RequestT]):
         principal_header: Header the default :attr:`identify` reads.
         request_id_header: Header an incoming correlation id is taken from.
         channel: The ``channel`` established for every request. ``http`` for a web provider;
-            the agent providers in Phase 4 pass ``agent``.
+            the agent providers pass ``agent``.
     """
 
     __slots__ = (

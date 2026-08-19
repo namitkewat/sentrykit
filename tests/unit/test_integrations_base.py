@@ -543,7 +543,7 @@ def test_an_app_supplied_environment_is_merged_over_the_providers(
 
 @pytest.mark.unit
 def test_an_agent_provider_can_declare_a_different_channel(store: InMemoryGrantStore) -> None:
-    """Phase 4's providers establish ``agent`` through the same constructor."""
+    """The agent providers establish ``agent`` through the same constructor."""
     provider = FakeProvider(grants=store, channel="agent")
 
     assert provider.channel == "agent"

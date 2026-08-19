@@ -17,7 +17,7 @@ One agent, two registered tools, and two callers:
   is offered**, and calling it anyway is still refused.
 
 The agent process has no identity of its own. Whoever the application names in `deps` is the
-principal, and that is the whole of ADR-008: an agent acting for a human *is* that human. The
+principal, and that is the whole idea: an agent acting for a human *is* that human. The
 model cannot influence it — `deps` is supplied by the application at `run()` time and never
 appears in anything the model can write.
 
@@ -72,7 +72,7 @@ class Caller:
 
     Attributes:
         principal: The **human** the agent is acting for. Never a service identity for the
-            agent process — see ADR-008 and this module's docstring.
+            agent process — see this module's docstring.
     """
 
     principal: str

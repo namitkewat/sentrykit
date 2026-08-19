@@ -16,7 +16,7 @@ pip install "sentrykit[pydantic-ai]"    # Pydantic-AI agents
     `mcp.server.fastmcp.FastMCP` → `mcp.server.mcpserver.MCPServer`, and the separately
     published `fastmcp` distribution does not import against mcp 2.0 at all. sentrykit keeps
     the `fastmcp` name for the module, the extra and the DSN — those are stable, and the
-    ecosystem still says "FastMCP" — but nothing in it imports that package. See ADR-018.
+    ecosystem still says "FastMCP" — but nothing in it imports that package.
 
 ## What an agent boundary needs that a web boundary does not
 
@@ -57,7 +57,9 @@ the model has proposed anything. `AuthzDenied` and `NoContext` hide a tool. Argu
 refusals — `DefaultUnavailable`, `NoValidArguments`, `ArgumentRejected`, `ValidationFailed` —
 do not, and are enforced on dispatch instead. That split matters: a tool with a required
 parameter and no policy default raises `DefaultUnavailable` for *everybody*, so treating it as
-a denial would hide every such tool from every principal. See ADR-017.
+a denial would hide every such tool from every principal. Hiding is a usability affordance,
+never a control: a tool is hidden if and only if invoking it would be refused, and invoking a
+hidden tool is refused again on dispatch.
 
 A callable with no `@protect` wrapper carries no action and no argument spec, so there is
 nothing to decide about it. It is left **visible**: sentrykit does not silently hide a tool its
@@ -169,7 +171,7 @@ result = await agent.run("what is on order o-1?", deps=Caller(principal="alice")
 
 ### On-behalf-of is not a special mechanism
 
-ADR-008: an agent acting for a human **is** that human, as far as the policy is concerned. The
+An agent acting for a human **is** that human, as far as the policy is concerned. The
 principal established for each dispatch is the one named in `deps` — never a service identity
 for the agent process — so a delegation chain, a team edge or an expiry granted to *alice* is
 what governs the call the model proposed on alice's behalf.
@@ -220,7 +222,6 @@ whose value could only have come from policy. Name them explicitly with `optiona
 
 The shim keeps both introspections working — the framework sees the optional schema through
 `__signature__`, and the manifest filter reaches the `@protect` metadata through `__wrapped__`.
-See ADR-019.
 
 ## Relationships are resolved by the policy, not by the model
 

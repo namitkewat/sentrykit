@@ -1,8 +1,8 @@
 """One plugin mechanism, used by everything pluggable.
 
-ADR-004 in practice: a `Protocol` contract, a name-keyed registry, an in-process
-``register_*`` decorator, and ``importlib.metadata`` entry-point discovery — the same four
-pieces for policy sources, grant stores, audit sinks and framework context providers. Adding
+Four pieces, everywhere: a `Protocol` contract, a name-keyed registry, an in-process
+``register_*`` decorator, and ``importlib.metadata`` entry-point discovery — the same set
+for policy sources, grant stores, audit sinks and framework context providers. Adding
 a sink and adding a framework are the same shape of task, and the core imports neither.
 
 **Built-ins register through the decorator a third party would use.** They are not special-
@@ -19,9 +19,9 @@ installed backend at ``import sentrykit`` time would drag optional dependencies 
 process. The registry looks at entry points only when an in-process lookup misses, then
 caches the result.
 
-Phase 2 research pinned the `importlib.metadata` details that matter here: always call
-``entry_points(group=...)`` (the bare call returns a different type on 3.11), treat the
-result as an iterable and nothing more (it is a `list` subclass on 3.11 and a `tuple`
+Three `importlib.metadata` details matter here: always call ``entry_points(group=...)``
+(the bare call returns a different type on 3.11), treat the result as an iterable and
+nothing more (it is a `list` subclass on 3.11 and a `tuple`
 subclass on 3.12+), and expect an unknown group to be empty rather than to raise.
 """
 
@@ -223,7 +223,7 @@ class RegisteredPlugin:
         version: That distribution's version, when known.
         source: ``builtin`` for an in-process registration, ``entry-point`` for a discovered
             one. Recorded for diagnostics only: the core treats the two identically, which is
-            the point of ADR-004.
+            the whole point of the registry.
     """
 
     kind: PluginKind
@@ -279,9 +279,8 @@ def register_context_provider(name: str) -> Callable[[type[T]], type[T]]:
 def _register(kind: PluginKind, name: str) -> Callable[[type[T]], type[T]]:
     """Build the decorator the four public ``register_*`` functions return.
 
-    One implementation for all four kinds, because ADR-004's claim is that adding a sink and
-    adding a framework are the same task -- if the registration paths diverged, they would
-    not be.
+    One implementation for all four kinds, because adding a sink and adding a framework are
+    meant to be the same task -- if the registration paths diverged, they would not be.
 
     Args:
         kind: Which extension point.
@@ -397,8 +396,8 @@ def clear_registry(kind: PluginKind | None = None) -> None:
 def build_policy_source(dsn: Configured | None) -> PolicySource | None:
     """Build a policy source from one DSN, or a composite from several.
 
-    Multiplicity is a composite that satisfies the same Protocol (ADR-004), so the core
-    always holds exactly one source and never learns how many were configured.
+    Multiplicity is a composite that satisfies the same Protocol, so the core always holds
+    exactly one source and never learns how many were configured.
 
     Args:
         dsn: One DSN, several, an already-built source, a mix of the two, or ``None``.

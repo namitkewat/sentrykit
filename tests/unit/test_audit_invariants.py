@@ -1,4 +1,4 @@
-"""The invariant ADR-007 rests on: nothing raw ever reaches an append-only sink.
+"""The invariant masking rests on: nothing raw ever reaches an append-only sink.
 
 Checked two ways, because each catches what the other cannot.
 
@@ -11,9 +11,9 @@ to explain *why*, and it is every bit as sensitive as one that got through.
 *Statically*, every module under ``src/sentrykit/`` is parsed with ``ast`` and checked for
 calls that hand a record to an audit sink. Masking runs inside
 :class:`~sentrykit.audit.AuditTrail`, so "masking runs before the write" holds only for as
-long as the trail is the only thing that writes. This is the audit-side analogue of the phase
-1 import scan: a future caller that reaches around the trail fails the suite rather than the
-compliance review.
+long as the trail is the only thing that writes. This is the audit-side analogue of the
+import scan in ``test_core_imports.py``: a future caller that reaches around the trail fails
+the suite rather than the compliance review.
 """
 
 from __future__ import annotations
@@ -247,10 +247,10 @@ def test_a_denial_still_records_the_arguments_that_were_attempted(
 
 
 @pytest.mark.unit
-def test_a_governor_wired_the_phase_one_way_decides_the_same_and_records_nothing(
+def test_a_governor_with_no_audit_sink_decides_the_same_and_records_nothing(
     sink: InMemoryAuditSink,
 ) -> None:
-    """No ``audit=`` means no records are built at all — phase 1 behaviour, unchanged."""
+    """No ``audit=`` means no records are built at all, and the decision is the same."""
     bundle = PolicyBundle.from_text(POLICY, entities=ENTITIES, source="pack")
     engine = bundle.engine()
     principal = Principal(id="alice", roles=("support",))

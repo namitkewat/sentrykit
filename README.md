@@ -24,8 +24,7 @@ audit-first.
 > pluggable stores with entry-point discovery; masking and the tamper-evident audit log; the
 > **FastAPI, Flask, MCP and Pydantic-AI** providers with four runnable example apps; the
 > **shipped policy pack**; and the `sentrykit` command line. Not yet shipped: the durable WORM
-> audit backends (S3 Object Lock, Iceberg) described in `dev-docs/architecture.md` — those are
-> a `Protocol` away rather than built.
+> audit backends (S3 Object Lock, Iceberg) — those are a `Protocol` away rather than built.
 
 ## Install (once published)
 
@@ -286,7 +285,7 @@ arguments, not from `argv`. An operator entitled only to `oncall` who asks for `
 stores `oncall`, and the audit log says so. An allowed mutation leaves two records, the
 decision and the mutation; a refused one leaves the refusal and an untouched store.
 
-`audit-report` is ADR-006 made literal: the yearly report is a query. It aggregates by
+`audit-report` makes audit-first literal: the yearly report is a query. It aggregates by
 **outcome** rather than allow/deny, because allow/deny folds six materially different refusals
 into one bucket and both admin mutations into the other.
 
@@ -323,10 +322,8 @@ pixi run -e all check   # format-check, lint, typecheck, tests+coverage, docs
 `pixi run setup` installs pre-commit hooks into `.git/hooks`, so the repository has to be a
 git repository first — on a fresh clone it already is.
 
-See `CLAUDE.md` for the build workflow, `dev-docs/architecture.md` for how it fits together,
-and `dev-docs/design-decisions.md` for why. The user docs cover
-[policies and grants](docs/policies.md), [audit and masking](docs/audit.md), and
-[writing a plugin](docs/plugins.md).
+The user docs cover [policies and grants](docs/policies.md),
+[audit and masking](docs/audit.md), and [writing a plugin](docs/plugins.md).
 
 ## License
 

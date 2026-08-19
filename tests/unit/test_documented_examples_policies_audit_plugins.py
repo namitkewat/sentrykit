@@ -1,8 +1,8 @@
-"""The examples in the Phase 2 docs do what those pages say they do.
+"""The examples in the policy, audit and plugin docs do what those pages say they do.
 
-`tests/unit/test_documented_examples.py` pins the quickstart's narrative; this pins the three
-pages Phase 2 wrote — `docs/policies.md`, `docs/audit.md` and `docs/plugins.md`. The reason is
-the same and it is worth restating: documentation that has drifted from the code is worse
+`tests/unit/test_documented_examples.py` pins the quickstart's narrative; this pins
+`docs/policies.md`, `docs/audit.md` and `docs/plugins.md`. The reason is the same and it is
+worth restating: documentation that has drifted from the code is worse
 than none, because a reader trusts it, copies it, and then debugs the wrong thing.
 
 Every literal asserted here appears verbatim on one of those pages. If a page and this file

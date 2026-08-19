@@ -1,6 +1,6 @@
 """DSN parsing and backend routing: the one mechanism everything pluggable goes through.
 
-The claim under test is ADR-004's: a backend is addressed by a DSN, the scheme picks the
+The claim under test: a backend is addressed by a DSN, the scheme picks the
 implementation, and a third-party class registered in-process is indistinguishable from a
 shipped one. The Windows drive-letter case has its own test because ``file://D:/policies`` is
 exactly what a URL parser mangles, and this library ships for ``win-64``.

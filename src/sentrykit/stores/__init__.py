@@ -9,12 +9,13 @@ the one that matters:
 2. Entry-point discovery, not a package import, is what makes a backend reachable. The
    registry resolves ``jsonl://`` by exactly the path it resolves a third-party
    ``sentrykit-<x>`` sink — through ``importlib.metadata`` — and if the built-ins needed a
-   privileged import to be found, ADR-004's claim that built-in and third-party backends are
+   privileged import to be found, the claim that built-in and third-party backends are
    indistinguishable to the core would simply be false.
 
 ``from sentrykit.stores import JsonlAuditSink`` still works: PEP 562 resolves it on first
-access, importing the one module it needs. See ``dev-docs/architecture.md`` §4 for why there
-are three stores rather than one.
+access, importing the one module it needs. There are three contracts rather than one because
+they guarantee different things: a policy source is fetched and never written, a grant store
+is mutable data, and an audit sink is append-only.
 """
 
 from __future__ import annotations

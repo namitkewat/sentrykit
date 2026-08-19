@@ -1,8 +1,8 @@
 """Nothing about request *N* survives into request *N+1*.
 
 This is the worst failure sentrykit could have — request *N+1* authorized as request *N*'s
-principal — and `dev-docs/notes/phase-3-research.md` §5 measured that it is reachable on both
-frameworks if the provider stops releasing what it established. So it gets its own module, and
+principal — and it is reachable on both frameworks if the provider stops releasing what it
+established. So it gets its own module, and
 the assertions are written to *fail* when the release is deleted rather than to pass because
 the test harness happened to isolate them.
 

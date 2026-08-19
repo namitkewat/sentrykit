@@ -1,7 +1,7 @@
 """The FastAPI provider, driven through the example app over real HTTP.
 
 The shared behaviour table lives in ``conftest.py`` and is answered identically here and in
-``test_flask_provider.py`` — that sameness *is* the ADR-009 claim, so the two modules ask the
+``test_flask_provider.py`` — that sameness *is* the claim, so the two modules ask the
 same questions of two different stacks and neither is allowed to answer them its own way.
 
 What is asked only here is what is peculiar to ASGI: that a sync ``def`` route reaches the
@@ -41,7 +41,7 @@ PRINCIPAL_HEADER = "x-user"
 def test_the_shared_web_contract_holds_over_fastapi(
     fastapi_client: Any, web_contract_case: Callable[[Any], None]
 ) -> None:
-    """Every row of the phase-3 behaviour table, answered by the ASGI stack."""
+    """Every row of the shared web behaviour table, answered by the ASGI stack."""
     web_contract_case(fastapi_client)
 
 

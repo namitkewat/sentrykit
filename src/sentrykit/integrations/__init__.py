@@ -1,1 +1,1 @@
-"""sentrykit.integrations — built out in the phased plan (see dev-docs/implementation.md)."""
+"""Framework context providers, each behind its own optional extra."""

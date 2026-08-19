@@ -50,7 +50,7 @@ Threading a principal through every signature between the boundary and the call 
 that stops teams from protecting inner functions at all.
 
 So a **context provider** calls `establish(principal, **environment)` once at the boundary,
-and `@protect` reads it wherever the callable lives (ADR-003). Three rules follow:
+and `@protect` reads it wherever the callable lives. Three rules follow:
 
 - An explicit `_as=` on the call beats the ambient principal.
 - **No principal means deny.** Not "run unauthenticated", not "skip the check".
@@ -86,7 +86,7 @@ the team nor the division. Sever any one edge and the access disappears — beca
 relationship *is* the authorization.
 
 An agent acting for a human is the same pattern: delegation, expressed as an edge, resolved
-by the same machinery (ADR-008).
+by the same machinery.
 
 ## Policies-as-code, grants-as-data
 
@@ -186,7 +186,7 @@ field has one shape at every verbosity and `defaults_applied.keys()` always work
 - **Operational logs** — ordinary `logging`, for developers. Ephemeral. Argument *names*,
   rules and policy ids; never values. A deny is normal operation and logs at `INFO`.
 - **The audit log** — not `logging`. A tamper-evident record stream, masked before the write,
-  written append-only. It is a data product, not a side effect. (Phase 2.)
+  written append-only. It is a data product, not a side effect.
 
 ## What sentrykit is not
 

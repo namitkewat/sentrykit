@@ -6,9 +6,9 @@ That is not incidental: MCP's `tools/list` and Pydantic-AI's `prepare` are two s
 question, and the answer lives here precisely so the two cannot drift. A unit suite that needed
 a framework to exercise it would have quietly given that up.
 
-Two mechanisms are covered, and they are the load-bearing halves of two ADRs.
+Two mechanisms are covered, and each is load-bearing.
 
-**`decide_tool` — ADR-017's entitlement/argument split.** The manifest probe supplies no
+**`decide_tool` — the entitlement/argument split.** The manifest probe supplies no
 arguments, so the only question it can honestly answer is whether this principal may perform
 this action at all. `AuthzDenied` and `NoContext` hide a tool; every other `SentrykitError` is
 about arguments a probe has not got, and is enforced on dispatch instead. The tests assert
@@ -16,7 +16,7 @@ both sides, because a filter that read an argument-level refusal as a denial wou
 required-parameter tool from every principal — and would look perfectly healthy from the
 outside.
 
-**`proposable` — ADR-019's re-declaration.** Both agent frameworks validate a proposal against
+**`proposable` — the re-declaration.** Both agent frameworks validate a proposal against
 the advertised JSON schema before dispatch, so a `required` parameter can never be omitted, and
 an argument that can never be omitted can never be filled in from a policy default. The shim
 re-declares those parameters as keyword-only and optional and forwards only what was genuinely
@@ -106,7 +106,7 @@ def ungoverned(x: int) -> int:
     return x
 
 
-# --- decide_tool: the entitlement/argument split (ADR-017) -----------------------------------
+# --- decide_tool: the entitlement/argument split ---------------------------------------------
 
 
 @pytest.mark.unit
@@ -155,8 +155,8 @@ def test_a_tool_whose_arguments_policy_can_supply_probes_cleanly(
 
     `tool.export_orders` gives this principal a default for `fmt` and a required `tenant`, so
     the probe still cannot complete — while `tool.ping` declares no arguments at all and does.
-    The plan is what an optional schema-narrowing pass would read, so it is worth asserting
-    that a successful probe returns one rather than merely not raising.
+    A successful probe's plan is what an optional schema-narrowing pass would read, so it is
+    worth asserting that a probe returns one rather than merely not raising.
     """
 
     @protect(action='Action::"tool.ping"', resource='Resource::"tool.ping"')
@@ -320,7 +320,7 @@ def test_governed_meta_returns_none_for_something_that_was_never_protected() -> 
     assert governed_meta(ungoverned) is None
 
 
-# --- proposable: the re-declaration (ADR-019) ------------------------------------------------
+# --- proposable: the re-declaration ----------------------------------------------------------
 
 
 @pytest.mark.unit
@@ -545,7 +545,7 @@ def test_the_shim_carries_a_constrained_principals_defaults_all_the_way_through(
 ) -> None:
     """End to end, with no framework in sight: omit everything, and policy fills it in.
 
-    This is ADR-019's whole purpose in one assertion — the shim makes the omission expressible,
+    This is the shim's whole purpose in one assertion — it makes the omission expressible,
     `@protect` turns it into a policy default, and the tool body runs on values the caller never
     proposed.
     """

@@ -1,8 +1,8 @@
 """Nothing about tool dispatch *N* survives into tool dispatch *N+1*, on either agent boundary.
 
 This is the agent half of `tests/integration/test_web_context_isolation.py`, and it is written
-the way it is because of the lesson recorded in `dev-docs/notes/phase-3-research.md` §5: a leak
-test driven only through a framework's own harness can pass **vacuously**. `mcp.Client` runs the
+the way it is because a leak test driven only through a framework's own harness can pass
+**vacuously**. `mcp.Client` runs the
 server in its own task, and `agent.run(...)` runs each tool call in Pydantic-AI's, and a task
 starts from a *copy* of the context — so a provider that never released anything would still
 look spotless through either front door.
@@ -73,8 +73,8 @@ def call_context(user: str | None, *, arguments: Mapping[str, Any] | None = None
 
     Constructed by hand rather than driven through a client on purpose: a client would run the
     server in its own task, and a fresh context copy per dispatch is the isolation this module
-    must not have. Every field the provider reads is real — research §1 lists them — and
-    ``session`` is unused on this path.
+    must not have. Every field the provider reads is real, and ``session`` is unused on this
+    path.
 
     Args:
         user: The principal id to put in ``_meta``, or ``None`` for an unauthenticated call.

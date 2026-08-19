@@ -1,8 +1,8 @@
 """Thin wrapper over ``cedarpy`` — the only module in sentrykit that imports Cedar.
 
 Everything else in the core talks to :class:`CedarDecision`, a normalized value object, so
-the decision path stays unit-testable without a policy set and so a future engine binding
-(see ADR-002 on partial evaluation) can be swapped in behind this seam.
+the decision path stays unit-testable without a policy set and so a future engine binding —
+partial evaluation, when Cedar exposes it — can be swapped in behind this seam.
 
 Three things this module owns that callers should not re-implement:
 
@@ -214,9 +214,9 @@ class CedarDecision:
 class PolicyEngine:
     """A parsed, reusable Cedar policy set plus a base entity graph.
 
-    Phase 1's in-memory policy source: hand it policy text and the stable entities, and it
-    answers questions. Phase 2 replaces *where the text comes from* (``PolicySource``,
-    ``GrantStore``) without changing this class.
+    The in-memory policy source: hand it policy text and the stable entities, and it answers
+    questions. A ``PolicySource`` or a ``GrantStore`` changes *where the text comes from*
+    without changing this class.
 
     Args:
         policies: Cedar policy text. Parsed eagerly.
@@ -497,8 +497,8 @@ class PolicyAnnotation:
     Cedar's ``PolicySet`` handle is opaque — it cannot be walked — but
     ``cedarpy.policies_to_json_str`` renders the parsed set as JSON carrying *every*
     annotation, not just ``@id``. That is the only way to see an ``@obligations(...)``
-    declaration, which is why :func:`policy_annotations` exists and why ADR-012 puts
-    obligations in annotations at all.
+    declaration, which is why :func:`policy_annotations` exists and why obligations are
+    declared as annotations at all.
 
     Attributes:
         cedar_id: Cedar's generated id (``policy0``). Positional in the policy text, and the
@@ -638,8 +638,9 @@ def validate_policies(policies: str, schema: str) -> PolicyValidation:
 
     Returns:
         The normalized outcome. Callers decide what a failure means; this function does not
-        raise for one, because "the policy set is invalid" is a finding for the phase 5 CLI
-        and a :class:`~sentrykit.errors.ConfigurationError` for a policy source.
+        raise for one, because "the policy set is invalid" is a finding to report for
+        ``sentrykit policy validate`` and a :class:`~sentrykit.errors.ConfigurationError` for
+        a policy source.
     """
     result = cedarpy.validate_policies(policies, schema)
     declared = dict(result.id_annotations_by_policy_id or {})
