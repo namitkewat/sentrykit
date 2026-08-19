@@ -1,14 +1,75 @@
 name: ci
+
 on:
   push:
     branches: [main]
   pull_request:
+
+# Nothing in this workflow writes to the repository: no comments, no commits, no releases.
+# The release workflow is the only place that needs `contents: write`.
+permissions:
+  contents: read
+
+# Thirteen jobs is too much runner time to spend answering a question about a commit that
+# has already been superseded. Grouping by ref means a second push to a branch cancels the
+# first; `github.workflow` keeps this from colliding with the release workflow's group.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
+  # Twelve jobs: three interpreters x four feature sets. The environment names come straight
+  # from `pixi.toml` -- `py311-default` ... `py313-all` -- which exist precisely so a CI job
+  # and a contributor reproducing it locally run the identical resolved dependency set.
   check:
+    name: check (${{ matrix.interpreter }}-${{ matrix.features }})
+    runs-on: ubuntu-latest
+    strategy:
+      # A red 3.11 job must not cancel 3.12 and 3.13. Without this, "one environment
+      # regressed" is indistinguishable from "the whole matrix is broken", and the second
+      # diagnosis costs a re-run to disprove.
+      fail-fast: false
+      matrix:
+        # The twelve version-pinned environments are declared `linux-64` only, so the
+        # runner OS is fixed rather than being a third matrix axis.
+        interpreter: [py311, py312, py313]
+        features: [default, web, agent, all]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: prefix-dev/setup-pixi@v0
+        with:
+          # One environment per job. `pixi install` with no `environments` input would
+          # create all sixteen, so each job would pay for fifteen environments it never
+          # activates -- which would dominate the job's wall clock.
+          environments: ${{ matrix.interpreter }}-${{ matrix.features }}
+          # A lock file that no longer satisfies the manifest is a change someone has to
+          # commit. `--locked` turns that into a failed job instead of a silent re-solve
+          # that makes CI test a dependency set no developer has.
+          locked: true
+          cache: true
+
+      # `check` is the full gate: fmt-check, lint, typecheck, test-cov, coverage-gate,
+      # docs-html.
+      - run: pixi run -e ${{ matrix.interpreter }}-${{ matrix.features }} check
+
+  # One job, not seven. `scripts/release_check.py` already iterates all seven extras, and it
+  # builds the wheel once and installs that single artifact into seven throwaway venvs --
+  # which is the shape of what a user actually does. Seven parallel jobs would build seven
+  # separate wheels and prove nothing about the one that ships, so a packaging fault could
+  # pass six of them.
+  extras:
+    name: extras (built wheel installs)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - uses: prefix-dev/setup-pixi@v0
         with:
           environments: all
-      - run: pixi run -e all check
+          locked: true
+          cache: true
+
+      # Needs an index: it pip-installs the built wheel from PyPI-resolved dependencies.
+      # That is why it is a task rather than a test -- `pytest` has to stay runnable offline.
+      - run: pixi run -e all release-check

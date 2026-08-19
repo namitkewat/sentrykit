@@ -1,0 +1,210 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: >-
+          Rehearse the release: build every asset and upload it as a workflow artifact
+          without creating a release. Manual runs are always rehearsals.
+        type: boolean
+        default: true
+
+# `gh release create` writes to the repository, and this is the only workflow that does.
+# The default GITHUB_TOKEN carries this against a private repository, so no PAT is needed.
+permissions:
+  contents: write
+
+# Deliberately not cancelling in flight: a half-finished release run is worse than a
+# duplicate one, and tags do not get re-pushed often enough for the saved minutes to matter.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      # A manual run has no tag, so it has no version contract to check anything against.
+      # Rather than inventing one, publishing stays exclusively the `v*` tag path and a
+      # dispatch that asks to skip the rehearsal is refused up front.
+      - name: Refuse a dispatch that asks to publish
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run == false }}
+        run: |
+          echo "::error::A manual run is always a rehearsal. To publish, push a v* tag."
+          exit 1
+
+      - uses: actions/checkout@v4
+
+      # Runs before pixi is installed so a mismatched tag fails in seconds rather than after
+      # a full environment solve and a full `check`.
+      - name: Resolve the version and reconcile it with the tag
+        id: version
+        run: |
+          set -euo pipefail
+
+          pkg_version="$(python3 - <<'PY'
+          import pathlib
+          import re
+
+          text = pathlib.Path("src/sentrykit/__init__.py").read_text(encoding="utf-8")
+          match = re.search(r'^__version__\s*=\s*"([^"]+)"', text, re.M)
+          if match is None:
+              raise SystemExit("no __version__ assignment in src/sentrykit/__init__.py")
+          print(match.group(1))
+          PY
+          )"
+
+          if [ "${GITHUB_EVENT_NAME}" = "push" ]; then
+            tag_version="${GITHUB_REF_NAME#v}"
+            # A tag that disagrees with the package is a mislabelled release waiting to
+            # happen: the assets would carry one version and the release page another, and
+            # nothing downstream could tell which one was meant.
+            if [ "${tag_version}" != "${pkg_version}" ]; then
+              echo "::error::tag ${GITHUB_REF_NAME} says ${tag_version}, but src/sentrykit/__init__.py says ${pkg_version}. Reconcile them and re-tag."
+              exit 1
+            fi
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+          fi
+
+          # PEP 440 pre-release markers. A final version is digits and dots and matches
+          # none of them, so the default is a full release and `--prerelease` is opt-in by
+          # the tag itself rather than by a workflow input someone has to remember.
+          if printf '%s' "${pkg_version}" | grep -Eiq '(a|b|rc|alpha|beta|dev)[0-9]*$'; then
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "prerelease=false" >> "$GITHUB_OUTPUT"
+          fi
+
+          echo "version=${pkg_version}" >> "$GITHUB_OUTPUT"
+          echo "Releasing version ${pkg_version}" >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: prefix-dev/setup-pixi@v0
+        with:
+          # `all` is the only environment the release needs, and it is the one the docs are
+          # built from: `conf.py` mocks whichever frameworks are absent, so building the
+          # released HTML anywhere else would document mocks instead of real signatures.
+          environments: all
+          locked: true
+          cache: true
+
+      # The gate runs again here even though CI already ran it on main: a tag can point at
+      # any commit, including one that never went through a pull request.
+      - name: Gate
+        run: pixi run -e all check
+
+      - name: Build the distribution
+        run: pixi run -e all build
+
+      # The aggregate: docs-html, docs-pdf and docs-llms. `check` above only builds the
+      # HTML, so this is where the PDF and the two llms.txt files come from.
+      - name: Build the documentation
+        run: pixi run -e all docs
+
+      - name: Package the HTML documentation
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          # Copied under a version-named directory first so the archive expands into one
+          # folder. A zip of `html/` alone unpacks a generically named directory into
+          # whatever the reader happened to be standing in.
+          cp -r dist/docs/html "dist/docs/sentrykit-docs-html-${VERSION}"
+          (cd dist/docs && zip -qr "sentrykit-docs-html-${VERSION}.zip" "sentrykit-docs-html-${VERSION}")
+          rm -rf "dist/docs/sentrykit-docs-html-${VERSION}"
+
+      # A release that ships five of six assets is the failure this guards: `gh release
+      # create` is happy to skip a glob that matches nothing, and the gap is only ever found
+      # by the person who went looking for the PDF. The verified list is handed to the
+      # release step as a file so the assets attached are exactly the assets checked.
+      - name: Verify every expected asset exists
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          expected=(
+            "dist/sentrykit-${VERSION}-py3-none-any.whl"
+            "dist/sentrykit-${VERSION}.tar.gz"
+            "dist/docs/sentrykit-docs-html-${VERSION}.zip"
+            "dist/docs/pdf/sentrykit.pdf"
+            "dist/docs/llms.txt"
+            "dist/docs/llms-full.txt"
+          )
+          missing=0
+          : > "${RUNNER_TEMP}/release-assets.txt"
+          for asset in "${expected[@]}"; do
+            if [ -s "${asset}" ]; then
+              printf '%s\n' "${asset}" >> "${RUNNER_TEMP}/release-assets.txt"
+              echo "ok       ${asset} ($(stat -c %s "${asset}") bytes)"
+            else
+              echo "::error::missing or empty release asset: ${asset}"
+              missing=1
+            fi
+          done
+          if [ "${missing}" -ne 0 ]; then
+            echo "::error::refusing to release an incomplete asset set."
+            exit 1
+          fi
+
+      # Uploaded on real runs too, not just rehearsals: the artifact is what makes a failed
+      # or half-published release inspectable without rebuilding it.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sentrykit-release-assets-${{ steps.version.outputs.version }}
+          if-no-files-found: error
+          path: |
+            dist/sentrykit-${{ steps.version.outputs.version }}-py3-none-any.whl
+            dist/sentrykit-${{ steps.version.outputs.version }}.tar.gz
+            dist/docs/sentrykit-docs-html-${{ steps.version.outputs.version }}.zip
+            dist/docs/pdf/sentrykit.pdf
+            dist/docs/llms.txt
+            dist/docs/llms-full.txt
+
+      - name: Create the GitHub release
+        if: ${{ steps.version.outputs.publish == 'true' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.version.outputs.version }}
+          PRERELEASE: ${{ steps.version.outputs.prerelease }}
+        run: |
+          set -euo pipefail
+
+          # The notes are the hand-written keep-a-changelog section for this version, not
+          # `--generate-notes`. Commit subjects describe how the work was done; the
+          # changelog describes what changed for someone installing the release, and this
+          # repository maintains it by hand precisely so those stay different documents.
+          # `index(...) == 1` rather than a regex: the heading contains `[` and `]`, and a
+          # bracket that has to survive YAML, the shell and awk's own string escaping is a
+          # quoting bug waiting for the one release where it silently matches nothing.
+          awk -v version="${VERSION}" '
+            index($0, "## [" version "]") == 1 { capture = 1; next }
+            capture && index($0, "## [") == 1 { exit }
+            capture { print }
+          ' CHANGELOG.md > "${RUNNER_TEMP}/release-notes.md"
+
+          if [ ! -s "${RUNNER_TEMP}/release-notes.md" ]; then
+            echo "::warning::CHANGELOG.md has no [${VERSION}] section; linking to it instead."
+            printf 'See the changelog for what changed in this release.\n' \
+              > "${RUNNER_TEMP}/release-notes.md"
+          fi
+
+          printf '\n---\n\nFull changelog: %s/blob/%s/CHANGELOG.md\n' \
+            "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}" "${GITHUB_REF_NAME}" \
+            >> "${RUNNER_TEMP}/release-notes.md"
+
+          mapfile -t assets < "${RUNNER_TEMP}/release-assets.txt"
+
+          # Published, not drafted. The asset set is verified above and the notes come from a
+          # file a human wrote and reviewed before tagging, so there is nothing left for a
+          # draft to catch -- and a draft nobody remembers to publish is its own quiet
+          # failure. Pushing the tag is the deliberate act.
+          args=(--title "sentrykit ${VERSION}" --notes-file "${RUNNER_TEMP}/release-notes.md")
+          if [ "${PRERELEASE}" = "true" ]; then
+            args+=(--prerelease)
+          fi
+
+          gh release create "${GITHUB_REF_NAME}" "${args[@]}" "${assets[@]}"
