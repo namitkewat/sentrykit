@@ -1,34 +1,98 @@
 # Example: fastapi_app
 
-A three-route orders API showing what one decorator plus one middleware buys you: a role
-gate, per-principal argument filtering, policy-supplied defaults, an argument-aware `forbid`,
-and the `_authz` envelope travelling with every answer.
+An orders-and-refunds desk on FastAPI, governed by sentrykit. Seven routes, seven protected
+callables, three principals, and one reviewed policy directory — enough to show every surface
+the library has: the gate, per-principal argument rules, an argument ceiling declared in
+reviewed Cedar text, policy-supplied defaults, multi-argument decisions, multi-hop
+relationships, and the `_authz` envelope travelling with every answer.
+
+`examples/flask_app` is the same URLs, the same `service.py`, the same `policy.py` and the
+same `policies/` on Flask. Diff the two directories: only the boundary wiring differs.
 
 ## Layout
 
 | File | What is in it |
 | --- | --- |
-| `policy.py` | `POLICY_TEXT` (Cedar *logic*, reviewed in git) and `build_grants()` (roles and argument constraints — *data*) |
-| `service.py` | The three `@protect`-ed callables. No web framework, no request object |
-| `main.py` | `create_app()`: settings, grants, policy, provider, `protect_app`, routes |
+| `policies/10-orders.cedar` | Reviewed policy *logic* for orders, including the `@constraints` argument ceiling |
+| `policies/20-refunds.cedar` | Reviewed policy logic for refunds — two rules that decide on the relationship *between* arguments |
+| `policy.py` | `POLICY_DIR` / `POLICY_TEXT` (the files above) and `build_grants()` (the entity graph and the per-principal argument constraints — *data*) |
+| `service.py` | The seven `@protect`-ed callables. No web framework, no request object |
+| `main.py` | `create_app()`: settings, grants, policy source, provider, `protect_app`, routes. Plus `FLOWS` and `serve()`, the demonstration |
 
-`search_orders(region, limit)` deliberately declares **no Python defaults**, so the values a
-caller gets when they omit a parameter come from *policy* and nowhere else.
+Read `service.py` for the one design rule worth copying: **`status` and `scope` carry Python
+defaults, and nothing else does.** An argument whose value policy decides has to stay
+omittable, or a Python default fills the hole before a policy default can reach it.
 
 ## Who may do what
 
-| Principal | Role | May | Argument constraints |
-| --- | --- | --- | --- |
-| `alice` | `support` | `orders.search`, `orders.summarize` | `region` ∈ {`eu`, `uk`}, default `eu`; `limit` ≤ 50, default `10` |
-| `bob` | `auditor` | `orders.export` | — |
+Roles and edges are grant *data*. No policy file names a person.
 
-A `forbid` policy (`no-pdf-exports`) refuses `fmt="pdf"` for everyone, including `bob`, by
-reading `context.args.fmt`. That is how an exception is expressed without editing the permit.
+| Principal | Role | Place in the graph | Argument constraints (grant data) |
+| --- | --- | --- | --- |
+| `alice` | `support` | `Team::"eu-support"` → `Division::"emea"` → `Project::"orders-eu"` | search: `region` ∈ {`eu`,`uk`} default `eu`; `limit` ≤ 50 default `10`. refunds: `order_id` must match `ord-[0-9]{4}` **and has no default**; `amount` 1–750 default `50`; `region` ∈ {`eu`,`uk`} default `eu` |
+| `bob` | `auditor` | `Team::"us-support"` → `Division::"amer"` → `Project::"orders-us"` | export: `fmt` ∉ {`xml`} default `csv` |
+| `dana` | `admin`, which has `Role::"support"` as a parent | `Team::"eu-support"` → `Division::"emea"` → `Project::"orders-eu"` | search: `limit` default `25` with **no bound of her own**; `region` default `eu` |
+
+`Role::"admin"` having `Role::"support"` as a parent is one edge instead of a second grant on
+every admin: Dana satisfies `principal in Role::"support"` because of it.
+
+## Three places an argument rule can come from
+
+1. **The decorator.** `@protect` bare — as on `desk_status` — derives the action from the
+   callable's import path; `@protect(action=..., resource=...)` names them. It also accepts
+   `governor=`, which pins one callable to a specific `Governor` instead of the
+   process-installed one. There is no sibling decorator for plain callables; `@protect` is
+   the whole surface.
+2. **Grant data.** Allow-sets, deny-sets, patterns, minimums, maximums and defaults, per
+   (principal, action, argument), in `policy.py`. Mutable, and the only half an admin surface
+   ever writes.
+3. **Reviewed policy.** The `@constraints` annotation in `policies/10-orders.cedar`. It is a
+   **Cedar policy annotation, not a Python decorator**: text on the policy, parsed when the
+   directory is loaded. It states the widest value *anybody* may pass, and it **intersects**
+   with the caller's grant, so it can only narrow.
+
+A value that breaches either layer is **rejected, and the caller's own default is put in the
+gap** so the call proceeds. The result is their default. Nothing is trimmed to the bound that
+was breached — flow 6 below exists to make that visible.
 
 ## Running it
 
 ```bash
-pixi run -e web run-fastapi        # uvicorn examples.fastapi_app.main:create_app --factory --reload
+pixi run -e web run-fastapi   # uvicorn examples.fastapi_app.main:serve --factory --reload
+```
+
+`serve()` drives every flow through FastAPI's test client, prints what happened, and then
+returns the app for uvicorn to serve at `http://127.0.0.1:8000`. `create_app()` stays silent,
+because every test builds its own app with it.
+
+sentrykit logs `Argument dropped by policy` on its own logger each time it rejects a value,
+so seven of those land on stderr before the table:
+
+```
+#   who    request                                                            code  what the policy did
+--  -----  -----------------------------------------------------------------  ----  --------------------
+1   alice  GET  /orders/status                                                200   allowed
+2   alice  GET  /orders/summary                                               200   allowed
+3   alice  GET  /orders                                                       200   defaulted: region='eu' limit=10
+4   alice  GET  /orders?region=cn&limit=5                                     200   narrowed: region='cn' rejected (allow-set, alice-region), refilled with 'eu'
+5   alice  GET  /orders?limit=500&status=open                                 200   narrowed: limit=500 rejected (maximum, alice-limit), refilled with 10 | defaulted: region='eu'
+6   dana   GET  /orders?limit=500&status=open                                 200   narrowed: limit=500 rejected (maximum, support-may-search), refilled with 25 | defaulted: region='eu'
+7   alice  GET  /orders/o-1                                                   200   allowed
+8   bob    GET  /orders/o-1                                                   403   denied: The policy denied action Action::"orders.read".
+9   bob    POST /orders/export {"fmt":"csv"}                                  200   allowed
+10  bob    POST /orders/export {"scope":"open"}                               200   defaulted: fmt='csv'
+11  bob    POST /orders/export {"fmt":"xml","scope":"open"}                   200   narrowed: fmt='xml' rejected (deny-set, bob-fmt), refilled with 'csv'
+12  bob    POST /orders/export {"fmt":"xml"}                                  400   NoValidArguments: Every supplied argument was rejected by policy.
+13  bob    POST /orders/export {"fmt":"pdf"}                                  403   denied: The policy denied action Action::"orders.export".
+14  bob    GET  /orders                                                       403   denied: The policy denied action Action::"orders.search".
+15  alice  POST /refunds {"order_id":"ord-0007","amount":100,"region":"uk"}   200   allowed
+16  alice  POST /refunds {"order_id":"ord-0007","amount":750,"region":"uk"}   403   denied: The policy denied action Action::"refunds.issue".
+17  alice  POST /refunds {"order_id":"ord-0007","amount":900,"region":"eu"}   200   narrowed: amount=900 rejected (maximum, alice-amount), refilled with 50
+18  alice  POST /refunds {"order_id":"ord-0007","amount":5000,"region":"eu"}  403   denied: The policy denied action Action::"refunds.issue".
+19  dana   POST /refunds {"order_id":"ord-0007","amount":5000,"region":"eu"}  200   allowed
+20  alice  POST /refunds {"order_id":"refund-me","amount":100,"region":"eu"}  400   DefaultUnavailable: Argument 'order_id' is required and no policy default is configured.
+21  dana   POST /refunds/rf-1/approve                                         200   allowed
+22  alice  POST /refunds/rf-1/approve                                         403   denied: The policy denied action Action::"refunds.approve".
 ```
 
 Authentication is a stub: the **`x-user`** header names the principal. That is the seam a real
@@ -38,74 +102,279 @@ app replaces with its session, bearer token, or gateway assertion — nothing be
 The app calls `configure(verbosity="verbose")` so the envelope carries processed values,
 applied defaults and rejection reasons. A production service would leave it at `summary`.
 
-## Things to try
+## Every flow as a `curl`
 
-Default injection — `region` and `limit` were never sent, and policy filled both in:
+### The decorator surface
+
+**1 — the bare `@protect`.** No `action=`, no `resource=`: sentrykit derives both from the
+callable's import path, and `policies/10-orders.cedar` names that action verbatim.
+
+```bash
+curl -s localhost:8000/orders/status -H 'x-user: alice'
+# {"desk":"orders","open":true,
+#  "_authz":{"decision":"allow",
+#            "action":"Action::\"examples.fastapi_app.service.desk_status\"",
+#            "resource":"Resource::\"examples.fastapi_app.service.desk_status\"",
+#            "principal":"User::\"alice\""}}
+```
+
+**2 — the gate is on the callable, not the URL.** `/orders/summary` is an ordinary unguarded
+route; `summarize_orders()` inside it is protected.
+
+```bash
+curl -s localhost:8000/orders/summary -H 'x-user: alice'
+# {"summary":"3 open orders",
+#  "_authz":{"decision":"allow","action":"Action::\"orders.summarize\"", ...}}
+```
+
+### Default injection and reject-and-refill
+
+**3 — nothing proposed.** Both governed arguments come from Alice's own defaults. `status`
+was never governed and Python answered for it.
 
 ```bash
 curl -s localhost:8000/orders -H 'x-user: alice'
-# {"region":"eu","limit":10,"orders":[...],
-#  "_authz":{"decision":"allow","defaults_applied":{"region":"eu","limit":10}, ...}}
+# {"region":"eu","limit":10,"status":"open","orders":["order-0","order-1","order-2"],
+#  "_authz":{"decision":"allow", ...,
+#            "processed":{"region":"eu","limit":10},
+#            "defaults_applied":{"region":"eu","limit":10}}}
 ```
 
-Argument filtering — `cn` is not in alice's allow-set, so it is **dropped and then
-defaulted**; the call still succeeds and the envelope says exactly what happened:
+**4 — an allow-set rejection, refilled.** `cn` is not one of Alice's regions, so it is
+rejected and `eu` is put in the gap. `limit=5` was fine and stands.
 
 ```bash
 curl -s 'localhost:8000/orders?region=cn&limit=5' -H 'x-user: alice'
-# {"region":"eu","limit":5, ...
-#  "_authz":{"decision":"allow","rejected":[{"name":"region","rule":"allow-set",
-#             "policy":"alice-region","value":"cn"}], ...}}
+# {"region":"eu","limit":5,"status":"open", ...,
+#  "_authz":{"decision":"allow","processed":{"limit":5,"region":"eu"},
+#            "rejected":[{"name":"region","rule":"allow-set",
+#                         "reason":"Value is not one of the permitted values",
+#                         "policy":"alice-region","value":"cn"}],
+#            "defaults_applied":{"region":"eu"}}}
 ```
 
-Nothing left to run with — every proposed argument was refused, so the call is not made:
+**5 — several arguments decided in one call.** `limit=500` is rejected and refilled with 10;
+`region` was never proposed and is defaulted to `eu`; `status` passes through untouched.
 
 ```bash
-curl -s -i 'localhost:8000/orders?region=cn' -H 'x-user: alice'
-# 400  {"detail":"Every supplied argument was rejected by policy.",
-#       "error":"NoValidArguments", "_authz":{...}}
+curl -s 'localhost:8000/orders?limit=500&status=open' -H 'x-user: alice'
+# {"region":"eu","limit":10,"status":"open", ...,
+#  "_authz":{"decision":"allow","processed":{"status":"open","region":"eu","limit":10},
+#            "rejected":[{"name":"limit","rule":"maximum",
+#                         "reason":"Value is above the maximum of 50",
+#                         "policy":"alice-limit","value":500}],
+#            "defaults_applied":{"region":"eu","limit":10}}}
 ```
 
-The role gate — `bob` is an auditor, not support:
+**6 — the reviewed ceiling, and the clearest statement of what refilling means.** Dana's
+grant sets no maximum, so her only bound is the `@constraints` ceiling in
+`policies/10-orders.cedar`. She asks for 500, breaches the ceiling of 100, and **runs with
+25 — her own default**. The rejection names `support-may-search`, the reviewed policy, because
+that is the layer that produced it.
+
+```bash
+curl -s 'localhost:8000/orders?limit=500&status=open' -H 'x-user: dana'
+# {"region":"eu","limit":25,"status":"open", ...,
+#  "_authz":{"decision":"allow","processed":{"status":"open","limit":25,"region":"eu"},
+#            "rejected":[{"name":"limit","rule":"maximum",
+#                         "reason":"Value is above the maximum of 100",
+#                         "policy":"support-may-search","value":500}],
+#            "defaults_applied":{"limit":25,"region":"eu"}}}
+```
+
+Grants filter before ceilings, so whichever bound is tighter is the one that reports. Run the
+same request as `alice` and the rejection names `alice-limit` and her maximum of 50 instead.
+
+### Relationships
+
+**7 and 8 — one policy, two answers, and it names neither person.**
+`project-members-may-read-project-orders` says a member of `Project::"orders-eu"` may read an
+order in `Project::"orders-eu"`. Alice reaches that project through Team then Division; the
+order reaches it through an edge of its own. Bob's chain is the same length and ends at
+`Project::"orders-us"`.
+
+```bash
+curl -s localhost:8000/orders/o-1 -H 'x-user: alice'
+# {"order_id":"o-1","project":"orders-eu","total":120,
+#  "_authz":{"decision":"allow","action":"Action::\"orders.read\"",
+#            "resource":"Order::\"o-1\"", ...}}
+
+curl -s -i localhost:8000/orders/o-1 -H 'x-user: bob'
+# 403  {"detail":"The policy denied action Action::\"orders.read\".",
+#       "error":"AuthzDenied","_authz":{"decision":"deny", ...}}
+```
+
+### Export: three ways to be refused, one way to be narrowed
+
+**9 — plainly allowed.** `scope` was not proposed, so it is absent from `processed` and
+Python's own default filled it.
+
+```bash
+curl -s -X POST localhost:8000/orders/export -H 'x-user: bob' \
+     -H 'content-type: application/json' -d '{"fmt":"csv"}'
+# {"fmt":"csv","scope":"open","exported":42,
+#  "_authz":{"decision":"allow","processed":{"fmt":"csv"}, ...}}
+```
+
+**10 — `fmt` omitted, so Bob's default is injected.**
+
+```bash
+curl -s -X POST localhost:8000/orders/export -H 'x-user: bob' \
+     -H 'content-type: application/json' -d '{"scope":"open"}'
+# {"fmt":"csv", ..., "_authz":{"defaults_applied":{"fmt":"csv"}, ...}}
+```
+
+**11 — a deny-set rejection, refilled.** `xml` is rejected, `csv` fills the gap, and `scope`
+survives — which is what keeps the call alive.
+
+```bash
+curl -s -X POST localhost:8000/orders/export -H 'x-user: bob' \
+     -H 'content-type: application/json' -d '{"fmt":"xml","scope":"open"}'
+# {"fmt":"csv","scope":"open","exported":42,
+#  "_authz":{"decision":"allow",
+#            "rejected":[{"name":"fmt","rule":"deny-set",
+#                         "reason":"Value is explicitly denied","policy":"bob-fmt",
+#                         "value":"xml"}],
+#            "defaults_applied":{"fmt":"csv"}}}
+```
+
+**12 — the same value, alone.** Nothing the caller sent survived, so the call is refused
+rather than rebuilt from defaults: refilling refines a proposal, it does not rescue one. The
+body carries an `allowed` block saying what may be passed instead.
+
+```bash
+curl -s -i -X POST localhost:8000/orders/export -H 'x-user: bob' \
+     -H 'content-type: application/json' -d '{"fmt":"xml"}'
+# 400  {"detail":"Every supplied argument was rejected by policy.",
+#       "error":"NoValidArguments",
+#       "_authz":{"decision":"deny",
+#                 "rejected":[{"name":"fmt","rule":"deny-set", ...}],
+#                 "allowed":{"fmt":{"deny":["xml"],"policy":"bob-fmt",
+#                                   "required":false,"has_default":true}}}}
+```
+
+**13 — a `forbid` that reads the proposal.** Cedar sees the caller's raw arguments before the
+argument layer touches anything, so `no-pdf-exports` refuses the side effect at the gate. Bob
+may export; he may not export a PDF.
+
+```bash
+curl -s -i -X POST localhost:8000/orders/export -H 'x-user: bob' \
+     -H 'content-type: application/json' -d '{"fmt":"pdf"}'
+# 403  {"detail":"The policy denied action Action::\"orders.export\".",
+#       "error":"AuthzDenied","_authz":{"decision":"deny", ...}}
+```
+
+At `verbosity="debug"` that refusal also names the policy that decided it:
+`"determining_policies":["no-pdf-exports"]`.
+
+**14 — the role gate.** Bob is an auditor, not support.
 
 ```bash
 curl -s -i localhost:8000/orders -H 'x-user: bob'
 # 403  {"detail":"The policy denied action Action::\"orders.search\".",
-#       "error":"AuthzDenied", "_authz":{"decision":"deny", ...}}
+#       "error":"AuthzDenied", ...}
 ```
 
-Fail closed — no principal means no call, not an unguarded one:
+### Refunds: rules about arguments *together*
+
+**15 and 16 — refused by the relationship, not by either value.** A refund of 750 is inside
+Alice's bounds and `uk` is one of her regions. Together they trip
+`no-large-cross-region-refunds`, which forbids anything over 200 outside `eu`.
+
+```bash
+curl -s -X POST localhost:8000/refunds -H 'x-user: alice' \
+     -H 'content-type: application/json' \
+     -d '{"order_id":"ord-0007","amount":100,"region":"uk"}'
+# {"refund_id":"rf-1","order_id":"ord-0007","amount":100,"region":"uk",
+#  "_authz":{"decision":"allow", ...}}
+
+curl -s -i -X POST localhost:8000/refunds -H 'x-user: alice' \
+     -H 'content-type: application/json' \
+     -d '{"order_id":"ord-0007","amount":750,"region":"uk"}'
+# 403  {"detail":"The policy denied action Action::\"refunds.issue\".", ...}
+```
+
+Nothing in the route compares `amount` to `region`. Cedar receives the whole proposal and
+answers about all of it at once, so sentrykit needs no extra syntax for a rule of this shape.
+
+**17 — the two layers, separately visible.** At 900 the gate says yes: it is under the desk
+limit of 1000. Alice's own grant then rejects the value and refills it with 50.
+
+```bash
+curl -s -X POST localhost:8000/refunds -H 'x-user: alice' \
+     -H 'content-type: application/json' \
+     -d '{"order_id":"ord-0007","amount":900,"region":"eu"}'
+# {"refund_id":"rf-1","order_id":"ord-0007","amount":50,"region":"eu",
+#  "_authz":{"decision":"allow","processed":{"order_id":"ord-0007","region":"eu","amount":50},
+#            "rejected":[{"name":"amount","rule":"maximum",
+#                         "reason":"Value is above the maximum of 750",
+#                         "policy":"alice-amount","value":900}],
+#            "defaults_applied":{"amount":50}}}
+```
+
+**18 and 19 — the same call, two principals.** `refunds-within-desk-limits` permits amounts up
+to 1000 *or* an admin. Alice fails the condition; Dana satisfies its second branch.
+
+```bash
+curl -s -i -X POST localhost:8000/refunds -H 'x-user: alice' \
+     -H 'content-type: application/json' \
+     -d '{"order_id":"ord-0007","amount":5000,"region":"eu"}'
+# 403  AuthzDenied
+
+curl -s -X POST localhost:8000/refunds -H 'x-user: dana' \
+     -H 'content-type: application/json' \
+     -d '{"order_id":"ord-0007","amount":5000,"region":"eu"}'
+# {"refund_id":"rf-1","order_id":"ord-0007","amount":5000,"region":"eu", ...}
+```
+
+Alice's refusal is a **default deny**: her `when` clause came out false, so no policy was
+determining and `determining_policies` is empty even at `verbosity="debug"`. Nothing is named
+because nothing decided.
+
+**20 — a pattern rejection with nothing to refill from.** `order_id` is governed by a pattern
+and carries no default, so a value that fails it leaves a hole the policy cannot fill. The
+refusal names the argument rather than an action: the gate had already said yes.
+
+```bash
+curl -s -i -X POST localhost:8000/refunds -H 'x-user: alice' \
+     -H 'content-type: application/json' \
+     -d '{"order_id":"refund-me","amount":100,"region":"eu"}'
+# 400  {"detail":"Argument 'order_id' is required and no policy default is configured.",
+#       "error":"DefaultUnavailable",
+#       "_authz":{"decision":"deny",
+#                 "rejected":[{"name":"order_id",
+#                              "reason":"No policy default is configured."}]}}
+```
+
+**21 and 22 — the admin action.** Policy says `Role::"admin"` may approve; the grant store
+says who holds `admin`, and the reviewed file never changes when that answer does.
+
+```bash
+curl -s -X POST localhost:8000/refunds/rf-1/approve -H 'x-user: dana'
+# {"refund_id":"rf-1","approved":true,"_authz":{"decision":"allow", ...}}
+
+curl -s -i -X POST localhost:8000/refunds/rf-1/approve -H 'x-user: alice'
+# 403  {"detail":"The policy denied action Action::\"refunds.approve\".", ...}
+```
+
+### Fail closed
+
+No principal means no call, not an unguarded one.
 
 ```bash
 curl -s -i localhost:8000/orders
-# 403  {"detail":"No principal in context for action Action::\"orders.search\"; ...",
-#       "error":"NoContext", ...}
+# 403  {"detail":"No principal in context for action Action::\"orders.search\"; the call was denied.",
+#       "error":"NoContext","_authz":{"decision":"deny", ...}}
 ```
 
-A policy that reads the argument — `bob` may export, but not as a PDF:
+## Three details worth copying
 
-```bash
-curl -s -X POST localhost:8000/orders/export -H 'x-user: bob' \
-     -H 'content-type: application/json' -d '{"fmt":"csv"}'      # 200
-curl -s -i -X POST localhost:8000/orders/export -H 'x-user: bob' \
-     -H 'content-type: application/json' -d '{"fmt":"pdf"}'      # 403 AuthzDenied
-```
-
-At `verbosity="debug"` that last refusal also names the policy that decided it:
-`"determining_policies":["no-pdf-exports"]`.
-
-The gate is on the callable, not the URL — `/orders/summary` is an ordinary unguarded route
-that calls a protected function:
-
-```bash
-curl -s localhost:8000/orders/summary -H 'x-user: alice'   # 200, body carries _authz
-curl -s -i localhost:8000/orders/summary -H 'x-user: bob'  # 403 AuthzDenied
-```
-
-## Two details worth copying
-
-- `GET /orders` is a **sync `def`** route on purpose. FastAPI runs it in an AnyIO worker
+- **`GET /orders` is a sync `def` route on purpose.** FastAPI runs it in an AnyIO worker
   thread, and the principal established by the middleware travels with it — so protecting a
   blocking service function needs no special handling.
-- **No route declares a pydantic `response_model`.** One would strip the `_authz` key the
-  engine attaches to the returned mapping.
+- **No route declares a pydantic `response_model`.** One would validate the return value
+  against a schema that does not mention `_authz` and strip it.
+- **The app is built by a factory.** `create_app()` calls `configure()` and `install()`, which
+  mutate process-global state; a module-level `app = create_app()` would run that wiring for
+  anyone who merely imported the module. `uvicorn ... --factory` calls `serve()`, which builds
+  one app of its own, and every test builds its own with `create_app()`.
