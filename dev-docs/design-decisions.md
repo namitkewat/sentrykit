@@ -415,6 +415,44 @@ The same prefix check closes it, so it needs no separate rule.
 passes an `EntityRef`, which is the only way it ever worked as intended. `ReservedKey` maps to
 403 rather than 400: naming the rejected spelling back to the caller would be telling them
 what to try next.
+**Amended 2026-08-20 — the original consequence over-claimed, and adversarial review found the
+second route.** The first draft of this ADR, the `coerce_value` docstring, `docs/concepts.md`
+and `SECURITY.md` all said some version of *"only an `EntityRef` your application constructed
+becomes an entity reference."* That is false, and `isinstance` is the reason: it is a type
+check, not a provenance check. Reproduced end to end on two boundaries:
+
+- **FastAPI** — a route parameter annotated `Annotated[EntityRef | None, Body()]`. The
+  `@protect` wrapper is signature-preserving *by design* (`decorator.py`, so framework
+  introspection sees the original function), so FastAPI validates the caller's JSON against
+  that annotation **before** the wrapper runs and hands `Governor.plan` an already-constructed
+  `EntityRef`. `{"type": "Region", "id": "cn"}` → 403 (the guard fires);
+  `{"type": "Group", "id": "approved"}` → **200, tool body ran**, clean allow, `failed=False`.
+  `["Group", "approved"]` works too, since pydantic builds a `NamedTuple` from a sequence.
+- **MCP** — identical, and worse in one respect: `tools/list` *advertises* the shape to the
+  model (`{"$defs": {"EntityRef": {"prefixItems": [...], "maxItems": 2, "minItems": 2}}}`), so
+  on the boundary whose premise is "the LLM proposes, the policy decides", the model is told it
+  may name an entity type.
+
+**Decision on the amendment: correct the claim, do not change the behaviour.** Promotion of an
+`EntityRef` object is what that type is *for*, and a parameter typed as one is the application
+saying the caller names an entity. Three defenses close it, and two were measured:
+Cedar's `is` operator pinning the type (`context.args.region is Region && ...` → the forgery
+denies); an allow-set of `EntityRef` values in a grant or a declared ceiling (→ the forgery is
+refused at the constraint layer); and a Cedar schema typing `context.args` (→ the request fails
+to parse, which `fail_mode="closed"` refuses).
+
+**Alternatives considered and rejected.** Refusing to promote any `EntityRef` found under
+`context.args` — it would break the legitimate `context.args.order in principal.owned_orders`
+shape and cannot distinguish an app-built reference from a caller-built one, which is the
+same `isinstance` limitation one layer up. Refusing a proposed `EntityRef` unless a constraint
+bounds it — genuinely fail-closed, but it also refuses in-process application code passing a
+reference it built itself, which is over-reach for a library. A typed annotation
+(`Annotated[EntityRef, EntityType("Region")]`) would be the real fix and is a new feature; the
+constraint layer already expresses the same thing as data.
+
+The accurate invariant, now stated everywhere the old one was: **supplied data can never spell
+Cedar's escape form**; an `EntityRef` object is promoted, and typing a caller-facing parameter
+as one is a decision the application makes.
 
 ## ADR-027 — Constraint self-consistency is checked at the grant write, and defaults are checked at the call
 **Decision.** `ArgumentConstraint.inconsistencies()` returns one sentence per way a constraint

@@ -40,11 +40,9 @@ protected callable and refuses the side effect *before* it happens.
   by Cedar's entity hierarchy. They are never inferred by a model and never scattered across
   `if` statements, which means they can be reviewed, replayed and reasoned about.
 - **The shape of the request itself.** Cedar reserves record keys beginning with `__` for the
-  escape forms that promote a plain record into a typed entity reference. A caller who could
-  spell one could choose what type their argument has, and an argument-aware `forbid` would
-  read the forgery as genuine. Only an `EntityRef` your application constructs becomes an
-  entity reference; supplied data carrying a reserved key is refused before the policy set is
-  consulted, under either fail mode.
+  escape forms that promote a plain record into a typed entity reference. Supplied data
+  carrying such a key is refused before the policy set is consulted, under either fail mode,
+  so a `dict`-valued argument cannot promote itself into an entity of the caller's choosing.
 - **What an agent is shown.** On the agent side the tool manifest is filtered per principal: a
   tool is hidden from a caller exactly when invoking it would be refused. Hiding is a usability
   affordance rather than a control — the dispatch path re-runs the identical decision, so a
@@ -87,6 +85,15 @@ not a missing feature — and each one names the layer that does cover it.
   code, from a compromised dependency, or from anyone who can edit the policy directory.
   Policies-as-code exists so that changing the rules requires a reviewed commit — that review is
   the control, and skipping it removes it.
+- **It does not decide what your own signatures mean.** A parameter you annotate as
+  `EntityRef` says the caller names an entity, and every integration validates their JSON
+  against that annotation before the decorator runs — so the caller chooses the entity's
+  **type** as well as its id. Cedar's `in` is reflexive, which makes
+  `!(context.args.region in Group::"approved")` satisfiable by passing the approved group
+  itself as the region. Pin the type with Cedar's `is` operator, bound the argument with a
+  constraint or a ceiling, or declare `context.args` in a Cedar schema — all three close it,
+  and the docs say so where the annotation is described. sentrykit cannot infer which of your
+  parameters were meant to be caller-chosen.
 - **It does not defend against denial of service.** Every call runs a Cedar evaluation and
   writes an audit record. A caller who can trigger protected calls at will can make you do both
   at their chosen rate. Rate limiting belongs at the edge.

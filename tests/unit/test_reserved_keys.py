@@ -9,6 +9,11 @@ with no error attached — a clean allow — so the assertions here run the whol
 
 ``Group::"approved"`` is the escalation's payload because Cedar's ``in`` is reflexive: a
 caller who passes the *approved group itself* as the region is trivially "in" it.
+
+The boundary is about the *spelling*, and it is worth being exact about the scope: an
+``EntityRef`` object is still promoted, so a callable that annotates a caller-facing parameter
+with one has said the caller names the entity. That is a separate question with its own
+answers, pinned in ``tests/integration/test_entity_valued_arguments.py``.
 """
 
 from __future__ import annotations
@@ -34,10 +39,12 @@ permit (principal, action, resource);
 forbid (principal, action, resource)
 when { context.args has region && !(context.args.region in Group::"approved") };
 """
-"""A permit plus the argument-aware ``forbid`` backstop.
+"""A permit plus the argument-aware ``forbid`` backstop, in its *unpinned* form.
 
-The ``forbid`` is the one printed in the concepts page, verbatim, so this suite also pins
-that example.
+Unpinned deliberately: this suite is about the coercion boundary, which holds whatever the
+guard says. The concepts page prints this same text as the shape that a caller can satisfy by
+naming the group itself once an argument is entity-typed, and
+``tests/integration/test_entity_valued_arguments.py`` is where that is pinned down.
 """
 
 FORGED_ENTITY = {"__entity": {"type": "Group", "id": "approved"}}

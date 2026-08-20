@@ -88,6 +88,11 @@ class ReservedKey(SentrykitError):
     *not* arbitrated by ``fail_mode``: a forged request is not a broken policy set, and
     ``fail_mode="open"`` exists to tolerate operator error, never caller input.
 
+    This closes the *spelling*, not the general question of who chooses an entity's type. A
+    parameter a callable annotates as :class:`~sentrykit.cedar.EntityRef` is a caller-chosen
+    entity by construction, and the same reflexive ``in`` applies to it -- see
+    :func:`~sentrykit.cedar.coerce_value` for how a policy pins that down.
+
     Attributes:
         key: The reserved key that was supplied.
         path: Where it appeared inside the request context, e.g. ``args.region`` or

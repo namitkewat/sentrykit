@@ -18,10 +18,12 @@ Three things this module owns that callers should not re-implement:
    floating-point and no null. A stray ``None`` in the request context turns the whole
    decision into ``NoDecision``, and a ``None`` in an entity attribute makes the entity set
    fail to parse outright. Every value handed to Cedar passes through :func:`coerce_value`
-   first. The same function is the one place that decides what may become a Cedar *entity
-   reference*: only an :class:`EntityRef` the application constructed can, and a supplied
-   mapping spelling Cedar's reserved ``__`` escape keys is refused with
-   :class:`~sentrykit.errors.ReservedKey` instead.
+   first. The same function owns the one boundary that matters for forgery: a supplied
+   *mapping* can never spell Cedar's reserved ``__`` escape keys, so it cannot promote itself
+   into a typed entity reference. An :class:`EntityRef` object still becomes one — which is
+   what that type is for, and what makes it the application's decision rather than the
+   library's. See :func:`coerce_value` for the consequence when an application annotates a
+   caller-facing parameter with it.
 """
 
 from __future__ import annotations
@@ -417,15 +419,26 @@ def coerce_value(value: object) -> object | None:
     recurse, dropping any element or entry that coerces to ``None``. Anything else is
     stringified.
 
-    **Cedar's escape forms have exactly one entrance, and it is :class:`EntityRef`.** A
-    record key beginning with ``__`` is reserved by Cedar — ``__entity`` promotes a record
-    into a typed entity reference, ``__extn`` into an extension value — so a supplied
-    mapping that spells one would be indistinguishable from a reference the application
-    built itself. Any such key raises :class:`~sentrykit.errors.ReservedKey` rather than
-    being coerced, dropped or escaped: dropping it would silently turn off an argument-aware
-    ``forbid`` that tests ``context.args has ...``, and escaping it would leave a value that
-    only fails downstream as a Cedar *type* error, which ``fail_mode="open"`` would tolerate.
-    Refusing here refuses under either fail mode.
+    **A supplied mapping is never an escape form.** A record key beginning with ``__`` is
+    reserved by Cedar — ``__entity`` promotes a record into a typed entity reference,
+    ``__extn`` into an extension value — so a mapping that spells one would be
+    indistinguishable from a reference the application built itself. Any such key raises
+    :class:`~sentrykit.errors.ReservedKey` rather than being coerced, dropped or escaped:
+    dropping it would silently turn off an argument-aware ``forbid`` that tests
+    ``context.args has ...``, and escaping it would leave a value that only fails downstream
+    as a Cedar *type* error, which ``fail_mode="open"`` would tolerate. Refusing here refuses
+    under either fail mode.
+
+    **An :class:`EntityRef` object, by contrast, is always promoted, and that is a decision
+    about types rather than about provenance.** ``isinstance`` cannot tell where an object
+    came from, and every web and agent integration validates a caller's JSON against the
+    protected callable's annotations *before* the decorator runs — so a parameter annotated
+    ``EntityRef`` is a caller-chosen entity, **type included**. Cedar's ``in`` is reflexive,
+    which makes ``!(context.args.region in Group::"approved")`` satisfiable by passing the
+    approved group itself. A policy reading an entity-valued argument must pin its type
+    (``context.args.region is Region && ...``), bound it with a constraint or a declared
+    ceiling, or sit behind a Cedar schema that types ``context.args``. Annotate a parameter
+    ``EntityRef`` only where the caller really is meant to name the entity.
 
     Naive ``datetime`` values are read as UTC rather than as local time, so a decision does
     not depend on the timezone of the host that happened to evaluate it.

@@ -28,6 +28,22 @@ All notable changes to this project are documented here. Format follows
   - The refusal is audited as an ordinary denial, so a forged request leaves a record.
   - `EntityRef` is unaffected: it has its own trusted path to the `{"__entity": ...}` form,
     and remains the only way to hand Cedar an entity reference.
+  - **Scope, stated precisely, because the first wording of this entry over-claimed.** The
+    check closes the *spelling*: a supplied mapping can never promote itself into an entity.
+    It does not decide who chooses an entity's **type**. `isinstance(value, EntityRef)` is a
+    type check, not a provenance check, and every integration validates a caller's JSON
+    against the protected callable's annotations *before* the decorator runs — the wrapper is
+    signature-preserving so that framework introspection sees the original function. A
+    parameter annotated `EntityRef` is therefore a caller-chosen entity, type included, and
+    Cedar's reflexive `in` makes `!(context.args.region in Group::"approved")` satisfiable by
+    passing the approved group itself. Reproduced over real HTTP and a real MCP round trip;
+    on MCP, `tools/list` also advertises the shape to the model. Three defenses close it and
+    are now documented where the annotation is described: pin the type with Cedar's `is`,
+    bound the argument with a constraint or a ceiling, or declare `context.args` in a Cedar
+    schema. The behaviour is unchanged — promoting an `EntityRef` is what the type is for —
+    but `docs/concepts.md`, `SECURITY.md` and the `coerce_value` docstring no longer claim
+    otherwise, and `tests/integration/test_entity_valued_arguments.py` pins both the exposure
+    and each defense.
   - The sibling `__extn` form is closed by the same check. It was the less severe of the two
     — it produced an engine error, so `fail_mode="closed"` already refused it — and was a
     live bypass only under `fail_mode="open"`.
