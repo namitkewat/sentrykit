@@ -222,8 +222,10 @@ envelope a success carries, trimmed by `verbosity`:
 }
 ```
 
-Two runnable apps — the same three routes, the same policy, the same service layer, on both
-frameworks — live in `examples/fastapi_app/` and `examples/flask_app/`. See
+Two runnable apps — one orders-and-refunds desk built twice, with the same seven protected
+callables, the same reviewed `.cedar` directory and the same grant data on both frameworks —
+live in `examples/fastapi_app/` and `examples/flask_app/`. Each drives 22 requests through its
+own test client and prints what policy did to every one before it starts serving. See
 [docs/web-frameworks.md](docs/web-frameworks.md).
 
 ### Guard an agent's tools — same decorator, and the model is told what it may attempt
@@ -266,9 +268,14 @@ calls a hidden tool by name is refused just the same — both halves are asserte
 test, because a filter that *were* the control would be a hole the moment someone skipped
 `tools/list`.
 
-An MCP tool server and an on-behalf-of agent live in `examples/fastmcp_server/` and
-`examples/pydantic_ai_agent/`. Both run offline, with no API key and no network call. See
-[docs/agents.md](docs/agents.md).
+An MCP tool server and an on-behalf-of agent govern that same desk in `examples/fastmcp_server/`
+and `examples/pydantic_ai_agent/`, and print a 22-flow table of their own. Neither needs an API
+key: each uses a local [Ollama](https://ollama.com) model when one is reachable and a
+deterministic stand-in otherwise, and every authorization outcome is identical either way — a
+decision is made from the principal and the proposed arguments, never from which model proposed
+them.
+Setting `SENTRYKIT_OLLAMA_URL` to an empty value turns the search off without opening a socket.
+See [docs/agents.md](docs/agents.md).
 
 ### Relationships are Cedar's job, and this composes with them
 

@@ -3,6 +3,73 @@
 All notable changes to this project are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning follows SemVer.
 
+## [Unreleased]
+
+The four example apps rebuilt around one shared domain, so that each of them demonstrates the
+whole library rather than a slice of it, and the same story can be read at four different
+boundaries.
+
+### Added
+
+- **One orders-and-refunds desk, modelled identically in all four examples.** Three principals
+  — `alice` (support), `bob` (auditor), `dana` (admin, reaching support through a single
+  `Role::"admin" -> Role::"support"` edge rather than through a second grant on every admin) —
+  seven protected operations, one entity graph and one set of grant data, shared verbatim
+  between the FastAPI app, the Flask app, the MCP server and the Pydantic-AI agent. Only the
+  boundary wiring differs between them, which is what makes diffing two example directories a
+  useful thing to do.
+- **A printed flow table in every example.** `pixi run run-fastapi`, `run-flask`, `run-mcp` and
+  `run-agent` each drive 22 calls before doing anything else and print one line per call saying
+  what policy did to it — allowed, narrowed with the rejection and the refill named, defaulted,
+  denied, or the argument-layer error that refused it. The web apps drive their framework's own
+  test client and then serve; the MCP server drives itself over an in-memory transport when a
+  human runs it at a terminal and serves over stdio when its stdin is a pipe.
+- **The grant data now exercises the whole constraint vocabulary** — allow-set, deny-set,
+  pattern, minimum, maximum and default — with at least one flow per rule, including a pattern
+  deliberately carrying no default so that `DefaultUnavailable` is reachable, and a deny-set
+  whose rejection is refilled so that the export still runs.
+- **An argument ceiling demonstrated end to end.** `policies/10-orders.cedar` declares
+  `@constraints("{\"limit\": {\"maximum\": 100}}")` on `support-may-search`. Dana's grant sets
+  no maximum of its own, so the reviewed ceiling is her only bound: she proposes `limit=500`,
+  the ceiling is 100, and the call runs at 25 — her own default. The flow exists specifically
+  to make reject-and-refill visible as distinct from a clamp, and each example calls it out.
+  Alice's grant caps `limit` at 50, so hers is the tighter bound and her rejection names her
+  grant rather than the reviewed policy.
+- **Two Cedar rules that decide on more than the principal/action/resource triple.**
+  `refunds-above-the-desk-limit-need-an-admin` weighs a proposed argument together with the
+  principal; `no-large-cross-region-refunds` weighs two proposed arguments against each other,
+  each of which is within bounds alone. Both are written over a deliberately unconditional
+  permit, so that a manifest probe proposing no arguments still reaches it and the tool stays
+  visible to the principals who may invoke it.
+- **An optional local-model path for both agent examples** (`examples/ollama.py`, standard
+  library only). Each example uses a tool-capable [Ollama](https://ollama.com) model when a
+  daemon is reachable and a deterministic stand-in otherwise, and prints which is in use.
+  `SENTRYKIT_OLLAMA_MODEL` pins a model; `SENTRYKIT_OLLAMA_URL` points at another daemon.
+  Setting `SENTRYKIT_OLLAMA_URL` to an **empty** value turns the search off before any socket
+  is opened, which is how the test suite stays hermetic. Every authorization outcome is
+  identical on both paths, because a decision is made from the principal and the proposed
+  arguments and never from which model proposed them.
+
+### Changed
+
+- **All example policy logic moved from Python strings into reviewed `.cedar` files**, loaded
+  with `install(policy_source=FilesystemPolicySource(POLICY_DIR), ...)`. `policies=` and
+  `policy_source=` are mutually exclusive, so the move takes *all* of it; each example still
+  exports `POLICY_TEXT`, now read back from those same files. This is what puts the argument
+  ceiling under review beside the `permit` it hangs on.
+- **`docs/web-frameworks.md` and `docs/agents.md`** replace their short example sections with
+  walkthroughs of what each flow teaches. The web page no longer describes the two web apps as
+  "the same three routes"; the agents page no longer says both agent examples run with no
+  network call, and no longer mentions a `SENTRYKIT_EXAMPLE_MODEL` setting that no longer
+  exists.
+- **`docs/agents.md` documents a boundary difference an integrator will hit.** `mcp` and
+  Pydantic-AI both materialize the advertised JSON schema's defaults before dispatch, so a
+  parameter carrying a Python default arrives at the decorator as a *proposed* argument and
+  survives filtering. `NoValidArguments` is therefore reachable at a web boundary by proposing
+  a single argument that is then rejected, and at an agent boundary only from a tool whose every
+  parameter is omittable.
+- **`README.md`** corrects the same two claims about the example apps.
+
 ## [0.2.0] - 2026-08-20
 
 The argument layer, hardened and extended. A silent entity-forgery escalation is closed;

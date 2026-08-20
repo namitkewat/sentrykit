@@ -249,6 +249,39 @@ whose value could only have come from policy. Name them explicitly with `optiona
 The shim keeps both introspections working — the framework sees the optional schema through
 `__signature__`, and the manifest filter reaches the `@protect` metadata through `__wrapped__`.
 
+### A parameter with a Python default arrives whether or not the model proposed it
+
+This is a property of the agent boundary itself, and it is worth knowing before you reason
+about which refusals your tools can produce.
+
+Both frameworks **materialize the advertised schema's defaults** before dispatch. A parameter
+carrying a Python default is not made omittable — it needs no policy value, because it has one
+of its own — so it is advertised with that value as the schema default, and the framework fills
+it in. By the time `@protect` runs, it is a *proposed* argument. An omittable parameter is
+advertised as nullable with a default of `null` instead, and the shim reads that `null` as *not
+proposed* and drops it, which is how an omission survives the crossing.
+
+The consequence is a difference in reachable refusals. `NoValidArguments` fires when every
+argument the caller proposed was rejected, so at a web boundary — where a route forwards only
+what the caller actually sent — proposing one argument that is then rejected is enough to reach
+it. At an agent boundary that same call is not refused, because a parameter with a Python
+default arrived alongside and survived filtering. Given
+`export_orders(fmt: str, scope: str = "open")` and a principal whose `fmt` deny-set rejects
+`xml`, an MCP or Pydantic-AI dispatch of `export_orders(fmt="xml")` runs:
+
+```python
+result = await client.call_tool("export_orders", {"fmt": "xml"}, meta=BOB)
+print(result.structured_content["_authz"]["processed"])
+# -> {'scope': 'open', 'fmt': 'csv'}
+print(result.structured_content["_authz"]["rejected"][0]["rule"])
+# -> deny-set
+```
+
+`scope` is in `processed` even though nothing proposed it. To reach `NoValidArguments` from an
+agent, every parameter of the tool has to be one policy could supply — which is to say, none of
+them may carry a Python default. Both agent examples reach it through `issue_refund`, whose
+three parameters are all omittable, by proposing two arguments that are both rejected.
+
 ## Relationships are resolved by the policy, not by the model
 
 Underneath the argument layer is Cedar's entity hierarchy, and the two compose. Nested
@@ -286,13 +319,322 @@ pixi run -e agent run-mcp
 
 ## Running the examples
 
-Both run offline, with no API key and no network call.
+`examples/fastmcp_server/` and `examples/pydantic_ai_agent/` govern the same orders-and-refunds
+desk the web examples do — the same three principals, the same grant data, the same reviewed
+policy directory — at an agent boundary instead of an HTTP one. Seven governed tools, plus one
+protected callable that is deliberately registered as no tool at all.
 
 ```bash
 pixi run -e agent run-mcp        # the MCP tool server
 pixi run -e agent run-agent      # the Pydantic-AI agent
 ```
 
-The agent example's default model is `pydantic_ai.models.test.TestModel`, and its narrative is
-driven by `FunctionModel` so it can show exactly which tools the model was offered rather than
-asserting it in prose. Set `SENTRYKIT_EXAMPLE_MODEL` to point the free-form run at a real model.
+Each drives itself and prints what policy did to 22 calls. Policy logic comes off disk, which
+is what puts the argument ceiling under review beside the `permit` it hangs on:
+
+```python
+install(
+    policy_source=FilesystemPolicySource(POLICY_DIR),
+    grant_store=store,
+    context_provider=provider,
+)
+```
+
+Both call `configure(verbosity="verbose")` so the envelope carries processed values, applied
+defaults and rejection reasons — the model is one of the audiences for that explanation, and it
+is what lets it choose a different call rather than guess. A service in production would leave
+that at `summary`.
+
+The MCP server drives itself over an in-memory transport when a human runs it at a terminal,
+and serves over stdio when its stdin is a pipe — so the whole demonstration runs with no socket
+and no client to install. Identity is a stub on both: MCP callers name themselves in the
+request's `_meta` under `x-sentrykit-principal`, and the Pydantic-AI agent takes the principal
+from `deps`.
+
+### The manifest is answered per principal
+
+The Pydantic-AI example observes the manifest as the *model* is given it, by running one turn
+on a `FunctionModel` that proposes nothing and reports `AgentInfo.function_tools`:
+
+```
+alice : desk_status, brief_orders, search_orders, read_order, issue_refund
+bob   : desk_status, export_orders
+dana  : desk_status, brief_orders, search_orders, read_order, issue_refund, approve_refund
+```
+
+The MCP example answers `tools/list` the same way, and adds the anonymous case:
+
+```
+  alice        ['desk_status', 'brief_orders', 'search_orders', 'read_order', 'issue_refund']
+  bob          ['desk_status', 'export_orders']
+  dana         ['desk_status', 'brief_orders', 'search_orders', 'read_order', 'issue_refund', 'approve_refund']
+  (anonymous)  []
+```
+
+`issue_refund` is the entry to read twice. It is in alice's manifest and absent from bob's, and
+the shape of the refunds policy is why: the permit authorizing it is unconditional, so a probe
+that proposes nothing still reaches it, and neither `forbid` over it fires on a proposal with
+no `amount` in it. Bob has no permit for the action at all. Fold the desk limit into a `when`
+on that permit and it would depend on `context.args has amount` — false for a probe that
+proposed nothing — and the tool would vanish from every manifest while still working perfectly
+at dispatch. Permit broadly, forbid narrowly.
+
+### Every flow, decided
+
+This is what `run-agent` prints. The MCP server prints the same 22 flows in its own format:
+
+```
+  #  who    call                                                         outcome
+  1  alice  desk_status()                                                allowed
+  2  alice  brief_orders()                                               allowed
+  3  alice  search_orders()                                              defaulted: region='eu', limit=10
+  4  alice  search_orders(region='cn', limit=5)                          narrowed: region='cn' rejected (allow-set, alice-region) -> region='eu'
+  5  alice  search_orders(limit=500, status='open')                      narrowed: limit=500 rejected (maximum, alice-limit) -> limit=10; defaulted: region='eu'
+  6  dana   search_orders(limit=500, status='open')                      narrowed: limit=500 rejected (maximum, support-may-search) -> limit=25; defaulted: region='eu'
+  7  alice  read_order(order_id='o-1')                                   allowed
+  8* bob    read_order(order_id='o-1')                                   denied: The policy denied action Action::"orders.read".
+  9  bob    export_orders(fmt='csv')                                     allowed
+ 10  bob    export_orders(scope='open')                                  defaulted: fmt='csv'
+ 11  bob    export_orders(fmt='xml', scope='open')                       narrowed: fmt='xml' rejected (deny-set, bob-fmt) -> fmt='csv'
+ 12  alice  issue_refund(order_id='refund-me', amount=900)               NoValidArguments: Every supplied argument was rejected by policy.
+ 13  bob    export_orders(fmt='pdf')                                     denied: The policy denied action Action::"orders.export".
+ 14* bob    search_orders()                                              denied: The policy denied action Action::"orders.search".
+ 15  alice  issue_refund(order_id='ord-0007', amount=100, region='uk')   allowed
+ 16  alice  issue_refund(order_id='ord-0007', amount=750, region='uk')   denied: The policy denied action Action::"refunds.issue".
+ 17  alice  issue_refund(order_id='ord-0007', amount=900, region='eu')   narrowed: amount=900 rejected (maximum, alice-amount) -> amount=50
+ 18  alice  issue_refund(order_id='ord-0007', amount=5000, region='eu')  denied: The policy denied action Action::"refunds.issue".
+ 19  dana   issue_refund(order_id='ord-0007', amount=5000, region='eu')  allowed
+ 20  alice  issue_refund(order_id='refund-me', amount=100, region='eu')  DefaultUnavailable: Argument 'order_id' is required and no policy default is configured.
+ 21  dana   approve_refund(refund_id='rf-1')                             allowed
+ 22* alice  approve_refund(refund_id='rf-1')                             denied: The policy denied action Action::"refunds.approve".
+```
+
+A starred row is a tool hidden from that principal's manifest, so no model could have proposed
+it — the example dispatches it by name with no model in the loop, and the gate refuses it
+exactly as if it had never been hidden. That is the second half of the filtering guarantee,
+exercised rather than asserted.
+
+### The ceiling, and why the answer is never the ceiling
+
+Flows 5 and 6 are the same proposal from two people. `policies/10-orders.cedar` declares an
+[argument ceiling](policies.md#argument-ceilings) on the permit that lets support search:
+
+```cedar
+@id("support-may-search")
+@constraints("{\"limit\": {\"maximum\": 100}}")
+permit (
+  principal in Role::"support",
+  action == Action::"orders.search",
+  resource == Tool::"orders"
+);
+```
+
+`@constraints` is a **Cedar policy annotation, not a Python decorator** — text carried on the
+policy, parsed when the directory loads. It grants nobody anything. It says what *anybody*
+reaching this permit may pass, and it **intersects** with the caller's own grant, so a grant
+can tighten it and can never loosen it. Alice's grant caps `limit` at 50, tighter than the
+reviewed 100, so hers is the bound that reports; dana's grant sets only a default, so the
+reviewed ceiling is her only bound and the rejection names `support-may-search`.
+
+`run-agent` spells that case out on its own, because it is the one most easily misread:
+
+```
+dana proposed limit=500.
+The ceiling declared in policies/10-orders.cedar is 100.
+She ran with limit=25, which is her own default.
+```
+
+The value that breached the ceiling was **rejected** and dana's own default was put in the gap.
+The result is her default; it bears no relation to the bound that refused her, and nothing is
+ever trimmed to that bound. That is what makes a narrowed result something a model can act on:
+it is told what it asked for, what refused it, and what it got instead.
+
+### Several arguments decided in one call
+
+Flow 5 puts all three parts of the argument layer in one envelope:
+
+```python
+result = await client.call_tool("search_orders", {"limit": 500, "status": "open"}, meta=ALICE)
+print(result.structured_content["_authz"]["processed"])
+# -> {'status': 'open', 'region': 'eu', 'limit': 10}
+print(result.structured_content["_authz"]["rejected"][0]["reason"])
+# -> Value is above the maximum of 50
+print(result.structured_content["_authz"]["defaults_applied"])
+# -> {'region': 'eu', 'limit': 10}
+```
+
+`limit` was proposed, rejected and refilled; `region` was never proposed and was injected;
+`status` was left alone because no constraint governs it. The contrast lives in the signature —
+`search_orders(region: str, limit: int, status: str = "open")` — and it is the design rule
+worth copying: a value **policy** decides carries no Python default, so it stays omittable and
+a policy default can reach it. A value that is the caller's own business keeps its Python
+default and never troubles the policy layer.
+
+Flow 3 reaches the same two values by the other route: the model proposes nothing, so both
+governed arguments turn up in `defaults_applied` and neither in `rejected`. That distinction is
+the difference between a model that can report honestly on what it did and one that cannot. Its
+`processed` is `{'status': 'open', 'region': 'eu', 'limit': 10}` all the same — `status` came
+from the schema default, which is the boundary behaviour described above.
+
+### Two rules that read more than the principal
+
+The refunds policy permits support to issue refunds unconditionally and puts two narrow
+`forbid` rules over it. Neither is expressible as a per-argument constraint.
+
+**One argument together with the principal.** Flows 18 and 19 are the same call from two
+people: `refunds-above-the-desk-limit-need-an-admin` refuses anything over 1000 from a caller
+who is not an admin, and dana is exempted by its last clause because `Role::"admin"` has
+`Role::"support"` as a parent.
+
+**Two arguments against each other.** Flows 15 and 16 differ only in the amount, and each value
+is fine alone — 750 is inside alice's range of 1–750, and `uk` is one of her permitted regions
+— while the pair trips `no-large-cross-region-refunds`, which forbids anything over 200 booked
+outside `eu`. Nothing in either tool body compares the two. Cedar receives the whole proposal
+as `context.args` and answers about all of it at once.
+
+Flow 17 separates the gate from the argument layer, which is easy to conflate: at `amount=900`
+the gate says yes, because 900 is under the desk limit — and alice's own grant then rejects the
+value and refills it with 50.
+
+Both refusals are **named**, because a `forbid` that fires is determining. `run-agent` re-runs
+three of them at `verbosity="debug"`, where the envelope carries `determining_policies`:
+
+```
+13  bob    export_orders(fmt='pdf')       denied: The policy denied action Action::"orders.export". [no-pdf-exports]
+18  alice  issue_refund(.., amount=5000)  denied: The policy denied action Action::"refunds.issue". [refunds-above-the-desk-limit-need-an-admin]
+14  bob    search_orders()                denied: The policy denied action Action::"orders.search".
+```
+
+Flow 14 is the other shape and names nothing: no permit matched bob at all, so the decision is
+Cedar's default deny and nothing was determining. When nothing permitted a call there is no
+rule to point at, and reporting one would be inventing it. Flow 8 reads the same way.
+
+### Reject-and-refill from a deny-set
+
+Bob's `fmt` constraint is a deny-set with a default — the mirror image of an allow-set:
+everything passes except what is named. Flow 11 proposes `xml`, and the export runs on `csv`:
+
+```python
+result = await client.call_tool("export_orders", {"fmt": "xml", "scope": "open"}, meta=BOB)
+print(result.structured_content["fmt"])
+# -> csv
+print(result.structured_content["_authz"]["rejected"][0]["rule"])
+# -> deny-set
+```
+
+Flow 13 proposes `pdf` and is refused at the gate instead. Cedar sees the caller's **raw**
+proposal, before any per-principal filtering, so a `forbid` reading `context.args.fmt` fires on
+what the model actually wrote. Bob may export; he may not export a PDF.
+
+Flow 12 is where `NoValidArguments` becomes reachable at this boundary, and it takes a tool
+whose every parameter is omittable — see [the note above](#a-parameter-with-a-python-default-arrives-whether-or-not-the-model-proposed-it).
+Both proposed arguments are rejected, so nothing the caller sent survives:
+
+```python
+result = await client.call_tool("issue_refund", {"order_id": "refund-me", "amount": 900}, meta=ALICE)
+print(result.structured_content["error"])
+# -> NoValidArguments
+print([item["name"] for item in result.structured_content["_authz"]["rejected"]])
+# -> ['order_id', 'amount']
+print(sorted(result.structured_content["_authz"]["allowed"]))
+# -> ['amount', 'order_id', 'region']
+```
+
+The `allowed` block is what the principal may pass instead, which is exactly what a model needs
+in order to retry. It appears on no permitted call's envelope, which makes it the tell that a
+report was built from a refusal rather than from a decision — such a report names no action and
+no resource, because the gate had already said yes.
+
+Flow 20 is the refusal with nothing to fall back on. Alice's `order_id` constraint is a pattern
+with **no default**, so a malformed id is dropped and nothing can fill the gap:
+`DefaultUnavailable`, with the detail `Argument 'order_id' is required and no policy default is
+configured.` Here `amount=100` survived, so the call was not refused for want of arguments — it
+was refused because the one that failed had no answer available.
+
+### The bare `@protect`, and a protected callable that is not a tool
+
+Flow 1 calls `desk_status`, decorated with a bare `@protect`. With no `action=` and no
+`resource=`, sentrykit derives both from the callable's import path, and the reviewed policy
+names the derived action verbatim:
+
+```python
+result = await client.call_tool("desk_status", {}, meta=ALICE)
+print(result.structured_content["_authz"]["action"])
+# -> Action::"examples.fastmcp_server.service.desk_status"
+print(result.structured_content["_authz"]["resource"])
+# -> Resource::"examples.fastmcp_server.service.desk_status"
+```
+
+Convenient, and fragile in one specific way: renaming or moving the function changes the id the
+policy has to match. Pass an explicit `action=` as soon as the policy is expected to outlive
+the module layout.
+
+Flow 2 is the one that shows the gate is on the *call* and not on the registration.
+`brief_orders` is a registered tool; the `summarize_orders()` its body calls is protected and
+registered nowhere, so no model was ever told it exists and none could propose it. It is
+decided anyway, against the same ambient principal:
+
+```
+outer  Action::"orders.brief"  allow
+inner  Action::"orders.summarize"  allow
+```
+
+One dispatch, two decisions, two audit records — and the outer record is written **before** the
+body runs, so a refusal inside cannot erase the fact that the outer call was permitted. Had the
+inner decision been a refusal, its `AuthzDenied` would have travelled out through
+`brief_orders` unchanged rather than becoming a partial answer.
+
+The MCP example also severs one entity edge and reruns: detach `Team::"eu-support"` from
+`Division::"emea"`, change nothing else, and `read_order` leaves alice's manifest and her
+dispatch is refused, while `search_orders` — gated by her role, not by that chain — keeps
+working. The relationship *was* the authorization.
+
+## The optional local model
+
+Both agent examples run on a real model when one is within reach, and on a deterministic
+stand-in otherwise. Each prints which it is using.
+
+The live path is [Ollama](https://ollama.com), because it needs no API key and no account:
+
+1. install Ollama;
+2. pull a model whose template supports tools, for example `ollama pull qwen2.5:3b`;
+3. optionally pin one with `SENTRYKIT_OLLAMA_MODEL`, or point at a daemon that is not on
+   `http://localhost:11434` with `SENTRYKIT_OLLAMA_URL`.
+
+Tool support is a property of the model's template rather than of Ollama, so the examples ask
+the daemon which installed models advertise it and fall back cleanly when none does. A pinned
+name the daemon does not have is treated as *no pin* rather than as an error, because a typo in
+an environment variable should not stop an example running.
+
+With no daemon reachable, the Pydantic-AI example runs the free-form section on
+`pydantic_ai.models.test.TestModel`, which calls every visible tool with generated arguments,
+and the MCP example says there is no model and stops there. Both say why:
+
+```
+model: TestModel
+  -- the search for one is turned off (SENTRYKIT_OLLAMA_URL is set to an empty value)
+```
+
+**Every authorization outcome is identical either way**, because a decision is made from the
+principal and the proposed arguments and never from which model proposed them. The fallback is
+not a lesser mode; what a live model adds is that the proposal is genuinely the model's — it
+picks the tool and drafts the arguments itself.
+
+Setting `SENTRYKIT_OLLAMA_URL` to an **empty** value turns the search off outright: no socket
+is opened and no model is found, so the deterministic path is taken. That is how the test suite
+stays hermetic — an example's behaviour must not depend on what happens to be listening on the
+machine running it — and it is also the switch to reach for when you have a daemon and want the
+reproducible run anyway.
+
+A small local model will sometimes propose a malformed call, a tool it was never offered, or
+nothing at all. The examples print that and carry on: sentrykit refusing a call the model
+should not have proposed is the point, not a failure of the demonstration. Two things are worth
+watching for while it runs. Cedar compares strings exactly, so a policy written against `"pdf"`
+does not match a model that writes `"PDF"` — and how a value is spelled is the model's choice,
+never the policy's.
+
+Nothing probes for a model at import, in either example: importing the module opens no socket.
+The MCP server is model-agnostic throughout — `create_server()` exposes governed tools and a
+client drives them, so only its self-drive ever looks for a daemon. The agent needs a model to
+be built at all, so `build_agent()` is where its probe happens, and passing `build_agent(model)`
+explicitly skips it.

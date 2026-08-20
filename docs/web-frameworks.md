@@ -304,19 +304,285 @@ see [Plugins & extensions](plugins.md).
 
 ## Runnable examples
 
-`examples/fastapi_app/` and `examples/flask_app/` are the same three routes on both frameworks,
-sharing an identical policy and an identical service layer:
+`examples/fastapi_app/` and `examples/flask_app/` are one orders-and-refunds desk built twice.
+Seven routes, seven protected callables, three principals, one `service.py` with no framework
+import in it, one set of grant data, and one reviewed policy directory — shared verbatim
+between the two apps, down to the URLs. Only the boundary wiring differs: `protect_app` over
+the whole FastAPI app, `protect_blueprint` over a Flask blueprint. Diffing the two directories
+is the shortest available account of how much of an application the framework choice touches.
 
-```bash
-pixi run -e web run-fastapi
-pixi run -e web run-flask
+Policy *logic* is loaded off disk rather than handed over as a string, which is what puts the
+argument ceiling under review beside the `permit` it hangs on:
+
+```python
+install(
+    policy_source=FilesystemPolicySource(POLICY_DIR),
+    grant_store=store,
+    context_provider=provider,
+)
 ```
 
+`policies=` and `policy_source=` are mutually exclusive, so moving to files moves *all* the
+policy logic out of Python. Grants — roles, entity edges, per-argument constraints — stay in
+the store, which is the half an admin surface may mutate.
+
 ```bash
-curl -H 'x-user: alice' localhost:8000/orders
-curl -H 'x-user: alice' 'localhost:8000/orders?region=cn&limit=5'
-curl -H 'x-user: bob'   localhost:8000/orders
+pixi run -e web run-fastapi     # serves on http://127.0.0.1:8000
+pixi run -e web run-flask       # serves on http://127.0.0.1:5000
 ```
 
-The first runs on injected defaults, the second is narrowed with `region` rejected and
-defaulted, and the third is refused. See each directory's README for the full set.
+Before either app starts serving it drives 22 requests through its own framework's test client
+and prints one line each, so the whole decision surface is readable before you type a `curl`.
+Both call `configure(verbosity="verbose")`, so the `_authz` envelope carries processed values,
+applied defaults and rejection reasons; a service in production would leave that at `summary`.
+sentrykit logs `Argument dropped by policy` once per rejected value, so seven of those land on
+stderr ahead of the table.
+
+```
+#   who    request                                                            code  what the policy did
+--  -----  -----------------------------------------------------------------  ----  --------------------
+1   alice  GET  /orders/status                                                200   allowed
+2   alice  GET  /orders/summary                                               200   allowed
+3   alice  GET  /orders                                                       200   defaulted: region='eu' limit=10
+4   alice  GET  /orders?region=cn&limit=5                                     200   narrowed: region='cn' rejected (allow-set, alice-region), refilled with 'eu'
+5   alice  GET  /orders?limit=500&status=open                                 200   narrowed: limit=500 rejected (maximum, alice-limit), refilled with 10 | defaulted: region='eu'
+6   dana   GET  /orders?limit=500&status=open                                 200   narrowed: limit=500 rejected (maximum, support-may-search), refilled with 25 | defaulted: region='eu'
+7   alice  GET  /orders/o-1                                                   200   allowed
+8   bob    GET  /orders/o-1                                                   403   denied: The policy denied action Action::"orders.read".
+9   bob    POST /orders/export {"fmt":"csv"}                                  200   allowed
+10  bob    POST /orders/export {"scope":"open"}                               200   defaulted: fmt='csv'
+11  bob    POST /orders/export {"fmt":"xml","scope":"open"}                   200   narrowed: fmt='xml' rejected (deny-set, bob-fmt), refilled with 'csv'
+12  bob    POST /orders/export {"fmt":"xml"}                                  400   NoValidArguments: Every supplied argument was rejected by policy.
+13  bob    POST /orders/export {"fmt":"pdf"}                                  403   denied: The policy denied action Action::"orders.export".
+14  bob    GET  /orders                                                       403   denied: The policy denied action Action::"orders.search".
+15  alice  POST /refunds {"order_id":"ord-0007","amount":100,"region":"uk"}   200   allowed
+16  alice  POST /refunds {"order_id":"ord-0007","amount":750,"region":"uk"}   403   denied: The policy denied action Action::"refunds.issue".
+17  alice  POST /refunds {"order_id":"ord-0007","amount":900,"region":"eu"}   200   narrowed: amount=900 rejected (maximum, alice-amount), refilled with 50
+18  alice  POST /refunds {"order_id":"ord-0007","amount":5000,"region":"eu"}  403   denied: The policy denied action Action::"refunds.issue".
+19  dana   POST /refunds {"order_id":"ord-0007","amount":5000,"region":"eu"}  200   allowed
+20  alice  POST /refunds {"order_id":"refund-me","amount":100,"region":"eu"}  400   DefaultUnavailable: Argument 'order_id' is required and no policy default is configured.
+21  dana   POST /refunds/rf-1/approve                                         200   allowed
+22  alice  POST /refunds/rf-1/approve                                         403   denied: The policy denied action Action::"refunds.approve".
+```
+
+Authentication is a stub — the `x-user` header names the principal — which is the seam a real
+app replaces with its session, its bearer token or its gateway's assertion. Nothing below the
+`identify` callback changes when it does.
+
+### Who the three principals are
+
+No policy file names a person. Roles, entity edges and per-argument constraints are all grant
+data:
+
+| Principal | Role | Place in the graph | Argument constraints |
+| --- | --- | --- | --- |
+| `alice` | `support` | `Team::"eu-support"` → `Division::"emea"` → `Project::"orders-eu"` | search: `region` ∈ {`eu`,`uk`} default `eu`; `limit` ≤ 50 default `10`. refunds: `order_id` matching `ord-[0-9]{4}` with **no default**; `amount` 1–750 default `50`; `region` ∈ {`eu`,`uk`} default `eu` |
+| `bob` | `auditor` | `Team::"us-support"` → `Division::"amer"` → `Project::"orders-us"` | export: `fmt` ∉ {`xml`} default `csv` |
+| `dana` | `admin`, which has `Role::"support"` as a parent | `Team::"eu-support"` → `Division::"emea"` → `Project::"orders-eu"` | search: `limit` default `25`, with **no bound of her own**; `region` default `eu` |
+
+Between them the grant data uses the whole constraint vocabulary — allow-set, deny-set,
+pattern, minimum, maximum, default — at least once each.
+
+### The ceiling is reviewed text, and it can only narrow
+
+Flows 5 and 6 are the identical request from two people, and they are the pair to read twice.
+`policies/10-orders.cedar` declares an [argument ceiling](policies.md#argument-ceilings) on the
+permit that lets support search:
+
+```cedar
+@id("support-may-search")
+@constraints("{\"limit\": {\"maximum\": 100}}")
+permit (
+  principal in Role::"support",
+  action == Action::"orders.search",
+  resource == Tool::"orders"
+);
+```
+
+`@constraints` is a **Cedar policy annotation, not a Python decorator**: text carried on the
+policy, parsed when the directory loads. It grants nobody anything. It states the widest value
+*anybody* reaching this permit may pass, and it **intersects** with whatever the grant store
+holds for the caller — so a grant can tighten it and can never loosen it.
+
+Alice's own grant caps `limit` at 50, which is tighter than the reviewed 100, so hers is the
+bound that bites and the rejection names her grant:
+
+```bash
+curl -s 'localhost:8000/orders?limit=500&status=open' -H 'x-user: alice'
+# {"region":"eu","limit":10,"status":"open", ...,
+#  "_authz":{"decision":"allow","processed":{"status":"open","region":"eu","limit":10},
+#            "rejected":[{"name":"limit","rule":"maximum",
+#                         "reason":"Value is above the maximum of 50",
+#                         "policy":"alice-limit","value":500}],
+#            "defaults_applied":{"region":"eu","limit":10}}}
+```
+
+Dana's grant sets no maximum at all — only a default — so the reviewed ceiling is her only
+bound, and the rejection names the reviewed policy instead:
+
+```bash
+curl -s 'localhost:8000/orders?limit=500&status=open' -H 'x-user: dana'
+# {"region":"eu","limit":25,"status":"open", ...,
+#  "_authz":{"decision":"allow","processed":{"status":"open","limit":25,"region":"eu"},
+#            "rejected":[{"name":"limit","rule":"maximum",
+#                         "reason":"Value is above the maximum of 100",
+#                         "policy":"support-may-search","value":500}],
+#            "defaults_applied":{"limit":25,"region":"eu"}}}
+```
+
+**She asked for 500, the ceiling is 100, and she ran with 25.** That is the whole of
+reject-and-refill in one line: the value she may not pass was thrown away and her own default
+was put in the gap. The result is her default and has no relationship to the bound that refused
+it — nothing was trimmed to 100, and nothing ever is. Grants filter before ceilings, so
+whichever of the two bounds is tighter is the one that reports.
+
+### Several arguments decided in one call
+
+Flow 5 above is also where the three parts of the argument layer are visible side by side, in
+one envelope:
+
+- `rejected` names `limit=500`, the rule that refused it and the policy that carried the rule;
+- `defaults_applied` names both the refill for `limit` and the injection for `region`, which
+  the caller never proposed at all;
+- `processed` is what the function actually received — `status` passed through untouched,
+  because no constraint governs it.
+
+The contrast between those three arguments is the design rule worth copying, and it lives in
+the signature: `search_orders(region: str, limit: int, status: str = "open")`. `region` and
+`limit` are values policy decides, so they carry no Python default and stay omittable; a Python
+default would fill the hole before a policy default could reach it. `status` is the caller's
+own business, so Python answers for it and the policy layer never sees it.
+
+### Two rules that read more than the principal
+
+`policies/20-refunds.cedar` permits support to issue refunds unconditionally and then puts two
+narrow `forbid` rules over it. Each decides on something no per-argument rule could express.
+
+**One argument together with the principal.** `refunds-above-the-desk-limit-need-an-admin`
+refuses anything over 1000 from a caller who is not an admin. Flows 18 and 19 are the same
+request from two people:
+
+```bash
+curl -s -i -X POST localhost:8000/refunds -H 'x-user: alice' \
+     -H 'content-type: application/json' \
+     -d '{"order_id":"ord-0007","amount":5000,"region":"eu"}'
+# 403  {"detail":"The policy denied action Action::\"refunds.issue\".","error":"AuthzDenied", ...}
+
+curl -s -X POST localhost:8000/refunds -H 'x-user: dana' \
+     -H 'content-type: application/json' \
+     -d '{"order_id":"ord-0007","amount":5000,"region":"eu"}'
+# {"refund_id":"rf-1","order_id":"ord-0007","amount":5000,"region":"eu", ...}
+```
+
+Dana is exempted by the rule's last clause because `Role::"admin"` has `Role::"support"` as a
+parent, so one edge in the entity graph covers both populations.
+
+**Two arguments against each other.** `no-large-cross-region-refunds` refuses anything over 200
+booked outside `eu`. Flows 15 and 16 differ only in the amount, and each value is fine on its
+own — 750 is inside alice's range of 1–750, and `uk` is one of her permitted regions — while
+the pair is refused:
+
+```bash
+curl -s -X POST localhost:8000/refunds -H 'x-user: alice' \
+     -H 'content-type: application/json' \
+     -d '{"order_id":"ord-0007","amount":100,"region":"uk"}'    # 200
+
+curl -s -i -X POST localhost:8000/refunds -H 'x-user: alice' \
+     -H 'content-type: application/json' \
+     -d '{"order_id":"ord-0007","amount":750,"region":"uk"}'    # 403
+```
+
+Nothing in either route compares `amount` to `region`, and nothing there asks who the caller
+is. Cedar receives the whole proposal as `context.args` and answers about all of it at once, so
+a cross-argument rule is policy text rather than a branch in a handler.
+
+Flow 17 separates the two layers, which is easy to conflate: at `amount=900` the gate says yes,
+because 900 is under the desk limit of 1000 — and alice's own grant then rejects the value and
+refills it with 50.
+
+Both refusals are **named** denies. A `forbid` that fires is determining, so at
+`verbosity="debug"` alice's envelope carries
+`"determining_policies":["refunds-above-the-desk-limit-need-an-admin"]`. The refusals in flows
+8 and 14 read the other way: no permit reaches bob at all, so no policy was determining and
+`determining_policies` is empty even at `debug`. When nothing permitted a call there is no rule
+to point at, and reporting one would be inventing it.
+
+### Reject-and-refill from a deny-set, and the call with nothing left
+
+Bob's `fmt` constraint is a deny-set with a default, the mirror image of an allow-set:
+everything passes except what is named. Flow 11 proposes `xml` alongside a `scope` that
+survives, so the rejection is refilled and the export runs:
+
+```bash
+curl -s -X POST localhost:8000/orders/export -H 'x-user: bob' \
+     -H 'content-type: application/json' -d '{"fmt":"xml","scope":"open"}'
+# {"fmt":"csv","scope":"open","exported":42,
+#  "_authz":{"decision":"allow","processed":{"scope":"open","fmt":"csv"},
+#            "rejected":[{"name":"fmt","rule":"deny-set",
+#                         "reason":"Value is explicitly denied","policy":"bob-fmt",
+#                         "value":"xml"}],
+#            "defaults_applied":{"fmt":"csv"}}}
+```
+
+Flow 12 proposes the same value **alone**, and is refused. Narrowing refines a proposal; it
+does not rescue one, so a call in which nothing the caller sent survived is turned away rather
+than rebuilt entirely from defaults:
+
+```bash
+curl -s -i -X POST localhost:8000/orders/export -H 'x-user: bob' \
+     -H 'content-type: application/json' -d '{"fmt":"xml"}'
+# 400  {"detail":"Every supplied argument was rejected by policy.",
+#       "error":"NoValidArguments",
+#       "_authz":{"decision":"deny",
+#                 "reason":"Every supplied argument was rejected by policy.",
+#                 "rejected":[{"name":"fmt","rule":"deny-set",
+#                              "reason":"Value is explicitly denied","policy":"bob-fmt"}],
+#                 "allowed":{"fmt":{"deny":["xml"],"policy":"bob-fmt",
+#                                   "required":false,"has_default":true}}}}
+```
+
+That body is built from the exception rather than from a decision, which is why it names no
+action and no resource — the gate had already said yes. The `allowed` block, which appears on
+no permitted call's envelope, is what a caller needs in order to retry.
+
+Flow 10 reaches the same `csv` by the other route: `fmt` is simply omitted, so it turns up in
+`defaults_applied` and never in `rejected`. That distinction is worth preserving in anything
+you build on the envelope — it is the difference between *the caller asked for something they
+may not have* and *the caller asked for nothing*.
+
+### The bare `@protect`, and a protected callable that is not a route
+
+Flow 1 calls `desk_status`, which is decorated with a bare `@protect` — no `action=`, no
+`resource=`. sentrykit derives both from the callable's import path, and the reviewed file
+names the derived action verbatim:
+
+```bash
+curl -s localhost:8000/orders/status -H 'x-user: alice'
+# {"desk":"orders","open":true,
+#  "_authz":{"decision":"allow",
+#            "action":"Action::\"examples.fastapi_app.service.desk_status\"",
+#            "resource":"Resource::\"examples.fastapi_app.service.desk_status\"",
+#            "principal":"User::\"alice\""}}
+```
+
+Convenient, and fragile in one specific way: renaming or moving the function changes the id the
+policy has to match. Pass an explicit `action=` as soon as the policy is expected to outlive
+the module layout.
+
+Flow 2 is the one that shows what "action layer, not routing layer" buys. `/orders/summary` is
+an ordinary route with no authorization on it; `summarize_orders()` inside it is protected, and
+is decided against the same ambient principal the provider established:
+
+```bash
+curl -s localhost:8000/orders/summary -H 'x-user: alice'
+# {"summary":"3 open orders",
+#  "_authz":{"decision":"allow","action":"Action::\"orders.summarize\"",
+#            "resource":"Tool::\"orders\"","principal":"User::\"alice\""}}
+```
+
+The same function is governed identically when a service layer three frames deeper calls it, or
+a background job does.
+
+Each example directory's README carries the remaining flows — the multi-hop relationship in
+flows 7 and 8, the `forbid` that reads the raw proposal in flow 13, the pattern with no default
+to refill from in flow 20, and the admin action in flows 21 and 22 — as one `curl` apiece.
