@@ -189,10 +189,10 @@ FastAPIProvider(
 
 ## Refusals
 
-Most rejected arguments never reach a status code. Under the default `arg_handling="lenient"` an
-over-broad request is narrowed to what the principal may have and the route returns its ordinary
-response, with the rejections named in the `_authz` envelope; the statuses below are for a call
-that cannot proceed at all.
+Most rejected arguments never reach a status code. Under the default `arg_handling="lenient"`
+an over-broad value is rejected, the principal's own default fills the gap, and the route
+returns its ordinary response with the rejections named in the `_authz` envelope; the statuses
+below are for a call that cannot proceed at all.
 
 Every sentrykit error maps to one status, identically on both frameworks:
 

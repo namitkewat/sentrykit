@@ -137,9 +137,11 @@ A ceiling may set `allow`, `deny`, `pattern`, `minimum`, `maximum` and `required
 — and values belong in grant data, which is why the caller-facing error tells you a default
 exists without telling you what it is.
 
-Narrowing is what happens next. A proposal above the ceiling is rejected like any other
-constraint violation, and under the default `arg_handling="lenient"` the principal's own
-default fills the hole — so a caller who asks for 500 is served at 100 rather than refused:
+Narrowing is what happens next, and it is reject-and-refill rather than a clamp. A proposal
+above the ceiling is rejected like any other constraint violation, and under the default
+`arg_handling="lenient"` the principal's **own default** fills the gap. The value the call
+runs with is that default, not the ceiling it breached — they coincide below only because this
+principal's grant happens to default to 100:
 
 ```python
 plan = governor.plan(spec, principal=support, action=SEARCH, resource=ORDERS,

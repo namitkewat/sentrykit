@@ -557,8 +557,9 @@ class ConstraintSet(BaseModel):
 
         A default never overrides a value that survived filtering — the caller's own valid
         input wins. Defaults are injected for dropped arguments too, which is what makes
-        ``lenient`` handling useful: an over-broad request is narrowed to what the principal
-        is entitled to rather than refused.
+        ``lenient`` handling useful: an over-broad request is narrowed rather than refused.
+        Nothing is trimmed to a bound — the value the principal may not have was already
+        rejected by :meth:`filter`, and what lands here is the gap it left.
 
         Every default is checked against its own constraint before it is injected, and one
         that fails is withheld rather than substituted. Without that check the way to defeat

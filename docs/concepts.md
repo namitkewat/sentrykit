@@ -16,9 +16,10 @@ Five things follow from the one idea, and the rest of this page is mostly about 
 
 1. **Argument constraints resolved per `(principal, action)`** — allow-sets, deny-sets,
    patterns and numeric bounds, decided per argument.
-2. **Narrowing instead of refusal.** A proposal above what the principal may have is reduced
-   to what they may have and the call proceeds. Narrowing *refines* a proposal rather than
-   rescuing one: if every argument the caller supplied is rejected, the call is refused.
+2. **Narrowing instead of refusal.** A value above what the principal may have is rejected
+   and their own default fills the gap, so the call proceeds. Narrowing *refines* a proposal
+   rather than rescuing one: with no default configured the argument is simply dropped, and if
+   every argument the caller supplied is rejected the call is refused.
 3. **Defaults supplied by the principal's grant** for the arguments the caller omitted — and
    for the ones that were just dropped.
 4. **Constraints validated when they are written.** A constraint no value could satisfy is
@@ -137,8 +138,8 @@ Constraints reach a decision from two places, and they **intersect**:
 Because intersection can only narrow, the reviewed file states the maximum and the store
 states what each principal actually has. A ceiling is also the one thing a policy can declare
 that reaches narrow-and-continue rather than the gate: Cedar can only deny, so "you asked for
-500, you may not have that — here is the call at what you may have" has nowhere else to live.
-See [Argument ceilings](policies.md#argument-ceilings).
+500, you may not have that — here is the call with your own default instead" has nowhere else
+to live. See [Argument ceilings](policies.md#argument-ceilings).
 
 ### A constraint has to be satisfiable
 

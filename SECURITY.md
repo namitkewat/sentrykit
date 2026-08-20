@@ -33,10 +33,11 @@ that is the layer sentrykit adds to the engine underneath it.
 - **The arguments.** A caller — a browser, a script, or a language model — *proposes*
   arguments. Constraints resolved per principal and per action — allow-sets, deny-sets,
   patterns, numeric bounds — decide which of them survive, and an argument a principal may not
-  pass does not reach the function body. A proposal above what the principal may have is
-  **narrowed** to what they may have and the call proceeds rather than being refused; arguments
-  the caller omitted, and arguments that were just dropped, are filled in from the defaults the
-  principal's grants hold. A default is itself checked against the constraint that governs it
+  pass does not reach the function body. A value above what the principal may have is
+  **narrowed** rather than refused: it is rejected, and the defaults the principal's grants
+  hold fill the gap — as they do for arguments the caller omitted. A value is never trimmed to
+  the nearest one the principal may have, and where a grant holds no default the argument is
+  simply dropped. A default is itself checked against the constraint that governs it
   and withheld if it fails, so omitting an argument is not a way around the rule on it. And a
   constraint no value could satisfy is refused when a grant store writes it — hand-editing a
   store's file bypasses that check — rather than discovered at the next call, where it would

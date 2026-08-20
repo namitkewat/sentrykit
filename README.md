@@ -4,8 +4,9 @@ Framework-agnostic **authorization** for Python, built on
 [AWS Cedar](https://www.cedarpolicy.com/). Clip a `@protect` decorator onto any callable — a
 web route, a plain function, an agent tool — and sentrykit decides, per call, whether the
 principal may invoke it, **which arguments they may pass**, and **which defaults to inject
-when they pass none**; then narrows an over-broad request to what the principal is entitled to
-rather than refusing it, and writes a masked, hash-chained record of what it decided.
+when they pass none**; then narrows an over-broad request rather than refusing it — the value
+the principal may not have is rejected and their own default fills the gap — and writes a
+masked, hash-chained record of what it decided.
 
 > The caller *proposes*; the **policy decides** — and what it decides includes the arguments,
 > not only the call.
@@ -19,8 +20,9 @@ What that gives you, in the order it matters:
 
 - **Per-(principal, action) argument constraints.** Allow-sets, deny-sets, patterns and numeric
   bounds, resolved for the principal and the action, one argument at a time.
-- **Narrow-and-continue instead of refuse.** A proposal above what the principal may have is
-  reduced to what they may have, and the call proceeds.
+- **Narrow-and-continue instead of refuse.** A value above what the principal may have is
+  rejected and their own default fills the gap, so the call proceeds instead of being turned
+  away.
 - **Policy-supplied default injection.** Arguments the caller omitted — and arguments that were
   just dropped — are filled in from what policy says this principal may have.
 - **Grant-time constraint validation.** A constraint no value could satisfy, or whose own

@@ -22,9 +22,9 @@ pip install "sentrykit[pydantic-ai]"    # Pydantic-AI agents
 ## The model proposes; the policy narrows
 
 A gate that answers only yes or no leaves an agent one move: attempt the call and find out. The
-decision sentrykit reaches is per argument as well as per call, so a proposal above what the
-principal may have is *reduced* to what policy holds for them — the offending value is dropped
-and, where the principal's grant holds a default, that default takes its place — and the call
+decision sentrykit reaches is per argument as well as per call, so a value above what the
+principal may have is *narrowed* rather than refused — the offending value is dropped and,
+where the principal's grant holds a default, that default takes its place — and the call
 proceeds. Where it holds none, the argument simply has no proposed value: the tool's own
 default applies, or a required argument with nothing to fill it raises `DefaultUnavailable`.
 The `_authz` envelope on the result names which arguments were narrowed and why.

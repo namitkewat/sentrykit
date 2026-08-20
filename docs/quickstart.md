@@ -4,10 +4,10 @@ Everything below runs against the core: a policy set held in memory, one decorat
 framework. Guarding an HTTP route adds one line and changes none of it — see
 [web frameworks](web-frameworks.md).
 
-The walkthrough builds to a call that asked for more than its principal may have, narrowed to
-what policy permits and run anyway. Which of the proposed arguments survive, and what is filled
-in for the rest, is decided per principal and per action; the allow or deny at the gate is the
-first step of that same decision.
+The walkthrough builds to a call that asked for more than its principal may have: the values
+she may not have are rejected, her own defaults fill the gaps, and the call runs anyway. Which
+of the proposed arguments survive, and what is filled in for the rest, is decided per principal
+and per action; the allow or deny at the gate is the first step of that same decision.
 
 ## Install
 
@@ -109,8 +109,8 @@ thread a principal through its signature.
 ## 5. Read what happened
 
 Alice asked for `region="us"` and `limit=500`. Policy permits neither, so both were dropped
-and replaced with her defaults. The call still ran, narrowed to what she is entitled to, and
-says so:
+and replaced with her defaults — the values she may not have are refused, not trimmed to the
+nearest one she may. The call still ran, and says so:
 
 ```json
 {
