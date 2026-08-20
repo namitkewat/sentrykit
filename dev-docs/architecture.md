@@ -141,7 +141,8 @@ obligations discharged, the `policy_set_hash` (so a decision replays determinist
 per-policy **provenance** (git commit / S3 version / store id), and a `prev_hash`/`record_hash`
 chain for tamper-evidence. Sensitive values are **masked before the write** (redact /
 partial / HMAC / tokenize); reversible token maps stay out of the immutable store. Iceberg-
-on-S3 or S3 Object Lock are the durable backends; a period query over the sink *is* the
+on-S3 or S3 Object Lock are the durable backends this design targets, and neither ships yet;
+a period query over the sink *is* the
 yearly audit report.
 
 **Built in phase 2**, with the mask-before-write rule made structural rather than
@@ -170,9 +171,30 @@ audit sink are the same shape of task, and the core never imports either.
 
 ## 8. Positioning
 
-sentrykit is **action-layer / pre-action authorization**: it refuses the side effect before
-it happens, unlike output validators that run after the model finishes. Its niche is the
-combination — self-hosted pip library, framework-agnostic across web *and* agents, Cedar-
-based, audit-first, one decorator. The defining value is **relationship resolution offloaded
-to policy**: multi-hop, nested authorization relationships are resolved deterministically by
-Cedar's entity hierarchy and policy evaluation, never inferred by a model.
+sentrykit is **action-layer / pre-action authorization**: it refuses the side effect before it
+happens, rather than inspecting what a model produced once it is too late to matter. Its niche
+is the combination — self-hosted pip library, framework-agnostic across web *and* agents,
+Cedar-based, audit-first, one decorator.
+
+The defining value is the **argument layer**. Cedar answers one boolean at the gate; everything
+above that answer is ours, and it is the part a host would otherwise assemble itself:
+per-(principal, action) constraints on each argument (§2 steps 3–4); **narrow-and-continue**,
+where a proposal above what the principal may have is reduced to what they may have and the
+call proceeds; policy-supplied defaults for arguments the caller omitted or just lost to the
+filter, each checked against its own constraint before injection (ADR-027); a constraint
+validated at the moment it is written rather than at the call that trips over it; and one
+masked, hash-chained record of the whole decision. Argument ceilings (ADR-028) sit across all
+of that: a ceiling is the only thing a `.cedar` file can declare that reaches
+narrow-and-continue, because Cedar's effect vocabulary is permit/forbid and "you asked for 500,
+you may not have that — here is the call at what you may have" is not expressible in it. The
+mechanism is reject-and-refill, not clamping: the over-bound value is dropped and the
+principal's own default fills the hole.
+
+**Relationship resolution is a supported capability that composes, not the headline.** Nested,
+multi-hop relationships — user → team → project → resource, delegation, on-behalf-of, expiry,
+break-the-glass — are resolved deterministically by Cedar's entity hierarchy and policy
+evaluation, never inferred by a model and never spread across `if` statements. That is Cedar's
+strength, and sentrykit inherits it whole; it is the foundation the argument layer stands on
+rather than the thing that distinguishes sentrykit from the engine underneath. Leading with it
+invites the fair question "then why not call Cedar directly?", and the paragraph above is the
+answer to that question. See ADR-008 and its 2026-08-20 amendment.

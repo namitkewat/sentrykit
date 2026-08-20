@@ -26,32 +26,72 @@ security fixes go onto the newest release rather than being backported.
 ## What sentrykit defends
 
 sentrykit is **pre-action authorization at the action layer**. It stands between a caller and a
-protected callable and refuses the side effect *before* it happens.
+protected callable and refuses the side effect *before* it happens — and, for a call it does
+permit, decides which arguments that call may carry. It leads with the arguments, because
+that is the layer sentrykit adds to the engine underneath it.
 
+- **The arguments.** A caller — a browser, a script, or a language model — *proposes*
+  arguments. Constraints resolved per principal and per action — allow-sets, deny-sets,
+  patterns, numeric bounds — decide which of them survive, and an argument a principal may not
+  pass does not reach the function body. A proposal above what the principal may have is
+  **narrowed** to what they may have and the call proceeds rather than being refused; arguments
+  the caller omitted, and arguments that were just dropped, are filled in from the defaults the
+  principal's grants hold. A default is itself checked against the constraint that governs it
+  and withheld if it fails, so omitting an argument is not a way around the rule on it. And a
+  constraint no value could satisfy is refused when a grant store writes it — hand-editing a
+  store's file bypasses that check — rather than discovered at the next call, where it would
+  refuse everything. Two limits are worth stating plainly. The first is `arg_handling`:
+  narrowing is what the default `lenient` setting does, and `strict` raises
+  `ArgumentRejected` on the first rejected argument instead. The second is that narrowing
+  *refines* a proposal, it does not replace one — if **every** argument the caller supplied was
+  rejected, the call is refused with `NoValidArguments` rather than completed from defaults,
+  because completing it would answer a question nobody asked.
+- **A bound the admin surface cannot widen.** A reviewed `.cedar` file can declare an argument
+  ceiling on a `permit`: what *anybody* may pass for that action. Ceilings and the grants held
+  in the store **intersect**, so the file states the maximum and can only narrow — a mistake in
+  a grant cannot raise a limit above it. Ceilings live in text that git reviews and that the
+  audited `policy_set_hash` already covers, and because a failed evaluation reports no
+  determining policies it reports no ceilings, so a governor whose policy set declares any
+  ceiling refuses an engine failure under either fail mode rather than proceeding unbounded.
 - **The call itself.** No principal, no matching policy, or an unavailable audit sink under a
   strict configuration all produce a denial. Default-deny is Cedar's model and it is ours; a
   gap in your policy set is a refusal, never an accidental permit.
-- **The arguments.** A caller — a browser, a script, or a language model — *proposes*
-  arguments. Policy decides which of them survive, which are replaced by defaults, and whether
-  the resulting call is well-formed. An argument a principal may not pass does not reach the
-  function body.
-- **Nested authorization relationships.** User → team → project → resource, delegation chains,
-  on-behalf-of, expiry, break-the-glass and separation-of-duties are resolved deterministically
-  by Cedar's entity hierarchy. They are never inferred by a model and never scattered across
-  `if` statements, which means they can be reviewed, replayed and reasoned about.
 - **The shape of the request itself.** Cedar reserves record keys beginning with `__` for the
   escape forms that promote a plain record into a typed entity reference. Supplied data
   carrying such a key is refused before the policy set is consulted, under either fail mode,
   so a `dict`-valued argument cannot promote itself into an entity of the caller's choosing.
+  That closes the *spelling* and nothing more: a parameter your own signature annotates as an
+  entity reference is still a caller-chosen entity, type included — the boundary listed below.
 - **What an agent is shown.** On the agent side the tool manifest is filtered per principal: a
   tool is hidden from a caller exactly when invoking it would be refused. Hiding is a usability
   affordance rather than a control — the dispatch path re-runs the identical decision, so a
   client that skips the manifest is refused just the same.
+- **Nested authorization relationships.** User → team → project → resource, delegation chains,
+  on-behalf-of, expiry, break-the-glass and separation-of-duties are resolved deterministically
+  by Cedar's entity hierarchy, never inferred by a model and never scattered across `if`
+  statements, which means they can be reviewed, replayed and reasoned about. That is Cedar's
+  strength and sentrykit inherits it; it composes with everything above, because the permit that
+  resolves a chain is also the permit that can carry a ceiling.
 - **The record.** Every decision and every administrative mutation is written to an append-only
   sink as a hash-chained record carrying the principal's effective attributes, the proposed and
   processed arguments, the determining policies and a hash of the exact policy set. Sensitive
   values are masked *before* the write, so the immutable store never holds the raw value and no
   read-time redaction can be forgotten or bypassed.
+
+## Inherited assurance, and where it stops
+
+The gate is Cedar's decision, so it carries whatever assurance Cedar's engine carries. Cedar's
+authorization semantics are captured in a formal model, safety properties of the evaluator and
+the validator are proved against that model, and the Rust implementation this library calls is
+checked against it by large-scale differential testing. Cedar's own documentation states the
+scope of that work, and it is the right place to read it: the claim is about how the engine
+reaches a decision.
+
+sentrykit makes **no** such claim for its own layer. Argument filtering, narrowing, default
+injection, constraint intersection, masking and the hash chain are ordinary Python, backed by
+tests and review and by nothing stronger. "Built on a formally verified engine" is a fact about
+Cedar rather than a property of this library, and anyone assessing risk should weigh the two
+layers separately.
 
 ## What sentrykit does not defend
 
@@ -94,6 +134,12 @@ not a missing feature — and each one names the layer that does cover it.
   constraint or a ceiling, or declare `context.args` in a Cedar schema — all three close it,
   and the docs say so where the annotation is described. sentrykit cannot infer which of your
   parameters were meant to be caller-chosen.
+- **It does not check that a ceiling names an argument you actually have.** `sentrykit policy
+  validate` reads a directory of `.cedar` files and never imports your application, so there is
+  no signature to compare against: a ceiling on `"limt"` parses, loads and bounds nothing, and
+  nothing raises. Every other property of a ceiling is checked at load, which makes this the one
+  way a declared bound can be silently absent. Read a ceiling against the signature it names,
+  and cover it with a test that proposes a value the ceiling should reject.
 - **It does not defend against denial of service.** Every call runs a Cedar evaluation and
   writes an audit record. A caller who can trigger protected calls at will can make you do both
   at their chosen rate. Rate limiting belongs at the edge.
@@ -113,10 +159,18 @@ If you are deploying sentrykit into something that matters:
    rather than only after an incident.
 3. Keep policy logic in **git**, reviewed. Keep grants in a store the admin surface mutates —
    never let a runtime path rewrite reviewed policy text.
-4. Declare **`Sensitive`** on every argument that carries a secret, a token or personal data, so
+4. Put a bound that must not be raised by mistake in an **argument ceiling** in a reviewed
+   `.cedar` file, not only in a grant. A grant is data the admin API can rewrite; a ceiling
+   needs a commit and a deploy, and it can only narrow what a grant allows.
+5. If a protected callable takes an entity from the caller, **pin its type in policy**.
+   `context.args.region is Region && context.args.region in Group::"approved"` is the fix;
+   bounding the argument with a constraint or a ceiling, or declaring `context.args` in a Cedar
+   schema, closes it too. Cedar's `in` is reflexive, so an unpinned membership test is satisfied
+   by passing the group itself.
+6. Declare **`Sensitive`** on every argument that carries a secret, a token or personal data, so
    masking happens before the record is written.
-5. Authenticate before you authorize, and make sure the context provider derives the principal
+7. Authenticate before you authorize, and make sure the context provider derives the principal
    from something the caller cannot set.
-6. Treat the shipped policy pack as a **starting point**. It ships no permit for the
+8. Treat the shipped policy pack as a **starting point**. It ships no permit for the
    administrative actions on purpose: you write that one, and reviewing it is the moment you
    decide who administers your grants.

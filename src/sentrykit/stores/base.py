@@ -257,8 +257,10 @@ class PolicyBundle:
         """Collect the argument ceilings declared by the policies that permitted a call.
 
         Cedar's gate can only *deny*. A ceiling reaches sentrykit's narrow-and-continue path
-        instead, so "you asked for 500, you may have 100, here it is at 100" becomes
-        expressible in the reviewed policy file rather than only in mutable grant data.
+        instead, so "you asked for 500, you may not have that -- here is the call at what you
+        may have" becomes expressible in the reviewed policy file rather than only in mutable
+        grant data. The value is not clamped to the bound: it is rejected, and the principal's
+        own default fills the hole.
 
         Only determining **permit** policies contribute. A determining ``forbid`` never
         coexists with an allow, so a ceiling there could never apply -- which is why one is

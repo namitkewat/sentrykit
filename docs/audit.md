@@ -47,7 +47,7 @@ record = sink.records[-1]
 | Principal | `principal` (a `PrincipalSnapshot`: uid, roles, parents, attributes, constraints) | A **snapshot**, not a reference. Roles get revoked and attributes get corrected; a record that merely pointed at a principal would silently start describing a different one. |
 | Request | `action`, `resource`, `callable_name`, `channel`, `environment` | |
 | Outcome | `decision`, `outcome`, `reason` | `outcome` is finer than allow/deny: `denied`, `no-valid-arguments`, `default-unavailable`, `validation-failed`, `arguments-rejected`, `engine-error`. All are denials to the caller and completely different events to an auditor. |
-| Arguments | `proposed`, `processed`, `rejected`, `defaults_applied` | What was asked for, what actually ran, what policy refused and why. |
+| Arguments | `proposed`, `processed`, `rejected`, `defaults_applied` | What was asked for, what actually ran, what policy refused and why. A narrowed call is recorded as completely as a refused one, because "it ran, with these arguments rather than those" is a different fact from "it ran". |
 | Policy | `obligations`, `determining_policies`, `provenance`, `policy_set_hash`, `engine_errors` | `policy_set_hash` pins the logic so a decision replays; `provenance` says which source and which artifact each determining policy came from. |
 | Integrity | `masked`, `prev_hash`, `record_hash` | |
 
@@ -63,6 +63,19 @@ record.provenance             # ({'cedar_id': 'policy0', 'policy_id': 'support-m
 ```
 
 The callable received `ACCT-4417-9930`. The sink never did.
+
+`rejected` is where a narrowed call becomes reconstructable. It carries one entry per argument
+that did not survive, whatever refused it: a value the caller proposed that violated a rule, a
+value bounded by an [argument ceiling](policies.md#argument-ceilings) declared in reviewed
+policy text, and a default that was *withheld* because it did not satisfy the constraint it
+belongs to. Each entry names the rule it broke and, where the constraint records one, the id
+of the policy or grant that carried it — a ceiling always records one — so "why did this call
+run with `limit=100` when the caller asked for 500" is answered out of the record rather than
+by reconstructing the policy set as it stood that day.
+
+A withheld default reads differently from the other two. The value policy would have supplied
+was itself refused by its own constraint, so the argument was left with no value at all: the
+callable's own default applied, or the call was refused for a missing required argument.
 
 ## Masking runs before the write
 

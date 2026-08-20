@@ -4,6 +4,11 @@ Everything below runs against the core: a policy set held in memory, one decorat
 framework. Guarding an HTTP route adds one line and changes none of it — see
 [web frameworks](web-frameworks.md).
 
+The walkthrough builds to a call that asked for more than its principal may have, narrowed to
+what policy permits and run anyway. Which of the proposed arguments survive, and what is filled
+in for the rest, is decided per principal and per action; the allow or deny at the gate is the
+first step of that same decision.
+
 ## Install
 
 ```bash
@@ -89,6 +94,13 @@ alice = Principal(
 with establish(alice, channel="agent", request_id="req-1"):
     result = search_orders(customer_id="c-1", region="us", limit=500)
 ```
+
+Those constraints are resolved per `(principal, action)`: which values alice may pass, and what
+to fill in when she passes none. Outside a walkthrough they are rows in a grant store rather
+than a literal, and the store refuses one that no value could satisfy at the write rather than
+letting the next call discover it. A reviewed `.cedar` file can bound the same argument for
+*everybody* with an [argument ceiling](policies.md#argument-ceilings); the two intersect, so the
+reviewed file states the maximum and the store says what each principal actually has.
 
 In a real application a *context provider* calls `establish` once at the framework boundary
 and every protected callable below it — however deeply nested — is governed. Nothing has to

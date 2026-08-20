@@ -3,9 +3,16 @@
 All notable changes to this project are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning follows SemVer.
 
-## [Unreleased]
+## [0.2.0] - 2026-08-20
+
+The argument layer, hardened and extended. A silent entity-forgery escalation is closed;
+an injected default is now checked against the constraint that governs it; a constraint no
+value could satisfy is refused when it is written; and a reviewed Cedar policy can declare
+an argument ceiling that narrows a call rather than refusing it. The remainder is
+packaging, documentation and CI.
 
 ### Security
+
 - **Cedar's reserved `__` escape keys can no longer be spelled by a caller.**
   `coerce_value` recursed into supplied mappings without filtering them, so a dict-valued
   argument could carry `{"__entity": {"type": "Group", "id": "approved"}}` and reach the
@@ -48,32 +55,16 @@ All notable changes to this project are documented here. Format follows
     — it produced an engine error, so `fail_mode="closed"` already refused it — and was a
     live bypass only under `fail_mode="open"`.
 
-### Fixed
-- **An injected default is now checked against its own constraint.** The filter checked a
-  *supplied* value and default injection checked nothing, so the way to defeat a constraint
-  was to stop proposing a value: `ArgumentConstraint(minimum=100, maximum=10, default=500)`
-  rejected a proposed `500` and then injected `500`, and
-  `ArgumentConstraint(allow=("eu", "uk"), default="us")` injected `"us"`. Under the default
-  `arg_handling="lenient"` this fired on the ordinary path, because a rejected value is
-  dropped and the default substituted.
-  `ConstraintSet.inject_defaults` now runs the same `check()` the filter runs and **withholds**
-  a default that fails it, reporting the fact instead of resolving it in the caller's favour.
-  A withheld default appears on the `_authz` envelope and in the audit record alongside the
-  caller's own rejections, and the argument then falls to `DefaultUnavailable` if the
-  constraint requires it and to the callable's own default if it does not. It is deliberately
-  not routed through `arg_handling="strict"`: that setting arbitrates the caller's proposal,
-  and an unusable default is not theirs.
-- **An unsatisfiable constraint is refused at the write rather than discovered at the call.**
-  `minimum=100, maximum=10` constructed without complaint and surfaced later as a refusal of
-  everything, found by whoever called next.
-
 ### Added
+
 - **Argument ceilings: a reviewed Cedar policy can now declare what any principal may pass.**
   A `@constraints` annotation carries a compact JSON object of `{argument: {rule: value}}`,
   and the declared bounds reach sentrykit's narrow-and-continue path — the one thing Cedar's
   gate structurally cannot express, because a `forbid` can only refuse the call. "You asked
-  for 500, you may have 100, here it is at 100" is now expressible in version-controlled,
-  hash-covered policy text rather than only in mutable grant data.
+  for 500, you may not have that — here is the call at what you may have" is now expressible in
+  version-controlled, hash-covered policy text rather than only in mutable grant data. The
+  mechanism is the existing reject-and-refill, not clamping: a value above the bound is
+  rejected and the principal's own default fills the hole.
 
   ```
   @id("support-may-search")
@@ -131,13 +122,6 @@ All notable changes to this project are documented here. Format follows
     so a required, defaulted constraint naming a parameter that is not in the signature still
     raises `DefaultUnavailable` legitimately.
 
-### Changed
-- **`DefaultsResult` carries a third field, `withheld`.** Attribute access is unaffected;
-  code that unpacked the result into exactly two names needs a third.
-
-The remainder of this release is hardening, documentation and CI.
-
-### Added
 - **A Sphinx documentation system** replacing mkdocs, producing four artifacts from the
   Markdown pages that already existed: HTML (furo), a PDF, `llms.txt` and `llms-full.txt`.
   The repository is private, so there is nowhere to host a site — documentation ships as
@@ -171,6 +155,10 @@ The remainder of this release is hardening, documentation and CI.
   a CI job and a contributor reproducing it locally run the identical resolved dependency set.
 
 ### Changed
+
+- **`DefaultsResult` carries a third field, `withheld`.** Attribute access is unaffected;
+  code that unpacked the result into exactly two names needs a third.
+
 - **`--policy` is now required on `sentrykit grant` and `sentrykit revoke`.** It previously
   defaulted to `pack://`, and the shipped pack deliberately contains no permit for the admin
   actions — so the default made every mutation refuse, and an operator read a message about
@@ -188,6 +176,25 @@ The remainder of this release is hardening, documentation and CI.
   instead of two copies, with isolation unchanged.
 
 ### Fixed
+
+- **An injected default is now checked against its own constraint.** The filter checked a
+  *supplied* value and default injection checked nothing, so the way to defeat a constraint
+  was to stop proposing a value: `ArgumentConstraint(minimum=100, maximum=10, default=500)`
+  rejected a proposed `500` and then injected `500`, and
+  `ArgumentConstraint(allow=("eu", "uk"), default="us")` injected `"us"`. Under the default
+  `arg_handling="lenient"` this fired on the ordinary path, because a rejected value is
+  dropped and the default substituted.
+  `ConstraintSet.inject_defaults` now runs the same `check()` the filter runs and **withholds**
+  a default that fails it, reporting the fact instead of resolving it in the caller's favour.
+  A withheld default appears on the `_authz` envelope and in the audit record alongside the
+  caller's own rejections, and the argument then falls to `DefaultUnavailable` if the
+  constraint requires it and to the callable's own default if it does not. It is deliberately
+  not routed through `arg_handling="strict"`: that setting arbitrates the caller's proposal,
+  and an unusable default is not theirs.
+- **An unsatisfiable constraint is refused at the write rather than discovered at the call.**
+  `minimum=100, maximum=10` constructed without complaint and surfaced later as a refusal of
+  everything, found by whoever called next.
+
 - **Signatures in the generated Markdown lost their `*` and `/` separators.** Sphinx renders
   a keyword-only or positional-only marker as an `abbreviation` node, and the Markdown
   writer's fallback discarded it along with its text — leaving `install(policies=None, ,
@@ -203,6 +210,23 @@ The remainder of this release is hardening, documentation and CI.
   type: 37 parameters became 8.
 
 ### Documented
+- **The positioning now leads with the argument layer.** `README.md`, `docs/index.md`,
+  `docs/concepts.md`, `SECURITY.md` and the guide pages open on what sentrykit decides about a
+  call's *arguments* — per-`(principal, action)` constraints, narrow-and-continue, defaults,
+  write-time validation and the masked hash-chained record — with multi-hop relationship
+  resolution kept as a supported capability that composes with Cedar rather than as the
+  headline. Where a reader needs to know the niche, other projects are described by capability
+  and never by verdict: general-purpose policy engines and relationship systems answer a
+  boolean question at the gate, and sentrykit adds the layer above that answer.
+- **`SECURITY.md` now states what sentrykit inherits and what it does not claim.** Cedar's
+  evaluator and validator carry a formal model and proofs, and the implementation is checked
+  against it by differential testing; sentrykit's own layer — filtering, narrowing, default
+  injection, intersection, masking, the hash chain — is ordinary Python backed by tests and
+  review. "Built on a formally verified engine" is a fact about Cedar rather than a property of
+  this library, and the two layers should be weighed separately. The hardening checklist gained
+  the two items this release implies: put a bound that must not be raised by mistake in a
+  ceiling rather than only in a grant, and pin the type of an entity-valued argument in policy.
+
 - The three constants a host must name to write the admin permit the shipped pack omits —
   `GRANT_ACTION`, `REVOKE_ACTION`, `ADMIN_RESOURCE` — are tabulated on the policies page next
   to the worked permit, with a doc-example test pinning the table to the constants and the
@@ -212,6 +236,7 @@ The remainder of this release is hardening, documentation and CI.
   unit test drives a registered source's DSN through to a loaded bundle.
 
 ### Removed
+
 - mkdocs, mkdocs-material and mkdocstrings, and `mkdocs.yml`.
 
 ## [0.1.0] - 2026-08-18

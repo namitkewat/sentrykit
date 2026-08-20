@@ -144,6 +144,7 @@ already says.
 | `PolicySource` / `GrantStore` / `AuditSink` / `ContextProvider` | public | The four Protocols every plugin implements. `ContextProvider` is the framework seam. |
 | `SupportsClose` | public | The optional half of a backend's lifecycle — declared so a backend can opt in without inheriting anything. |
 | `PolicyBundle` / `PolicyProvenance` | public | A load's result, and where each policy in it came from. Provenance is what pins an audit record to the exact policy text; a third-party source must supply it, so it cannot be internal. |
+| `CONSTRAINTS_ANNOTATION` (`constraints`) / `OBLIGATIONS_ANNOTATION` (`obligations`) — in `sentrykit.stores.base`, not re-exported | public in effect | The two annotation keys sentrykit reads out of policy text: an argument ceiling and the obligations a permit carries. A host spells them in Cedar text rather than importing them, which is why they were never lifted into the package namespace — but the *strings* are contract, and the policies page is where they are documented. |
 | `GrantSpec` / `GrantRecord` / `GrantKind` | public | A grant to make, a grant as stored, and the four kinds it can be (`role`, `parent`, `attribute`, `constraint`). `GrantKind` appears in `GrantSpec`'s public signature. |
 | `AuditWindow` | public | The period filter a sink reads back through. |
 | `FilesystemPolicySource` | public | `file://` — the reference policy source. |

@@ -1,8 +1,9 @@
 # Agent tooling
 
 sentrykit governs an agent's tool calls with the same decorator that governs a Flask view. The
-model *proposes* a call; the policy *decides* it. Nothing about a protected function's body
-knows it is being invoked by a language model.
+model *proposes* a call; the policy *decides* it — not only whether it may run, but which of the
+proposed arguments survive and what to fill in for the rest. Nothing about a protected
+function's body knows it is being invoked by a language model.
 
 Two integrations ship, behind two extras:
 
@@ -17,6 +18,27 @@ pip install "sentrykit[pydantic-ai]"    # Pydantic-AI agents
     published `fastmcp` distribution does not import against mcp 2.0 at all. sentrykit keeps
     the `fastmcp` name for the module, the extra and the DSN — those are stable, and the
     ecosystem still says "FastMCP" — but nothing in it imports that package.
+
+## The model proposes; the policy narrows
+
+A gate that answers only yes or no leaves an agent one move: attempt the call and find out. The
+decision sentrykit reaches is per argument as well as per call, so a proposal above what the
+principal may have is *reduced* to what policy holds for them — the offending value is dropped
+and, where the principal's grant holds a default, that default takes its place — and the call
+proceeds. Where it holds none, the argument simply has no proposed value: the tool's own
+default applies, or a required argument with nothing to fill it raises `DefaultUnavailable`.
+The `_authz` envelope on the result names which arguments were narrowed and why.
+
+That is what a model can act on. A refusal ends the attempt
+and leaves the model guessing which part of its proposal was the problem; a narrowed result
+carrying the reasons lets it continue, and tells it what it may ask for instead.
+
+Narrowing *refines* a proposal rather than rescuing one. If every argument the model supplied is
+rejected, the call is refused with `NoValidArguments` instead of being completed from defaults,
+because completing it would answer a question nobody asked — see [errors](concepts.md#errors).
+The bounds themselves come from two places that intersect: a grant says what *this* principal
+may pass, and a `@constraints` annotation on a reviewed `permit` says what *anybody* may pass
+for that action. See [argument ceilings](policies.md#argument-ceilings).
 
 ## What an agent boundary needs that a web boundary does not
 
@@ -58,8 +80,8 @@ refusals — `DefaultUnavailable`, `NoValidArguments`, `ArgumentRejected`, `Vali
 do not, and are enforced on dispatch instead. That split matters: a tool with a required
 parameter and no policy default raises `DefaultUnavailable` for *everybody*, so treating it as
 a denial would hide every such tool from every principal. Hiding is a usability affordance,
-never a control: a tool is hidden if and only if invoking it would be refused, and invoking a
-hidden tool is refused again on dispatch.
+never a control: the dispatch path re-runs the identical decision, so a client that skips the
+manifest is refused just the same.
 
 A callable with no `@protect` wrapper carries no action and no argument spec, so there is
 nothing to decide about it. It is left **visible**: sentrykit does not silently hide a tool its
@@ -198,8 +220,12 @@ instead.
 
 ## Omitted arguments, and why the tool signature changes
 
-Per-principal **default injection** is one of the three things sentrykit does. Reaching it from
-an agent takes one extra step, for a reason that is worth understanding.
+Per-principal **default injection** is the other half of the narrowing above: an argument the
+model omitted — and one that was just dropped — is filled in from what policy says this
+principal may have. A default is itself checked against the constraint it belongs to and
+withheld if it fails, so omitting an argument is not a way around the rule that governs it.
+Reaching any of this from an agent takes one extra step, for a reason that is worth
+understanding.
 
 Both frameworks validate the caller's proposal against the tool's advertised JSON schema
 *before* dispatch. A parameter the schema marks `required` therefore cannot be omitted, and an
@@ -225,8 +251,11 @@ The shim keeps both introspections working — the framework sees the optional s
 
 ## Relationships are resolved by the policy, not by the model
 
-This is the claim the MCP example exists to demonstrate. `read_order` is permitted by a single
-policy that names only the far end of a four-hop chain:
+Underneath the argument layer is Cedar's entity hierarchy, and the two compose. Nested
+relationships — user → team → project → resource, delegation, on-behalf-of — are resolved
+deterministically by that hierarchy rather than by application `if` statements, and never by the
+model. The MCP example shows it: `read_order` is permitted by a single policy that names only
+the far end of a four-hop chain:
 
 ```cedar
 @id("project-members-may-read-project-orders")

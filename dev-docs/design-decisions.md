@@ -92,6 +92,31 @@ vs other action-layer tools (APort, MS Agent Governance Toolkit, Rego-based guar
 combination: self-hosted, framework-agnostic across web *and* agents, Cedar-based, audit-
 first, one decorator. An agent acting for a user is the delegation/on-behalf-of pattern, so
 agent authz reuses the same machinery.
+**Amended 2026-08-20 — the argument layer leads; relationship resolution is a capability, not
+the differentiator.** The original "Why" made *relationship resolution offloaded to policy* the
+defining value. It is not one. An entity hierarchy resolving `user → team → project → resource`
+is Cedar's own strength, available to anyone calling `is_authorized` directly, so a reader who
+knows Cedar reads that claim as sentrykit taking credit for the engine it is built on — and the
+question it invites, "then why not call Cedar directly?", has a better answer than the one the
+ADR was giving. The order is re-weighted to: per-(principal, action) argument constraints;
+**narrow-and-continue**, where a proposal above what the principal may have is reduced to what
+they may have and the call proceeds; policy-supplied default injection, with each default
+checked against its own constraint before it is applied (ADR-027); constraint self-consistency
+refused at the grant write rather than discovered at the call; and the masked, hash-chained
+record of all of it. Argument ceilings (ADR-028) sit across the first four and are the sharpest
+statement of the line: a ceiling is the only thing a reviewed policy file can declare that
+reaches narrow-and-continue rather than the gate, because Cedar's effect vocabulary is
+permit/forbid and "you asked for 500, you may not have that — here is the call at what you may
+have" is not expressible in it.
+**What does not change.** Pre-action rather than output validation stands, and so does the
+niche being the *combination* — self-hosted, web *and* agents, Cedar-based, audit-first, one
+decorator. Relationship resolution stays a first-class, documented capability: shorter and later
+on each page, framed as composing with the argument layer, and never deleted — an agent acting
+for a user is still the delegation pattern, still on the same machinery. Cedar is described as
+the foundation sentrykit stands on and never as something being out-done. One honesty
+requirement falls out of the re-weighting and is now in `SECURITY.md`: the verified engine is
+Cedar's, covering the gate; sentrykit claims no verification for the layer above it, which is
+ordinary tested Python.
 
 ## ADR-009 — One decorator, N context providers
 **Decision.** A single `protect()` decorator works on any callable; frameworks contribute
@@ -501,7 +526,9 @@ ceiling refuses an engine failure rather than proceeding.
 `when` clause, so `forbid when { context.args.limit > 100 }` works today. What a ceiling adds
 is *effect* power, not predicate power: a `forbid` can only deny the call, whereas an
 annotation-carried bound reaches narrow-and-continue and default injection. "You asked for
-500, you may have 100, here it is at 100" is not expressible in Cedar at all. That single
+500, you may not have that — here is the call at what you may have" is not expressible in Cedar
+at all — noting that the mechanism is reject-and-refill rather than clamping, so the value the
+call runs with is the principal's own default. That single
 sentence is the whole justification, and it is the reason the feature earns its place given
 that narrow-and-continue is core to the positioning. Secondary and real: it puts the ceiling
 in reviewed, version-controlled text that `policy_set_hash` already digests, so a

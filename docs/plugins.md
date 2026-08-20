@@ -207,6 +207,15 @@ you start the process, not when an auditor runs a report.
   action through.
 - **Policy sources own their provenance.** `PolicyBundle.from_text` builds the annotation
   index; set each entry's `origin` to something an auditor can resolve — a file path, an S3
-  version id, a git commit.
+  version id, a git commit. It also parses any
+  [argument ceiling](policies.md#argument-ceilings) a policy declares and raises
+  `ConfigurationError` on a malformed one, so a source that builds its bundle that way fails at
+  load rather than serving a bound that silently enforces nothing.
 - **A grant store returns materialized principals.** Expired and revoked grants are excluded
   by the store, so the decision path never reasons about grant lifecycles.
+- **A grant store refuses what it could not honour.** `grant()` raises `ConfigurationError` on
+  an argument constraint no value could satisfy — inverted bounds, an uncompilable pattern, a
+  default the constraint's own rules reject. `ArgumentConstraint.inconsistencies()` is the check
+  the built-in stores run, and a third-party store should run it at the write too: left to the
+  call path, an unsatisfiable constraint is a refusal of everything, found by whoever calls
+  next.

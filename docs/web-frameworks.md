@@ -51,6 +51,13 @@ def list_orders(region: str | None = None) -> dict[str, object]:
     return search_orders(**proposed)
 ```
 
+The route declares `region: str | None = None` and forwards only what the caller actually sent.
+That is deliberate: an argument the caller omitted is the one policy fills in from their
+defaults, so a route that substituted its own value first would leave nothing to inject — an
+absent argument has to stay expressible at the boundary. The bounds those defaults sit inside
+come from the principal's grants, and a reviewed policy may declare an
+[argument ceiling](policies.md#argument-ceilings) that intersects with them.
+
 `protect_app` does two things, and each is available on its own:
 
 | Call | What it adds |
@@ -182,12 +189,17 @@ FastAPIProvider(
 
 ## Refusals
 
+Most rejected arguments never reach a status code. Under the default `arg_handling="lenient"` an
+over-broad request is narrowed to what the principal may have and the route returns its ordinary
+response, with the rejections named in the `_authz` envelope; the statuses below are for a call
+that cannot proceed at all.
+
 Every sentrykit error maps to one status, identically on both frameworks:
 
 | Error | Status |
 | --- | --- |
 | `AuthzDenied`, `NoContext` | **403** |
-| `ArgumentRejected`, `NoValidArguments`, `DefaultUnavailable` | **400** |
+| `ArgumentRejected` (only under `arg_handling="strict"`), `NoValidArguments`, `DefaultUnavailable` | **400** |
 | `ValidationFailed` | **422** |
 | `ConfigurationError`, `AuditUnavailable`, any other `SentrykitError` | **500** |
 

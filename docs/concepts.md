@@ -12,6 +12,24 @@ That last clause is the positioning. sentrykit is a **pre-action** authorization
 an output validator. An output validator inspects what a model produced; by then the refund
 has been issued. sentrykit refuses the refund.
 
+Five things follow from the one idea, and the rest of this page is mostly about them:
+
+1. **Argument constraints resolved per `(principal, action)`** — allow-sets, deny-sets,
+   patterns and numeric bounds, decided per argument.
+2. **Narrowing instead of refusal.** A proposal above what the principal may have is reduced
+   to what they may have and the call proceeds. Narrowing *refines* a proposal rather than
+   rescuing one: if every argument the caller supplied is rejected, the call is refused.
+3. **Defaults supplied by the principal's grant** for the arguments the caller omitted — and
+   for the ones that were just dropped.
+4. **Constraints validated when they are written.** A constraint no value could satisfy is
+   refused at the grant rather than discovered by whoever calls next.
+5. **A record of every decision and every admin mutation**, masked before the append-only
+   write, hash-chained, and pinned to a digest of the policy logic that produced it.
+
+Sitting across the first four: an **argument ceiling** declared in reviewed policy text says
+what *anybody* may pass for an action, and intersects with what the store grants this
+principal — so the reviewed file states the maximum and can only narrow.
+
 ## The pipeline
 
 Every protected call runs through the same six steps, in this order:
@@ -61,32 +79,6 @@ and `@protect` reads it wherever the callable lives. Three rules follow:
 This split — the decorator supplies the action and arguments, the provider supplies the
 principal and environment — is the whole reason one decorator can guard a Flask view, a
 background function and an MCP tool unchanged.
-
-## Relationships are resolved by policy
-
-The differentiator is not that sentrykit checks a role. It is that nested, multi-hop
-relationships are resolved **deterministically by Cedar's entity hierarchy**, never inferred
-by a model and never reimplemented as a ladder of `if` statements.
-
-Roles, teams, projects and delegation edges are all the same thing: a parent edge. Cedar
-computes the transitive closure, so a policy can name only the far end of a chain:
-
-```cedar
-@id("project-members-may-read-project-orders")
-permit (
-  principal in Project::"orders-eu",
-  action == Action::"order.read",
-  resource in Project::"orders-eu"
-);
-```
-
-Given `alice -> Team::"eu-support" -> Division::"emea" -> Project::"orders-eu"` and
-`Order::"o-1" -> Project::"orders-eu"`, alice may read the order. The policy mentions neither
-the team nor the division. Sever any one edge and the access disappears — because the
-relationship *is* the authorization.
-
-An agent acting for a human is the same pattern: delegation, expressed as an edge, resolved
-by the same machinery.
 
 ## Policies-as-code, grants-as-data
 
@@ -145,8 +137,8 @@ Constraints reach a decision from two places, and they **intersect**:
 Because intersection can only narrow, the reviewed file states the maximum and the store
 states what each principal actually has. A ceiling is also the one thing a policy can declare
 that reaches narrow-and-continue rather than the gate: Cedar can only deny, so "you asked for
-500, you may have 100, here it is at 100" has nowhere else to live. See
-[Argument ceilings](policies.md#argument-ceilings).
+500, you may not have that — here is the call at what you may have" has nowhere else to live.
+See [Argument ceilings](policies.md#argument-ceilings).
 
 ### A constraint has to be satisfiable
 
@@ -173,6 +165,35 @@ constraints, and refusing at construction would make one bad row already on disk
 of every principal in the file — a wider refusal than the fault deserves. The write is where
 the fault is introduced and where someone is present to fix it; the call path stays fail-closed
 per argument either way.
+
+## Relationships compose underneath
+
+The argument layer stands on Cedar's gate, and composes with what the engine underneath is
+already good at. Nested, multi-hop relationships — user → team → project → resource,
+delegation, on-behalf-of, expiry, break-the-glass — are resolved **deterministically by
+Cedar's entity hierarchy**, never inferred by a model and never reimplemented as a ladder of
+`if` statements.
+
+Roles, teams, projects and delegation edges are all the same thing: a parent edge. Cedar
+computes the transitive closure, so a policy can name only the far end of a chain:
+
+```cedar
+@id("project-members-may-read-project-orders")
+permit (
+  principal in Project::"orders-eu",
+  action == Action::"order.read",
+  resource in Project::"orders-eu"
+);
+```
+
+Given `alice -> Team::"eu-support" -> Division::"emea" -> Project::"orders-eu"` and
+`Order::"o-1" -> Project::"orders-eu"`, alice may read the order. The policy mentions neither
+the team nor the division. Sever any one edge and the access disappears — because the
+relationship *is* the authorization. An agent acting for a human is the same pattern:
+delegation, expressed as an edge, resolved by the same machinery.
+
+The constraints then apply to whatever that chain permitted: the hierarchy decides *whether*
+the call may happen, and the argument layer decides what it may carry.
 
 ## Errors
 
@@ -307,3 +328,11 @@ field has one shape at every verbosity and `defaults_applied.keys()` always work
 - Not a content filter or an output validator. It refuses the side effect, not the text.
 - Not an authentication system. It decides what an already-identified principal may do.
 - Not a place for business rules that are not authorization decisions.
+
+Nor is it a policy engine in its own right. General-purpose engines — Cedar (including Amazon
+Verified Permissions), OPA, Casbin — and relationship-based systems such as OpenFGA answer a
+boolean question at the gate: may this principal perform this action on this resource.
+sentrykit is built on Cedar, and adds the layer above that decision: which arguments
+the call may carry, which defaults to supply when the caller omits them, and a record of
+both. If you already run a policy engine, that argument layer is the part you would otherwise
+assemble yourself.

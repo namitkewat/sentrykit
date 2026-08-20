@@ -112,8 +112,9 @@ result["_authz"]["obligations"]   # ['hmac:account', 'notify:secops']
 ## Argument ceilings
 
 Cedar's gate can only **deny**. An argument ceiling is the one thing a policy can declare that
-reaches sentrykit's narrow-and-continue path instead: "you asked for 500, you may have 100,
-here it is at 100" is not expressible as a `forbid`, because a `forbid` refuses the call.
+reaches sentrykit's narrow-and-continue path instead: "you asked for 500, you may not have
+that — here is the call at what you may have" is not expressible as a `forbid`, because a
+`forbid` refuses the call.
 
 A ceiling is declared in a `@constraints` annotation whose value is a compact JSON object
 mapping an argument name to the rules that bound it:

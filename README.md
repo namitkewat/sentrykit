@@ -1,26 +1,53 @@
 # sentrykit
 
-Lightweight, framework-agnostic **authorization** for Python — built on
-[AWS Cedar](https://www.cedarpolicy.com/). Clip a `@protect` decorator onto any callable and
-sentrykit decides, per call, whether the principal may invoke it, **which arguments** they may
-pass, and **which defaults** to inject when they pass none — then records a masked,
-tamper-evident audit trail.
+Framework-agnostic **authorization** for Python, built on
+[AWS Cedar](https://www.cedarpolicy.com/). Clip a `@protect` decorator onto any callable — a
+web route, a plain function, an agent tool — and sentrykit decides, per call, whether the
+principal may invoke it, **which arguments they may pass**, and **which defaults to inject
+when they pass none**; then narrows an over-broad request to what the principal is entitled to
+rather than refusing it, and writes a masked, hash-chained record of what it decided.
+
+> The caller *proposes*; the **policy decides** — and what it decides includes the arguments,
+> not only the call.
 
 It targets two worlds with one decorator:
 
 - **Web frameworks** — FastAPI, Flask (more to come).
 - **Agent tooling** — FastMCP servers, Pydantic-AI (more to come).
 
-> The caller *proposes*; the **policy decides**. Nested, multi-hop authorization
-> relationships — team → project → resource, delegation, on-behalf-of, expiry,
-> break-the-glass — are resolved deterministically by Cedar, never guessed by a model.
+What that gives you, in the order it matters:
 
-sentrykit sits at the **action layer**: it refuses the side effect *before* it happens,
-unlike output validators that run after a model finishes. It is self-hosted, Cedar-based, and
+- **Per-(principal, action) argument constraints.** Allow-sets, deny-sets, patterns and numeric
+  bounds, resolved for the principal and the action, one argument at a time.
+- **Narrow-and-continue instead of refuse.** A proposal above what the principal may have is
+  reduced to what they may have, and the call proceeds.
+- **Policy-supplied default injection.** Arguments the caller omitted — and arguments that were
+  just dropped — are filled in from what policy says this principal may have.
+- **Grant-time constraint validation.** A constraint no value could satisfy, or whose own
+  default it would reject, is refused when it is written rather than found by whoever calls
+  next.
+- **A masked, hash-chained audit trail.** One record per decision and per admin mutation,
+  masked *before* the append-only write and pinned to a hash of the exact policy text.
+
+Across the first four sits one more: **argument ceilings declared in reviewed policy text**. A
+`.cedar` file says what *anybody* may pass for an action, the grant store says what *this*
+principal has, and the two intersect — so the reviewed file states the maximum and can only
+narrow.
+
+sentrykit sits at the **action layer**: it refuses the side effect *before* it happens, rather
+than inspecting what a model has already produced. It is self-hosted, Cedar-based, and
 audit-first.
 
-> **Status: 0.1.0 — everything below works.** `@protect`, ambient context, the Cedar gate,
-> argument filtering, default injection, validation and the `_authz` envelope; the three
+General-purpose policy engines — Cedar, including Amazon Verified Permissions, as well as OPA
+and Casbin — and relationship-based systems such as OpenFGA answer a boolean question at the
+gate: may this principal perform this action on this resource. sentrykit is built on one of
+them, and adds the layer above that decision: which arguments the call may carry, which
+defaults to supply when the caller omits them, and a record of both. If you already run a
+policy engine, that argument layer is the part you would otherwise assemble yourself.
+
+> **Status: 0.2.0 — everything below works.** `@protect`, ambient context, the Cedar gate,
+> argument filtering, policy-declared **argument ceilings**, default injection, **constraint
+> validation at the write**, signature validation and the `_authz` envelope; the three
 > pluggable stores with entry-point discovery; masking and the tamper-evident audit log; the
 > **FastAPI, Flask, MCP and Pydantic-AI** providers with four runnable example apps; the
 > **shipped policy pack**; and the `sentrykit` command line. Not yet shipped: the durable WORM
@@ -69,8 +96,9 @@ A web dependency or an agent tool-runner establishes *who* is acting; the decora
 per-principal defaults, validates, invokes, and returns the result with an `_authz` report of
 what was processed, rejected, and defaulted.
 
-If alice is only granted `region="eu"` and a page size up to 50, the call above still runs —
-narrowed to what she is entitled to, and saying so:
+If alice is only granted `region="eu"` and a page size up to 50, the call above still runs.
+That is **narrow-and-continue**: the parts of the proposal she is not entitled to are dropped
+and refilled from her own defaults, the call proceeds, and the envelope says so.
 
 ```json
 {
@@ -86,8 +114,70 @@ narrowed to what she is entitled to, and saying so:
 }
 ```
 
+Narrowing *refines* a proposal; it does not invent one. If **every** argument the caller
+supplied is rejected, the call is refused with `NoValidArguments` rather than completed from
+defaults — completing it would answer a question nobody asked, handing back alice's own orders
+when she asked about a customer's.
+
 With no established principal, the call is refused rather than run unguarded. Forgetting to
 wire a provider fails closed.
+
+### The reviewed file states the ceiling; the store states the grant
+
+Constraints reach a decision from two places, and they **intersect**. A **grant** in the store
+says what *this* principal may pass — mutable, per-principal, and the only layer that carries a
+`default`. A **ceiling** declared on a `permit` in a reviewed `.cedar` file says what *anybody*
+may pass for that action:
+
+```cedar
+@id("support-may-search")
+@constraints("{\"limit\": {\"maximum\": 100}, \"region\": {\"allow\": [\"eu\", \"us\"]}}")
+permit (
+  principal in Role::"support",
+  action == Action::"tool.search",
+  resource == Tool::"orders"
+);
+```
+
+Intersection can only narrow — allow-sets intersect, deny-sets union, bounds move inward — so a
+grant capped at 10 stays capped at 10 under a ceiling of 100. The file under review states the
+maximum anyone may have; the store stays the one place a per-principal value lives.
+
+A ceiling is also the only declaration a policy can make that reaches narrow-and-continue
+rather than the gate. Cedar answers allow or deny, so "you asked for 500, you may not have
+that — here is what you may have" has nowhere else to live: the value above the bound is
+rejected, the principal's own default fills the hole, and the call is served rather than
+refused. Every part of a declaration is checked at load — the JSON, the rule names, the value
+types, the pattern, and that the annotation sits on a `permit` — because Cedar does not
+type-check annotation values, and a bound nobody enforces is worse than no bound. What load
+cannot check is a misspelled argument name: nothing here imports your application, so read a
+ceiling against the callable's signature. A failed evaluation reports no determining policies
+and therefore no ceilings, so a policy set that declares any ceiling refuses an engine failure
+under `fail_mode="open"` too, rather than proceeding unbounded. See
+[docs/policies.md](docs/policies.md).
+
+### A constraint nothing can satisfy is refused when it is written
+
+Constraints are data, so one can be written that nothing satisfies. `minimum=100, maximum=10`
+is the obvious case; an allow-set member the pattern rejects, or a default outside the
+allow-set, are the quieter ones. Left to be discovered at call time, each is a refusal of
+everything, found by whoever calls next:
+
+```python
+store.grant(GrantSpec(principal=..., kind="constraint", subject="limit",
+                      constraint=ArgumentConstraint(minimum=100, maximum=10)))
+# ConfigurationError: the constraint on argument 'limit' cannot be satisfied: ...
+```
+
+The check runs at the write rather than on the model itself, because a store also *reads*
+constraints: refusing at construction would make one bad row already on disk fail the load of
+every principal in the file. The write is where the fault is introduced and where someone is
+present to fix it.
+
+The same reasoning covers defaults at the call. A default is checked against its own constraint
+and withheld if it fails, so omitting an argument is not a way around the rule that governs it.
+The rules, how they resolve per `(principal, action)`, and their sharp edges are written up in
+[docs/concepts.md](docs/concepts.md).
 
 ### Guard an HTTP route — same decorator, one extra line
 
@@ -173,10 +263,12 @@ An MCP tool server and an on-behalf-of agent live in `examples/fastmcp_server/` 
 `examples/pydantic_ai_agent/`. Both run offline, with no API key and no network call. See
 [docs/agents.md](docs/agents.md).
 
-### Relationships are the policy's job
+### Relationships are Cedar's job, and this composes with them
 
-The point is not that sentrykit checks a role. It is that multi-hop relationships are
-resolved by Cedar's entity hierarchy, so a policy names only the far end of a chain:
+Underneath the argument layer, nested relationships — user → team → project → resource,
+delegation, on-behalf-of, expiry, break-the-glass — are resolved deterministically by Cedar's
+entity hierarchy, rather than by a ladder of application `if` statements or by a model. A
+policy therefore names only the far end of a chain:
 
 ```cedar
 @id("project-members-may-read-project-orders")
@@ -188,8 +280,10 @@ permit (
 ```
 
 Given `alice → Team::"eu-support" → Division::"emea" → Project::"orders-eu"`, alice may read
-an order owned by that project. The policy mentions neither the team nor the division. Sever
-one edge and the access is gone — because the relationship *is* the authorization.
+an order owned by that project. The policy mentions neither the team nor the division; sever
+one edge and the access is gone, because the relationship *is* the authorization. That is
+Cedar's strength and sentrykit inherits it — it is the foundation the argument layer stands on,
+and a ceiling can be declared on exactly that permit.
 
 ## Every decision is auditable
 

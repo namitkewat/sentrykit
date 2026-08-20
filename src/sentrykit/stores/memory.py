@@ -226,7 +226,8 @@ class InMemoryGrantStore:
 
         Raises:
             ConfigurationError: If the spec is inconsistent — a ``constraint`` grant with no
-                constraint, or a ``parent`` grant whose subject is not an entity reference.
+                constraint, one carrying a constraint no value could satisfy, or a ``parent``
+                grant whose subject is not an entity reference.
                 Rejected here, at the write, so a malformed grant cannot sit in the store and
                 surface as a materialization failure on some unrelated request.
         """

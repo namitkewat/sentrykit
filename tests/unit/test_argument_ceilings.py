@@ -1,8 +1,11 @@
 """An argument ceiling declared in reviewed policy text, and the layer it composes with.
 
 Cedar's gate can only deny. A ceiling is the one declaration that reaches sentrykit's
-narrow-and-continue path instead, so "you asked for 500, you may have 100, here it is at 100"
-becomes expressible in a version-controlled file rather than only in mutable grant data.
+narrow-and-continue path instead, so "you asked for 500, you may not have that -- here is the
+call at what you may have" becomes expressible in a version-controlled file rather than only in
+mutable grant data. Note what "narrowed" means mechanically: the over-bound value is *rejected*
+and the principal's own default fills the hole, which is why the tests below pair a ceiling
+with a grant that carries one.
 
 Three properties carry the weight, and each has a test that would fail if it were quietly
 dropped: a ceiling **narrows and the call continues**; a ceiling can **only** narrow, so
