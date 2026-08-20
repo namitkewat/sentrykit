@@ -239,6 +239,26 @@ def test_a_per_argument_grant_constrains_and_defaults_that_argument() -> None:
 
 
 @pytest.mark.unit
+def test_the_store_refuses_the_incoherent_constraint_the_page_prints() -> None:
+    """The page prints the error text; a reader who does not get it has been misled."""
+    store = InMemoryGrantStore()
+
+    with pytest.raises(ConfigurationError) as caught:
+        store.grant(
+            GrantSpec(
+                principal=EntityRef("User", "bob"),
+                kind="constraint",
+                subject="region",
+                constraint=ArgumentConstraint(allow=("eu-west",), default="us-east"),
+            )
+        )
+
+    message = str(caught.value)
+    assert message.startswith("the constraint on argument 'region' cannot be satisfied: ")
+    assert "the configured default does not satisfy the constraint's own rules: " in message
+
+
+@pytest.mark.unit
 def test_a_policy_directory_loads_in_sorted_filename_order(tmp_path: Path) -> None:
     (tmp_path / "00-base.cedar").write_text(
         '@id("base-permit")\npermit (principal, action == Action::"a", resource);\n',

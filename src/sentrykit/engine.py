@@ -601,7 +601,15 @@ class Governor:
                     rejected=[item.as_detail() for item in rejected],
                 )
 
-            arguments, defaults_applied = constraints.inject_defaults(kept, spec.parameters)
+            arguments, defaults_applied, withheld = constraints.inject_defaults(
+                kept, spec.parameters
+            )
+            if withheld:
+                # Reported alongside the caller's own rejections so the envelope and the
+                # audit record show why an argument has no value -- but deliberately not
+                # routed through ``_report_rejections``: ``arg_handling`` arbitrates what
+                # happens to the *caller's proposal*, and an unusable default is not theirs.
+                rejected += withheld
 
             missing = self._missing_arguments(spec, constraints, arguments)
             if missing:

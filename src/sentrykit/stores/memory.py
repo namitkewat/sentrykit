@@ -472,14 +472,27 @@ def _check(spec: GrantSpec) -> None:
 
     Raises:
         ConfigurationError: If the subject is empty, a ``constraint`` grant carries no
-            constraint, or a ``parent`` grant's subject is not a Cedar entity reference.
+            constraint, a ``constraint`` grant carries one that contradicts itself, or a
+            ``parent`` grant's subject is not a Cedar entity reference.
     """
     if not spec.subject.strip():
         raise ConfigurationError(f"a {spec.kind!r} grant needs a non-empty subject")
-    if spec.kind == "constraint" and spec.constraint is None:
-        raise ConfigurationError(
-            f"a 'constraint' grant for argument {spec.subject!r} carries no constraint"
-        )
+    if spec.kind == "constraint":
+        if spec.constraint is None:
+            raise ConfigurationError(
+                f"a 'constraint' grant for argument {spec.subject!r} carries no constraint"
+            )
+        # Checked here rather than on ``ArgumentConstraint`` itself, because a store also
+        # *reads* constraints: a validator on the model would make one bad row already on
+        # disk fail the load of every principal in the file, which is a wider refusal than
+        # the fault deserves. The write is the moment the fault is introduced and the moment
+        # someone is present to fix it.
+        problems = spec.constraint.inconsistencies()
+        if problems:
+            raise ConfigurationError(
+                f"the constraint on argument {spec.subject!r} cannot be satisfied: "
+                + "; ".join(problems)
+            )
     if spec.kind == "parent":
         # Raises ConfigurationError on a bare id, which is the point: a parent edge has to
         # name the entity type or Cedar cannot resolve the relationship it stands for.

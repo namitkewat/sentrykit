@@ -11,6 +11,14 @@ That purity is the point. The caller — a web client or a language model — *p
 arguments; the constraint set *decides* which of them survive. A rejection is data, not an
 exception, so the engine can drop it (``arg_handling="lenient"``) or raise on it
 (``"strict"``) without this module knowing which mode is in force.
+
+A constraint is *data*, which means one can be written that no value satisfies, or whose own
+default it would reject. Both are faults of the moment a constraint is **written**, not of
+the call that happens to run into them, so :meth:`ArgumentConstraint.inconsistencies` states
+them as sentences an operator can act on and a grant store runs it at the write. The decision
+path stays fail-closed regardless: :meth:`ConstraintSet.inject_defaults` re-checks every
+default against its own constraint and withholds one that fails, because an argument nobody
+proposed must not be a way around the rule that governs it.
 """
 
 from __future__ import annotations
@@ -34,6 +42,13 @@ __all__ = [
 _LOGGER: Final = logging.getLogger("sentrykit.constraints")
 
 _PATTERN_CACHE: Final[dict[str, re.Pattern[str] | None]] = {}
+
+_PROBE: Final = "value"
+"""Stand-in argument name for a self-consistency probe.
+
+:meth:`ArgumentConstraint.inconsistencies` reads only a rejection's ``reason``, which
+never spells the argument name -- and a constraint does not know what it is attached to.
+"""
 
 
 def _compiled(pattern: str) -> re.Pattern[str] | None:
@@ -135,10 +150,15 @@ class DefaultsResult(NamedTuple):
         arguments: The kept arguments plus every injected default.
         applied: Only the defaults that were injected, for the envelope's
             ``defaults_applied``.
+        withheld: One entry per default that was *not* injected because it does not satisfy
+            its own constraint. A grant store refuses such a constraint at the write, so
+            reaching this is an operator fault in a constraint set built some other way --
+            and the fault is reported rather than resolved in the caller's favour.
     """
 
     arguments: dict[str, object]
     applied: dict[str, object]
+    withheld: tuple[RejectedArgument, ...] = ()
 
 
 class ArgumentConstraint(BaseModel):
@@ -267,6 +287,67 @@ class ArgumentConstraint(BaseModel):
 
         return None
 
+    def inconsistencies(self) -> tuple[str, ...]:
+        """Every way this constraint contradicts itself, as sentences an operator can act on.
+
+        A constraint is *data*, so nothing stops one being written that no value can satisfy
+        -- ``minimum=100, maximum=10`` constructs without complaint -- or one whose own
+        default it would reject. Left alone, both are discovered at call time as a refusal of
+        everything, by whoever happens to call next. This is the check that moves that
+        discovery to the moment the grant is written, and
+        :meth:`~sentrykit.stores.base.GrantStore.grant` runs it there.
+
+        Four things are checked:
+
+        1. The ``pattern`` compiles.
+        2. ``minimum`` is not above ``maximum``.
+        3. Every ``allow`` member satisfies this constraint's other rules. A permitted value
+           the pattern or the bounds reject is dead configuration: a reviewer reading the
+           allow-set believes it is reachable.
+        4. A configured ``default`` satisfies this constraint. Without this the way to defeat
+           a constraint is to *stop proposing a value*, since an omitted argument is filled
+           from the default rather than filtered.
+
+        The last two delegate to :meth:`check`, so what a grant promises at the write and
+        what the filter enforces at the call cannot drift apart.
+
+        Returns:
+            One sentence per problem, or an empty tuple when the constraint is coherent. An
+            uncompilable pattern or inverted bounds short-circuit the value-level checks:
+            :meth:`check` rejects *everything* under either, so probing the allow-set and the
+            default would restate the same fault once per value.
+        """
+        structural: list[str] = []
+        if self.pattern is not None and _compiled(self.pattern) is None:
+            structural.append(f"pattern {self.pattern!r} is not a valid regular expression")
+        if self.minimum is not None and self.maximum is not None and self.minimum > self.maximum:
+            structural.append(
+                f"minimum {self.minimum} is above maximum {self.maximum}, "
+                "so no value can satisfy both"
+            )
+        if structural:
+            return tuple(structural)
+
+        problems: list[str] = []
+        for member in self.allow or ():
+            rejection = self.check(_PROBE, member)
+            if rejection is not None:
+                problems.append(
+                    f"permitted value {member!r} does not satisfy the constraint's own "
+                    f"rules: {rejection.reason}"
+                )
+        if self.has_default:
+            rejection = self.check(_PROBE, self.default)
+            if rejection is not None:
+                # The default *value* is deliberately absent from the message, for the same
+                # reason :meth:`describe` withholds it: a per-principal default can itself be
+                # sensitive, and this sentence travels into logs and error payloads.
+                problems.append(
+                    f"the configured default does not satisfy the constraint's own rules: "
+                    f"{rejection.reason}"
+                )
+        return tuple(problems)
+
     def describe(self) -> dict[str, object]:
         """Summarize the rules, for the "here is what you *may* pass" half of an error.
 
@@ -356,6 +437,15 @@ class ConstraintSet(BaseModel):
         ``lenient`` handling useful: an over-broad request is narrowed to what the principal
         is entitled to rather than refused.
 
+        Every default is checked against its own constraint before it is injected, and one
+        that fails is withheld rather than substituted. Without that check the way to defeat
+        a constraint would be to *stop proposing a value*: a supplied value is filtered, an
+        omitted one is filled in, and only the first path ran a check. The write-time check
+        in :meth:`ArgumentConstraint.inconsistencies` is what a grant store enforces so this
+        situation cannot be stored at all; this is the backstop for a constraint set that
+        reached the decision path some other way, and like :meth:`filter` it reports rather
+        than raises.
+
         Args:
             kept: Arguments that survived :meth:`filter`.
             parameters: Parameter names the target callable actually accepts. Defaults for
@@ -363,16 +453,40 @@ class ConstraintSet(BaseModel):
                 unexpected keyword argument.
 
         Returns:
-            The completed argument mapping and the subset that was injected.
+            The completed argument mapping, the subset that was injected, and the defaults
+            that were withheld.
         """
         arguments: dict[str, object] = dict(kept)
         applied: dict[str, object] = {}
+        withheld: list[RejectedArgument] = []
         for name, constraint in self.arguments.items():
             if name in arguments or name not in parameters or not constraint.has_default:
                 continue
+            rejection = constraint.check(name, constraint.default)
+            if rejection is not None:
+                # Withheld, not substituted and not coerced: the constraint says this value
+                # may not be used, and it does not stop saying so because the policy is the
+                # one proposing it. The argument then falls to ``missing_required`` if the
+                # constraint requires it, and to the callable's own default if it does not.
+                _LOGGER.error(
+                    "Configured default does not satisfy its own constraint; not injecting",
+                    extra={"argument": name, "rule": rejection.rule, "policy": constraint.policy},
+                )
+                withheld.append(
+                    RejectedArgument(
+                        name=name,
+                        rule=rejection.rule,
+                        reason=(
+                            "The configured default does not satisfy its own constraint "
+                            "and was not applied"
+                        ),
+                        policy=constraint.policy,
+                    )
+                )
+                continue
             arguments[name] = constraint.default
             applied[name] = constraint.default
-        return DefaultsResult(arguments=arguments, applied=applied)
+        return DefaultsResult(arguments=arguments, applied=applied, withheld=tuple(withheld))
 
     def missing_required(self, present: Collection[str]) -> tuple[str, ...]:
         """Name the required arguments that are still absent after defaults were injected.
@@ -388,6 +502,21 @@ class ConstraintSet(BaseModel):
             name
             for name, constraint in self.arguments.items()
             if constraint.required and name not in present
+        )
+
+    def inconsistencies(self) -> tuple[str, ...]:
+        """Every self-contradiction across the whole set, each labelled with its argument.
+
+        The set-level entry point for :meth:`ArgumentConstraint.inconsistencies`, used where
+        a whole set is written or loaded at once rather than one constraint at a time.
+
+        Returns:
+            One sentence per problem, or an empty tuple when every constraint is coherent.
+        """
+        return tuple(
+            f"argument {name!r}: {problem}"
+            for name, constraint in self.arguments.items()
+            for problem in constraint.inconsistencies()
         )
 
     def describe(self) -> dict[str, object]:

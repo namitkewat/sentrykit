@@ -491,6 +491,14 @@ class GrantStore(Protocol):
     def grant(self, spec: GrantSpec, *, now: datetime | None = None) -> GrantRecord:
         """Confer a grant.
 
+        A store refuses a grant it could not honour, and an
+        :class:`~sentrykit.constraints.ArgumentConstraint` that contradicts itself is one of
+        those: inverted bounds, an uncompilable pattern, a permitted value the constraint's
+        own other rules reject, or a default it would refuse. Left to be discovered at call
+        time, each of those is a refusal of everything, found by whoever calls next. The
+        check is :meth:`~sentrykit.constraints.ArgumentConstraint.inconsistencies` and it
+        belongs at the write, where the operator who wrote it is still present.
+
         Args:
             spec: What to confer.
             now: The grant timestamp. Defaults to the current UTC time.
@@ -500,7 +508,7 @@ class GrantStore(Protocol):
 
         Raises:
             ConfigurationError: If the spec is inconsistent — a ``constraint`` grant with no
-                constraint, say.
+                constraint, or one carrying a constraint no value could satisfy.
         """
         ...
 

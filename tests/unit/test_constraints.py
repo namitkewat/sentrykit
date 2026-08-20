@@ -193,7 +193,7 @@ def test_filtering_never_raises_on_a_rejection() -> None:
 def test_a_default_fills_an_argument_the_caller_omitted() -> None:
     constraints = _one("region", ArgumentConstraint(default="eu-west"))
 
-    arguments, applied = constraints.inject_defaults({}, ("region", "limit"))
+    arguments, applied, _ = constraints.inject_defaults({}, ("region", "limit"))
 
     assert arguments == {"region": "eu-west"}
     assert applied == {"region": "eu-west"}
@@ -203,7 +203,7 @@ def test_a_default_fills_an_argument_the_caller_omitted() -> None:
 def test_a_default_never_overrides_a_value_the_caller_supplied() -> None:
     constraints = _one("region", ArgumentConstraint(default="eu-west"))
 
-    arguments, applied = constraints.inject_defaults({"region": "eu-north"}, ("region",))
+    arguments, applied, _ = constraints.inject_defaults({"region": "eu-north"}, ("region",))
 
     assert arguments == {"region": "eu-north"}
     assert applied == {}
@@ -217,7 +217,7 @@ def test_a_default_replaces_an_argument_that_was_dropped() -> None:
     )
     kept, rejected = constraints.filter({"region": "us-east"})
 
-    arguments, applied = constraints.inject_defaults(kept, ("region",))
+    arguments, applied, _ = constraints.inject_defaults(kept, ("region",))
 
     assert len(rejected) == 1
     assert arguments == {"region": "eu-west"}
@@ -228,7 +228,7 @@ def test_a_default_replaces_an_argument_that_was_dropped() -> None:
 def test_a_default_for_a_parameter_the_callable_does_not_accept_is_skipped() -> None:
     constraints = _one("tenant", ArgumentConstraint(default="acme"))
 
-    arguments, applied = constraints.inject_defaults({}, ("customer_id",))
+    arguments, applied, _ = constraints.inject_defaults({}, ("customer_id",))
 
     assert arguments == {}
     assert applied == {}
@@ -238,7 +238,7 @@ def test_a_default_for_a_parameter_the_callable_does_not_accept_is_skipped() -> 
 def test_an_argument_with_no_configured_default_is_left_absent() -> None:
     constraints = _one("limit", ArgumentConstraint(minimum=1))
 
-    arguments, applied = constraints.inject_defaults({}, ("limit",))
+    arguments, applied, _ = constraints.inject_defaults({}, ("limit",))
 
     assert arguments == {}
     assert applied == {}
@@ -248,7 +248,7 @@ def test_an_argument_with_no_configured_default_is_left_absent() -> None:
 def test_an_explicit_default_of_none_is_injectable() -> None:
     constraints = _one("region", ArgumentConstraint(default=None))
 
-    arguments, applied = constraints.inject_defaults({}, ("region",))
+    arguments, applied, _ = constraints.inject_defaults({}, ("region",))
 
     assert arguments == {"region": None}
     assert applied == {"region": None}
@@ -397,7 +397,7 @@ def test_an_injected_default_never_overrides_a_supplied_valid_value(
     constraints = _one("limit", ArgumentConstraint(allow=tuple(allowed), default=default))
 
     kept, rejected = constraints.filter({"limit": supplied})
-    arguments, applied = constraints.inject_defaults(kept, ("limit",))
+    arguments, applied, _ = constraints.inject_defaults(kept, ("limit",))
 
     assert rejected == ()
     assert arguments == {"limit": supplied}
@@ -418,7 +418,7 @@ def test_a_rejected_value_is_replaced_by_the_default_and_never_reaches_the_calla
     constraints = _one("limit", ArgumentConstraint(allow=tuple(allowed), default=default))
 
     kept, rejected = constraints.filter({"limit": proposed})
-    arguments, _applied = constraints.inject_defaults(kept, ("limit",))
+    arguments, _applied, _ = constraints.inject_defaults(kept, ("limit",))
 
     assert arguments["limit"] in allowed
     if proposed not in allowed:

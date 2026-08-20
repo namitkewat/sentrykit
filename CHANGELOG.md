@@ -32,6 +32,47 @@ All notable changes to this project are documented here. Format follows
     — it produced an engine error, so `fail_mode="closed"` already refused it — and was a
     live bypass only under `fail_mode="open"`.
 
+### Fixed
+- **An injected default is now checked against its own constraint.** The filter checked a
+  *supplied* value and default injection checked nothing, so the way to defeat a constraint
+  was to stop proposing a value: `ArgumentConstraint(minimum=100, maximum=10, default=500)`
+  rejected a proposed `500` and then injected `500`, and
+  `ArgumentConstraint(allow=("eu", "uk"), default="us")` injected `"us"`. Under the default
+  `arg_handling="lenient"` this fired on the ordinary path, because a rejected value is
+  dropped and the default substituted.
+  `ConstraintSet.inject_defaults` now runs the same `check()` the filter runs and **withholds**
+  a default that fails it, reporting the fact instead of resolving it in the caller's favour.
+  A withheld default appears on the `_authz` envelope and in the audit record alongside the
+  caller's own rejections, and the argument then falls to `DefaultUnavailable` if the
+  constraint requires it and to the callable's own default if it does not. It is deliberately
+  not routed through `arg_handling="strict"`: that setting arbitrates the caller's proposal,
+  and an unusable default is not theirs.
+- **An unsatisfiable constraint is refused at the write rather than discovered at the call.**
+  `minimum=100, maximum=10` constructed without complaint and surfaced later as a refusal of
+  everything, found by whoever called next.
+
+### Added
+- **`ArgumentConstraint.inconsistencies()` and `ConstraintSet.inconsistencies()`** — the
+  write-time self-consistency check, returning one sentence per problem. Four checks: the
+  `pattern` compiles, `minimum` is not above `maximum`, every `allow` member satisfies the
+  constraint's other rules, and a configured `default` satisfies the constraint. The last two
+  delegate to `check()`, so what a grant promises at the write and what the filter enforces at
+  the call cannot drift apart. A structural fault (bad pattern, inverted bounds) short-circuits
+  the value-level probes, which would otherwise restate it once per value.
+  - `GrantStore.grant()` runs it and raises `ConfigurationError`, so a constraint no value
+    could satisfy cannot be stored. Both shipped stores inherit the check.
+  - It is **not** a validator on the model. A store also reads constraints, and refusing at
+    construction would make one bad row already on disk fail the load of every principal in
+    the file. The call path is fail-closed per argument regardless.
+  - `required=True` combined with a `default` is deliberately *not* reported. It looks like a
+    contradiction and is not: `inject_defaults` skips any name the callable does not accept,
+    so a required, defaulted constraint naming a parameter that is not in the signature still
+    raises `DefaultUnavailable` legitimately.
+
+### Changed
+- **`DefaultsResult` carries a third field, `withheld`.** Attribute access is unaffected;
+  code that unpacked the result into exactly two names needs a third.
+
 The remainder of this release is hardening, documentation and CI.
 
 ### Added

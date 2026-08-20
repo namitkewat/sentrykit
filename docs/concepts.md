@@ -123,11 +123,41 @@ A few deliberate sharp edges:
 
 - A default **never overrides** a value that survived filtering. The caller's own valid input
   wins.
+- A default is **checked against its own constraint** before it is injected, and one that
+  fails is withheld rather than applied. Otherwise the way to defeat a constraint would be to
+  stop proposing a value: a supplied value is filtered, an omitted one is filled in, and only
+  the first path would have run a check.
 - `True` does not match an allow-set of `(1,)`, and a `bool` is not a number for range
   purposes — Python would say otherwise, and authorization is the wrong place for that
   surprise.
 - An unparseable `pattern` **rejects the value** and logs once, rather than raising. Filtering
   promises not to raise, so a malformed grant fails closed.
+
+### A constraint has to be satisfiable
+
+Because constraints are data, one can be written that nothing satisfies. `minimum=100,
+maximum=10` is the obvious case; a permitted value the pattern rejects and a default outside
+the allow-set are the quieter ones. Discovered at call time, each is a refusal of everything,
+found by whoever calls next.
+
+`ArgumentConstraint.inconsistencies()` names them, and a grant store runs it **at the write**:
+
+```python
+store.grant(GrantSpec(principal=..., kind="constraint", subject="limit",
+                      constraint=ArgumentConstraint(minimum=100, maximum=10)))
+# ConfigurationError: the constraint on argument 'limit' cannot be satisfied: ...
+```
+
+Four checks: the pattern compiles, `minimum` is not above `maximum`, every `allow` member
+satisfies the constraint's other rules, and a configured `default` satisfies the constraint.
+The last two delegate to the same `check()` the filter runs, so what a grant promises and what
+the filter enforces cannot drift apart.
+
+The check is deliberately **not** a validator on the model itself. A store also *reads*
+constraints, and refusing at construction would make one bad row already on disk fail the load
+of every principal in the file — a wider refusal than the fault deserves. The write is where
+the fault is introduced and where someone is present to fix it; the call path stays fail-closed
+per argument either way.
 
 ## Errors
 

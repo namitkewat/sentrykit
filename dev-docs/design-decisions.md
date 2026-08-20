@@ -415,3 +415,37 @@ The same prefix check closes it, so it needs no separate rule.
 passes an `EntityRef`, which is the only way it ever worked as intended. `ReservedKey` maps to
 403 rather than 400: naming the rejected spelling back to the caller would be telling them
 what to try next.
+
+## ADR-027 — Constraint self-consistency is checked at the grant write, and defaults are checked at the call
+**Decision.** `ArgumentConstraint.inconsistencies()` returns one sentence per way a constraint
+contradicts itself — an uncompilable `pattern`, `minimum` above `maximum`, an `allow` member
+the constraint's own other rules reject, a `default` it would reject. `GrantStore.grant()`
+runs it and raises `ConfigurationError`. Independently, `ConstraintSet.inject_defaults` runs
+`check()` on every default before injecting it and **withholds** one that fails, returning it
+as a third `DefaultsResult` field rather than raising.
+**Why two places.** The write is where the fault is introduced and where an operator is
+present to fix it, so it is the primary defense. But a `ConstraintSet` can also be built in
+code and handed to a `Principal` without a store ever seeing it — the `Principal` constructor
+takes constraints directly, and that is how the examples and half the tests wire them — so the
+decision path cannot assume the write-time check ran.
+**Why the value-level checks delegate to `check()`.** Anything else is a second implementation
+of the same rules, and the two would drift. The cost is that a structural fault makes `check()`
+reject every value, so an uncompilable pattern or inverted bounds short-circuit the value-level
+probes rather than restating the same fault once per allow-set member.
+**Why not a pydantic validator on the model.** A store also *reads* constraints:
+`JsonFileGrantStore` deserializes `ArgumentConstraint` out of its document on every stat-gated
+reload. Refusing at construction would make one bad row already on disk fail the load of
+**every** principal in the file — a refusal far wider than the fault, and one that arrives at
+the worst moment (a restart) rather than at the write. The call path is fail-closed per
+argument regardless, so nothing is lost by allowing the object to exist.
+**Why `required=True` with a `default` is not reported.** It reads like "this can never fail"
+and it is not: `inject_defaults` skips any name not in `spec.parameters`, so a required,
+defaulted constraint naming a parameter the callable does not accept still raises
+`DefaultUnavailable` legitimately. A rule here would flag a working configuration.
+**Why a withheld default is not `arg_handling="strict"`'s business.** `arg_handling` decides
+what happens to the *caller's proposal*. Raising `ArgumentRejected` for an argument the caller
+never mentioned would report an operator's misconfiguration as the caller's mistake and give
+them nothing to change. The withholding is logged at `ERROR`, carried on the envelope and
+written to the audit record instead.
+**Consequence.** `DefaultsResult` gained a third field. Attribute access is unaffected; code
+that unpacked exactly two names needs a third. Pre-1.0, recorded in `CHANGELOG.md`.

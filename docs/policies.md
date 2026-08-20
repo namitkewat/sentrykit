@@ -356,6 +356,24 @@ store.grant(
 Use `action="*"` for a constraint that applies to every action; an action-specific entry
 refines it. See [Concepts](concepts.md) for how the filter and default injection behave.
 
+The store checks the constraint before it stores it. Inverted bounds, an uncompilable pattern,
+a permitted value the constraint's own other rules reject, and a default the constraint would
+refuse are all `ConfigurationError` at the `grant()` call rather than a refusal of every call
+later:
+
+```python
+store.grant(
+    GrantSpec(
+        principal=EntityRef("User", "bob"),
+        kind="constraint",
+        subject="region",
+        constraint=ArgumentConstraint(allow=("eu-west",), default="us-east"),
+    )
+)
+# ConfigurationError: the constraint on argument 'region' cannot be satisfied:
+# the configured default does not satisfy the constraint's own rules: ...
+```
+
 ## Administering grants
 
 The admin surface is governed CRUD over the grant store — and because `Action::"admin.grant"`
