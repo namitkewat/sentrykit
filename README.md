@@ -66,6 +66,11 @@ pip install "sentrykit[pydantic-ai]"  # + Pydantic-AI provider
 pip install "sentrykit[all]"          # everything
 ```
 
+The only pinned core dependency worth knowing about is **`cedarpy >= 4.8, < 5`**: the engine
+parses a policy set, an entity graph and a schema once at wiring time and reuses the handles,
+and releases below 4.8 do not expose those. See
+[which cedarpy](docs/quickstart.md#which-cedarpy).
+
 ## The idea in 20 seconds
 
 ```python

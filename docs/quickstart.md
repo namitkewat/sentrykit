@@ -15,6 +15,26 @@ and per action; the allow or deny at the gate is the first step of that same dec
 pip install sentrykit
 ```
 
+### Which cedarpy
+
+sentrykit requires **`cedarpy >= 4.8, < 5`**, and the floor is load-bearing rather than
+cosmetic. One module talks to the binding, and it does so by name: it parses the policy set,
+the entity graph and the schema **once** at wiring time through `PolicySet`, `Entities` and
+`Schema`, reuses those handles on every decision, and type-checks policy with
+`validate_policies`. cedarpy 4.1 has none of those four names — its `is_authorized` takes
+policy text and entity JSON on every call instead — so a resolver free to choose it installs
+cleanly and then raises `AttributeError` the first time a governor is built.
+
+4.8 is the lowest release confirmed to carry the whole surface. Which release between the two
+introduced it is not pinned down, so the floor sits at the confirmed end of that gap rather
+than at the earliest version that might work.
+
+The upper bound is deliberate too: a Cedar major release is where that surface could change,
+and sentrykit should be re-verified against it rather than silently resolved into it. The test
+suite asserts every name and result shape the engine depends on against whatever cedarpy is
+actually installed, so a dependency drifting below the floor fails a test rather than a
+caller's first protected call.
+
 ## 1. Write the policy
 
 Cedar policy logic lives in files under version control. For a first run a string
