@@ -109,6 +109,97 @@ must happen about a refusal, not about a call.
 result["_authz"]["obligations"]   # ['hmac:account', 'notify:secops']
 ```
 
+## Argument ceilings
+
+Cedar's gate can only **deny**. An argument ceiling is the one thing a policy can declare that
+reaches sentrykit's narrow-and-continue path instead: "you asked for 500, you may have 100,
+here it is at 100" is not expressible as a `forbid`, because a `forbid` refuses the call.
+
+A ceiling is declared in a `@constraints` annotation whose value is a compact JSON object
+mapping an argument name to the rules that bound it:
+
+```
+@id("support-may-search")
+@constraints("{\"limit\": {\"maximum\": 100}, \"region\": {\"allow\": [\"eu\", \"us\"]}}")
+permit (
+  principal in Role::"support",
+  action == Action::"tool.search",
+  resource == Tool::"orders"
+);
+```
+
+The JSON is a Cedar string literal, so its quotes are escaped — that is Cedar's annotation
+grammar, not a sentrykit convention.
+
+A ceiling may set `allow`, `deny`, `pattern`, `minimum`, `maximum` and `required`. It may
+**not** set a `default`: a default is a value, often a per-principal one — someone's tenant id
+— and values belong in grant data, which is why the caller-facing error tells you a default
+exists without telling you what it is.
+
+Narrowing is what happens next. A proposal above the ceiling is rejected like any other
+constraint violation, and under the default `arg_handling="lenient"` the principal's own
+default fills the hole — so a caller who asks for 500 is served at 100 rather than refused:
+
+```python
+plan = governor.plan(spec, principal=support, action=SEARCH, resource=ORDERS,
+                     proposed={"limit": 500, "region": "eu"})
+plan.processed["limit"]      # 100 -- the grant's default, within the policy's ceiling
+plan.rejected[0].policy      # 'support-may-search' -- the reviewed file that bounded it
+```
+
+One interaction to know about: narrowing **refines** a proposal, it does not replace one. If
+every argument the caller supplied is rejected, the call is refused with `NoValidArguments`
+rather than completed from defaults — see [Errors](concepts.md#errors) for why. A ceiling does
+not change that rule; it narrows the part of a proposal that stands.
+
+### A ceiling narrows; it never widens
+
+Policy-declared ceilings and grant-held constraints **intersect**. Allow-sets intersect,
+deny-sets union, bounds move inward, `required` is sticky, and two patterns must both match in
+full. A grant that permits `limit` up to 10 stays capped at 10 under a ceiling of 100 — the
+tighter of the two always applies, in either direction.
+
+That is deliberately inverted relative to Cedar's own semantics, where two permits *widen*
+what is allowed. If you want one policy's bound to override another's, the answer is to write
+the grant row rather than to mark a precedence inside the annotation: a combination order
+expressed in data is the first step toward a combination language, and the reviewed file
+should state the maximum anyone may have.
+
+| | lives in | mutable? | reviewed? |
+| --- | --- | --- | --- |
+| **Ceiling** — nobody's `limit` exceeds 100 for this action | `.cedar` annotation | no, needs a deploy | yes, in git |
+| **Grant** — *this* principal's `limit` is 20, tenant `acme` | grant store | yes, via the admin API | no |
+
+### What is checked, and when
+
+Cedar does not type-check annotation values at all — a policy carrying a nonsense one
+validates clean. So every check is sentrykit's, and every one of them happens **at load**,
+where a bad declaration fails at wiring rather than silently enforcing nothing:
+
+- The value parses as a JSON object of objects.
+- Every rule named is one a ceiling may set. A `default` is refused by name.
+- Every value type-checks, and the resulting constraint is self-consistent — the same check a
+  grant store runs at the write.
+- A declared `pattern` compiles and carries no backreference. A ceiling's pattern is composed
+  with the principal's own, which renumbers its groups.
+- The annotation is on a `permit`. A determining `forbid` has already refused the call, so a
+  ceiling there could never apply, and a silent no-op is exactly what leaves a reviewer
+  believing a bound is enforced.
+
+`sentrykit policy validate` runs the same load, so a broken ceiling fails the command.
+
+One thing sentrykit **cannot** check: a misspelled argument name. `{"limt": {"maximum": 100}}`
+enforces nothing and raises nothing, because `policy validate` reads a directory of policy
+files and never imports your application, so there is no signature to compare against. Ceilings
+name arguments; read them against the callable.
+
+### Ceilings and the fail-open path
+
+A failed Cedar evaluation reports *no* determining policies, so it also reports no ceilings. A
+governor whose bundle declares any ceiling therefore refuses an engine failure under
+**either** fail mode, rather than proceeding unbounded at the moment the engine is least
+trustworthy. See [Fail modes](concepts.md#fail-modes).
+
 ## Composing several sources
 
 ```python

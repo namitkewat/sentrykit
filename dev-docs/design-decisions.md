@@ -449,3 +449,64 @@ them nothing to change. The withholding is logged at `ERROR`, carried on the env
 written to the audit record instead.
 **Consequence.** `DefaultsResult` gained a third field. Attribute access is unaffected; code
 that unpacked exactly two names needs a third. Pre-1.0, recorded in `CHANGELOG.md`.
+
+## ADR-028 — An argument ceiling is a Cedar annotation, ceilings only, intersecting
+**Decision.** A policy may declare argument bounds in a `@constraints` annotation carrying one
+compact JSON object of `{argument: {rule: literal}}`. Parsed at bundle load into
+`PolicyProvenance.ceiling`; applied at decision time to the determining **permit** policies
+only. A ceiling may set `allow`, `deny`, `pattern`, `minimum`, `maximum`, `required` — never
+`default`. Ceilings and grant constraints **intersect**; two determining permits' ceilings
+intersect with each other. A ceiling on a `forbid`, or any malformed declaration, is a
+`ConfigurationError` at load. Under `fail_mode="open"` a governor whose bundle declares any
+ceiling refuses an engine failure rather than proceeding.
+**Why at all, given it adds no predicate power.** Cedar already evaluates `context.args` in a
+`when` clause, so `forbid when { context.args.limit > 100 }` works today. What a ceiling adds
+is *effect* power, not predicate power: a `forbid` can only deny the call, whereas an
+annotation-carried bound reaches narrow-and-continue and default injection. "You asked for
+500, you may have 100, here it is at 100" is not expressible in Cedar at all. That single
+sentence is the whole justification, and it is the reason the feature earns its place given
+that narrow-and-continue is core to the positioning. Secondary and real: it puts the ceiling
+in reviewed, version-controlled text that `policy_set_hash` already digests, so a
+ceiling-driven decision replays. Every constraint before this was mutable grant data an admin
+API could rewrite.
+**Why the plumbing is nearly free.** `PolicyProvenance.annotations` already carried *every*
+annotation, and `PolicyBundle.provenance_for` already joined a decision against them, keyed
+three ways to survive namespacing. `ceilings_for` is a sibling of `obligations_for`. `cedar.py`
+is untouched, so the cedarpy-confinement invariant is unaffected.
+**Why no `default`.** `ArgumentConstraint.describe()` already withholds a default *value* from
+callers on the grounds that a per-principal default can itself be sensitive — someone else's
+tenant id. The repo therefore already classifies `default` as principal-scoped grant data, and
+putting it in a reviewed policy file inverts policies-as-code/grants-as-data. It is also the
+field application developers will ask for first; the answer is the grant row.
+**Why intersection, and why that will be reported as a bug.** Two determining permits producing
+the *intersection* of their ceilings is inverted relative to Cedar's disjunctive permits, so it
+will read as wrong to someone who knows Cedar. It is the security-correct direction and the
+answer to "make this one override" is "write the grant row" — because conceding a precedence
+marker inside the blob is the first step toward a combination language in a data field.
+**Why every check is at load.** Measured: Cedar's `validate_policies` ignores unknown
+annotations entirely — a bogus `@totally_made_up("{...}")` gives `validation_passed=True,
+errors=[]`. Annotation-carried values therefore get *zero* type checking from Cedar, so all of
+it is ours, and the only moment that fails closed is wiring. A declaration checked at decision
+time would sit in a green policy set enforcing nothing.
+**Why a ceiling on a `forbid` is an error rather than a no-op.** A determining `forbid` never
+coexists with an allow, so the ceiling could never apply — and a reviewer reading the file
+would believe a bound was enforced. Silent is the failure mode this whole design is arranged
+against.
+**Why the fail-open refusal is on the path and not at wiring.** `fail_mode` is per-action
+overridable through `override_action`, and `apply_overrides` runs on every authorize, so a
+wiring-time check would be checking a value that changes later.
+**Two limits, stated rather than engineered away.** A misspelled argument name is inert:
+`sentrykit policy validate` reads `.cedar` files and never imports the application, so there is
+no signature to cross-check — that would need a different command. And narrowing refines a
+proposal rather than replacing one: `NoValidArguments` still fires when *every* supplied
+argument was rejected, so a single-argument proposal above the ceiling is refused rather than
+narrowed. Both are documented on the policies page.
+**Alternatives.** An ad-hoc mini-syntax (`"limit<=100,region in eu|us"`) is already a language:
+comparison, membership and alternation operators, and no escaping story. One annotation per
+rule (`@sk_arg_limit_maximum("100")`) dies on Cedar's duplicate-annotation-key error the moment
+two rules share a prefix. The existing `@obligations` encoding survives only because its
+grammar is "split on comma, yield opaque labels" — no operator, no nesting, no
+interpretation — and it should be treated as the maximum ad-hoc encoding this project ever
+ships. The design rule for the JSON is: **no string in the blob is ever re-interpreted as an
+expression.** `{"maximum": "principal.tier_cap"}`, a `$ref`, or a `"when"` key would cross that
+line.

@@ -31,10 +31,11 @@ from sentrykit import (
     protect,
 )
 from sentrykit.audit import verify_chain
-from sentrykit.constraints import ArgumentConstraint
+from sentrykit.constraints import ArgumentConstraint, ConstraintSet
+from sentrykit.engine import ArgumentSpec, Governor
 from sentrykit.errors import ConfigurationError
 from sentrykit.stores import InMemoryAuditSink, InMemoryGrantStore, JsonlAuditSink
-from sentrykit.stores.base import GrantSpec
+from sentrykit.stores.base import GrantSpec, PolicyBundle
 
 ACCOUNT = "ACCT-4417-9930"
 """The raw value `docs/audit.md` promises never reaches the sink."""
@@ -256,6 +257,62 @@ def test_the_store_refuses_the_incoherent_constraint_the_page_prints() -> None:
     message = str(caught.value)
     assert message.startswith("the constraint on argument 'region' cannot be satisfied: ")
     assert "the configured default does not satisfy the constraint's own rules: " in message
+
+
+CEILING_POLICY = (
+    '\n@id("support-may-search")\n'
+    '@constraints("{\\"limit\\": {\\"maximum\\": 100}, '
+    '\\"region\\": {\\"allow\\": [\\"eu\\", \\"us\\"]}}")\n'
+    "permit (\n"
+    '  principal in Role::"support",\n'
+    '  action == Action::"tool.search",\n'
+    '  resource == Tool::"orders"\n'
+    ");\n"
+)
+"""The argument ceiling `docs/policies.md` prints, escaped exactly as the page shows it."""
+
+
+def _search(limit: int = 10, region: str = "eu") -> dict[str, object]:
+    """The callable the ceiling narrows, with the page's two arguments."""
+    return {"limit": limit, "region": region}
+
+
+@pytest.mark.unit
+def test_the_ceiling_on_the_page_narrows_the_call_and_names_the_policy() -> None:
+    """The page promises 100 and 'support-may-search'; both are asserted here."""
+    bundle = PolicyBundle.from_text(
+        CEILING_POLICY,
+        entities=(Entity(EntityRef("Tool", "orders")), Entity(EntityRef("Role", "support"))),
+    )
+    governor = Governor(bundle.engine(), bundle=bundle)
+    support = Principal(
+        id="bob",
+        roles=("support",),
+        constraints={
+            'Action::"tool.search"': ConstraintSet(
+                arguments={"limit": ArgumentConstraint(default=100)}
+            )
+        },
+    )
+
+    plan = governor.plan(
+        ArgumentSpec.from_callable(_search),
+        principal=support,
+        action=EntityRef("Action", "tool.search"),
+        resource=EntityRef("Tool", "orders"),
+        proposed={"limit": 500, "region": "eu"},
+    )
+
+    assert plan.processed["limit"] == 100
+    assert plan.rejected[0].policy == "support-may-search"
+
+
+@pytest.mark.unit
+def test_the_page_is_right_that_a_ceiling_may_not_declare_a_default() -> None:
+    text = CEILING_POLICY.replace('{\\"limit\\"', '{\\"default\\": 5, \\"limit\\"')
+
+    with pytest.raises(ConfigurationError):
+        PolicyBundle.from_text(text)
 
 
 @pytest.mark.unit

@@ -584,8 +584,21 @@ class Governor:
             self._gate(decision, settings, action, resource, principal, context, env)
 
             obligations = self._obligations(decision, allowed=True)
-            constraints = principal.constraints_for(action)
-            kept, rejected = constraints.filter(proposed_arguments)
+            granted = principal.constraints_for(action)
+            ceilings = self._ceilings(decision)
+            # Two views of the same layering, each doing what it is good at. Filtering runs
+            # layer by layer so every rejection keeps the id of the grant or the reviewed
+            # policy that produced it. ``constraints`` is the intersection, and it is what
+            # decides defaults, required arguments and the "here is what you may pass" half
+            # of an error -- questions that need the combined answer rather than a trail.
+            constraints = granted
+            for ceiling in ceilings:
+                constraints = constraints.intersected_with(ceiling)
+
+            kept, rejected = granted.filter(proposed_arguments)
+            for ceiling in ceilings:
+                kept, narrowed = ceiling.filter(kept)
+                rejected += narrowed
             if rejected:
                 self._report_rejections(rejected, settings, context)
 
@@ -675,6 +688,13 @@ class Governor:
         ``fail_mode`` decides whether it also refuses. A plain *policy denial* is normal
         operation, logged at ``INFO``, and refuses under either fail mode.
 
+        ``fail_mode="open"`` has one exception, and it lives here rather than at wiring time
+        because ``fail_mode`` is overridable per action on every call. A failed decision
+        reports *no* determining policies, so every argument ceiling the policy set declares
+        silently stops applying — the call would proceed unbounded at exactly the moment the
+        engine is least trustworthy. A governor over a bundle that declares any ceiling
+        therefore refuses an engine failure under either fail mode.
+
         Args:
             decision: What Cedar returned.
             settings: The effective settings for this action.
@@ -697,7 +717,8 @@ class Governor:
                     "fail_mode": settings.fail_mode,
                 },
             )
-            if settings.fail_mode == "closed":
+            declares_ceilings = self._bundle is not None and self._bundle.declares_ceilings
+            if settings.fail_mode == "closed" or declares_ceilings:
                 self._refuse(
                     decision,
                     settings,
@@ -706,7 +727,12 @@ class Governor:
                     principal,
                     environment,
                     invocation_id=context["invocation_id"],
-                    reason="Authorization engine failed; refused under fail_mode=closed",
+                    reason=(
+                        "Authorization engine failed and the policy set declares argument "
+                        "ceilings, which a failed decision cannot resolve"
+                        if declares_ceilings
+                        else "Authorization engine failed; refused under fail_mode=closed"
+                    ),
                     engine_errors=list(decision.errors),
                 )
             # fail_mode="open": proceed, with the errors preserved in the debug trace.
@@ -876,6 +902,23 @@ class Governor:
     # plus the two calls that reach them. They are no-ops unless a trail was wired, so a bare
     # ``Governor(policy_engine)`` takes exactly the path it would without auditing at all,
     # allocating nothing and touching no masking code.
+
+    def _ceilings(self, decision: CedarDecision) -> tuple[ConstraintSet, ...]:
+        """The argument ceilings declared by the policies that permitted this call.
+
+        Empty for a governor wired without a bundle — a bare
+        :class:`~sentrykit.cedar.PolicyEngine` carries policy text but not the annotation
+        index a ceiling is read out of.
+
+        Args:
+            decision: The Cedar decision, whose determining policies name the declarants.
+
+        Returns:
+            One set per contributing policy, in the order Cedar reported them.
+        """
+        if self._bundle is None:
+            return ()
+        return self._bundle.ceilings_for(decision.determining_policies)
 
     def _obligations(self, decision: CedarDecision, *, allowed: bool) -> tuple[str, ...]:
         """Read the obligations the determining policies attached to this decision.
@@ -1259,6 +1302,12 @@ def merge_environment(
     ``forbid`` can inspect them directly. That last part is the defense in depth: the
     Python-side filter is the enforcement, and an argument-aware ``forbid`` is the backstop
     that catches a filter that was never configured.
+
+    Everything under ``args`` is **caller data**, including its Cedar type where the callable
+    annotates a parameter as an entity reference. A policy that tests such an argument has to
+    pin the type it expects, because Cedar's ``in`` is reflexive and a caller who names the
+    group is trivially in it; :func:`~sentrykit.cedar.coerce_value` states the rule and the
+    three ways to hold it.
 
     Args:
         ambient: The environment established at the boundary.

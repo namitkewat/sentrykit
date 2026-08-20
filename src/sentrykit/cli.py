@@ -64,7 +64,13 @@ from sentrykit.envelope import ENVELOPE_KEY, last_envelope
 from sentrykit.errors import ConfigurationError, SentrykitError
 from sentrykit.policy.loader import pack_root
 from sentrykit.registry import build_audit_sink, build_grant_store
-from sentrykit.stores.base import WILDCARD_ACTION, AuditWindow, GrantSpec, SupportsClose
+from sentrykit.stores.base import (
+    WILDCARD_ACTION,
+    AuditWindow,
+    GrantSpec,
+    PolicyBundle,
+    SupportsClose,
+)
 
 if TYPE_CHECKING:  # pragma: no cover - imported for annotations only
     from collections.abc import Iterable, Mapping, Sequence
@@ -700,6 +706,10 @@ def _validate_policies(args: argparse.Namespace) -> int:
     unparseable, unformatted = _lint(files)
 
     file_errors: list[str] = []
+    # Cedar's validator ignores unknown annotations entirely, so an argument ceiling declared
+    # in one is type-checked by nobody unless this command does it. Reported as a file-level
+    # error because the message names the policy itself.
+    ceiling_error = _ceiling_error(combined)
     policy_errors: dict[str, list[str]] = {}
     validated = schema_path is not None
     passed = False
@@ -718,6 +728,8 @@ def _validate_policies(args: argparse.Namespace) -> int:
         f"  schema:   {schema_path.name if schema_path is not None else 'none found'}",
     ]
     lines += [f"  error: the policy set does not parse: {message}" for message in file_errors]
+    if ceiling_error is not None:
+        lines.append(f"  error: {ceiling_error}")
     lines += [f"  error: {name} does not parse" for name in unparseable]
     lines += [
         f"  error: policy {policy_id!r}: {message}"
@@ -730,7 +742,12 @@ def _validate_policies(args: argparse.Namespace) -> int:
             for name in unformatted
         ]
 
-    if not validated:
+    if ceiling_error is not None:
+        # An argument ceiling that will not load is a refusal at wiring time, so it fails the
+        # command whether or not a schema was there to type-check the rest.
+        lines.append("  validation: failed - an argument ceiling does not load")
+        exit_code = EXIT_FAILED
+    elif not validated:
         lines.append(
             f"  validation: skipped - no {SCHEMA_GLOB} in the directory and no --schema; "
             "nothing was type-checked"
@@ -758,6 +775,7 @@ def _validate_policies(args: argparse.Namespace) -> int:
             "validated": validated,
             "passed": passed if validated else None,
             "file_errors": file_errors,
+            "ceiling_error": ceiling_error,
             "unparseable": list(unparseable),
             "policy_errors": policy_errors,
             "unformatted": list(unformatted) if format_check else [],
@@ -767,6 +785,28 @@ def _validate_policies(args: argparse.Namespace) -> int:
         lines=lines,
     )
     return exit_code
+
+
+def _ceiling_error(policies: str) -> str | None:
+    """Report the first unloadable ``@constraints`` ceiling in ``policies``, if any.
+
+    Building a bundle is what parses ceilings, and it is the same call a governor makes at
+    wiring — so this asks the question in exactly the form a deployment will.
+
+    Args:
+        policies: The concatenated policy text.
+
+    Returns:
+        The message, or ``None`` when every declared ceiling loads. A text that does not
+        parse at all returns ``None``: that is the schema validator's finding to report, and
+        saying it twice in different words helps nobody.
+    """
+    try:
+        PolicyBundle.from_text(policies)
+    except ConfigurationError as exc:
+        message = str(exc)
+        return message if "ceiling" in message else None
+    return None
 
 
 def _schema_for(directory: Path, requested: str | None) -> Path | None:

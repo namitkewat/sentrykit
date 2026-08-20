@@ -52,6 +52,52 @@ All notable changes to this project are documented here. Format follows
   everything, found by whoever called next.
 
 ### Added
+- **Argument ceilings: a reviewed Cedar policy can now declare what any principal may pass.**
+  A `@constraints` annotation carries a compact JSON object of `{argument: {rule: value}}`,
+  and the declared bounds reach sentrykit's narrow-and-continue path — the one thing Cedar's
+  gate structurally cannot express, because a `forbid` can only refuse the call. "You asked
+  for 500, you may have 100, here it is at 100" is now expressible in version-controlled,
+  hash-covered policy text rather than only in mutable grant data.
+
+  ```
+  @id("support-may-search")
+  @constraints("{\"limit\": {\"maximum\": 100}, \"region\": {\"allow\": [\"eu\", \"us\"]}}")
+  permit (principal in Role::"support", action == Action::"tool.search", resource == Tool::"orders");
+  ```
+
+  - **Ceilings only.** A ceiling may set `allow`, `deny`, `pattern`, `minimum`, `maximum` and
+    `required`. It may **not** set a `default`: a default is a value, often a per-principal
+    one, and the caller-facing error already treats default values as grant data by telling a
+    caller one exists without telling them what it is.
+  - **Intersecting, never widening.** Policy-declared ceilings and grant-held constraints
+    intersect — allow-sets intersect, deny-sets union, bounds move inward, `required` is
+    sticky, two patterns must both match in full. Two determining permits intersect too,
+    which is inverted relative to Cedar's disjunctive permits and is the security-correct
+    direction. New: `ArgumentConstraint.intersected_with` and
+    `ConstraintSet.intersected_with`, the counterparts to the overriding `merged_with`.
+  - **Everything is checked at load.** Cedar's validator ignores unknown annotations
+    entirely, so a nonsense declaration would otherwise sit in a validated policy set
+    enforcing nothing. `PolicyBundle.from_text` raises `ConfigurationError` on a value that is
+    not a JSON object of objects, a rule a ceiling may not set, a value of the wrong type, a
+    constraint no value could satisfy, a pattern that will not compile or that carries a
+    backreference, an empty declaration, and a ceiling attached to a `forbid` — which could
+    never apply, since a determining `forbid` has already refused the call.
+    `sentrykit policy validate` runs the same load and fails on a broken one.
+  - **The fail-open path refuses when the bundle declares any ceiling.** A failed evaluation
+    reports no determining policies and therefore no ceilings, so the call would proceed
+    unbounded at exactly the moment the engine is least trustworthy. The check lives on the
+    fail-open path rather than at wiring, because `fail_mode` is overridable per action on
+    every call.
+  - Rejections keep per-layer provenance: filtering runs layer by layer, so a rejection names
+    the reviewed policy or the grant that produced it, while the intersected set decides
+    defaults, required arguments and the "here is what you may pass" half of an error.
+  - New: `PolicyProvenance.ceiling`, `PolicyBundle.ceilings_for`,
+    `PolicyBundle.declares_ceilings`, `CONSTRAINTS_ANNOTATION`, `CEILING_RULES`,
+    `parse_ceiling`.
+  - One thing sentrykit cannot check, stated in the docs rather than engineered away: a
+    misspelled argument name in a declaration is inert. `policy validate` reads a directory of
+    policy files and never imports the application, so there is no signature to compare
+    against.
 - **`ArgumentConstraint.inconsistencies()` and `ConstraintSet.inconsistencies()`** — the
   write-time self-consistency check, returning one sentence per problem. Four checks: the
   `pattern` compiles, `minimum` is not above `maximum`, every `allow` member satisfies the

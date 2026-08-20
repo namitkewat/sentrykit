@@ -33,13 +33,15 @@ from typing import TYPE_CHECKING, Final, Literal, Protocol, runtime_checkable
 from pydantic import BaseModel, ConfigDict, Field
 
 from sentrykit.cedar import Entity, EntityRef, PolicyAnnotation, PolicyEngine, policy_annotations
-from sentrykit.constraints import ArgumentConstraint
+from sentrykit.constraints import ArgumentConstraint, ConstraintSet, parse_ceiling
 from sentrykit.context import Principal
+from sentrykit.errors import ConfigurationError
 
 if TYPE_CHECKING:  # pragma: no cover - imported for annotations only, and audit imports us
     from sentrykit.audit import AuthzAuditRecord
 
 __all__ = [
+    "CONSTRAINTS_ANNOTATION",
     "OBLIGATIONS_ANNOTATION",
     "WILDCARD_ACTION",
     "AuditSink",
@@ -76,6 +78,13 @@ One comma-separated value, because Cedar rejects a repeated annotation key outri
 (``ValueError: duplicate annotation``).
 """
 
+CONSTRAINTS_ANNOTATION: Final = "constraints"
+"""The Cedar annotation an argument ceiling is declared in.
+
+One JSON object per policy, for the reason ``@obligations`` carries one comma-separated
+value: Cedar rejects a repeated annotation key outright.
+"""
+
 WILDCARD_ACTION: Final = "*"
 """Constraint key meaning "every action", matching :mod:`sentrykit.context`'s spelling."""
 
@@ -101,6 +110,9 @@ class PolicyProvenance:
         origin: Artifact-level provenance — a file path, an S3 version id, a git commit.
         annotations: Every annotation on the policy.
         obligations: The parsed ``@obligations`` annotation, split and stripped.
+        ceiling: The parsed ``@constraints`` annotation -- the argument bounds this policy
+            declares -- or ``None`` when it declares none. Parsed once at load, never at
+            decision time, so a malformed declaration fails at wiring.
     """
 
     cedar_id: str
@@ -110,6 +122,7 @@ class PolicyProvenance:
     origin: str = ""
     annotations: Mapping[str, str | None] = field(default_factory=dict)
     obligations: tuple[str, ...] = ()
+    ceiling: ConstraintSet | None = None
 
     def as_record(self) -> dict[str, object]:
         """Render for the audit record's ``provenance`` list.
@@ -240,6 +253,41 @@ class PolicyBundle:
                 collected.setdefault(obligation, None)
         return tuple(collected)
 
+    def ceilings_for(self, determining: Sequence[str]) -> tuple[ConstraintSet, ...]:
+        """Collect the argument ceilings declared by the policies that permitted a call.
+
+        Cedar's gate can only *deny*. A ceiling reaches sentrykit's narrow-and-continue path
+        instead, so "you asked for 500, you may have 100, here it is at 100" becomes
+        expressible in the reviewed policy file rather than only in mutable grant data.
+
+        Only determining **permit** policies contribute. A determining ``forbid`` never
+        coexists with an allow, so a ceiling there could never apply -- which is why one is
+        refused at load rather than ignored here.
+
+        Args:
+            determining: The determining policy names from the decision.
+
+        Returns:
+            One entry per contributing policy, in the order reported. Returned separately
+            rather than pre-merged so the caller decides how they compose; they intersect,
+            because a second layer may only narrow.
+        """
+        return tuple(
+            entry.ceiling
+            for entry in self.provenance_for(determining)
+            if entry.effect == "permit" and entry.ceiling is not None
+        )
+
+    @property
+    def declares_ceilings(self) -> bool:
+        """Whether any policy in this bundle declares an argument ceiling.
+
+        Read on the fail-open path. A ``no-decision`` reports *no* determining policies, so
+        every ceiling in the bundle silently stops applying at exactly the moment the engine
+        is least trustworthy. A governor over a bundle that declares any refuses instead.
+        """
+        return any(entry.ceiling is not None for entry in self.provenance)
+
     @classmethod
     def from_text(
         cls,
@@ -267,7 +315,10 @@ class PolicyBundle:
             The bundle, with :attr:`bundle_hash` computed.
 
         Raises:
-            ConfigurationError: If the policy text does not parse.
+            ConfigurationError: If the policy text does not parse, or if a policy declares a
+                malformed ``@constraints`` ceiling. Cedar type-checks annotation values not
+                at all, so a bad one would otherwise sit in a validated policy set enforcing
+                nothing.
         """
         # One parse of one string produces both halves: the annotation index is keyed by
         # Cedar's *positional* generated ids, so deriving it from anything other than the
@@ -776,22 +827,40 @@ def _provenance_of(
         namespace: Prefix for the declared id, per :meth:`PolicyBundle.from_text`.
 
     Returns:
-        The entry, with the ``@obligations`` annotation split on commas and stripped. An
-        empty segment is dropped, so a trailing comma is not an obligation named ``""``.
+        The entry, with the ``@obligations`` annotation split on commas and stripped (an
+        empty segment is dropped, so a trailing comma is not an obligation named ``""``) and
+        the ``@constraints`` annotation parsed into a ceiling.
+
+    Raises:
+        ConfigurationError: If a ``@constraints`` declaration is malformed, or is attached to
+            a ``forbid``.
     """
     declared = annotation.declared_id
+    policy_id = f"{namespace}/{declared}" if namespace else declared
     declared_obligations = annotation.annotation(OBLIGATIONS_ANNOTATION)
     obligations = (
         tuple(part.strip() for part in declared_obligations.split(",") if part.strip())
         if declared_obligations
         else ()
     )
+    ceiling: ConstraintSet | None = None
+    if CONSTRAINTS_ANNOTATION in annotation.annotations:
+        if annotation.effect == "forbid":
+            # Dead metadata, and dangerous as a silent no-op: a reviewer reading the file
+            # believes the bound is enforced. A forbid that is determining has already
+            # refused the call, so there is no narrowed call left to bound.
+            raise ConfigurationError(
+                f"policy {policy_id!r} is a forbid and cannot declare an argument ceiling; "
+                "a ceiling narrows a call that proceeds"
+            )
+        ceiling = parse_ceiling(annotation.annotations[CONSTRAINTS_ANNOTATION], policy=policy_id)
     return PolicyProvenance(
         cedar_id=annotation.cedar_id,
-        policy_id=f"{namespace}/{declared}" if namespace else declared,
+        policy_id=policy_id,
         effect=annotation.effect,
         source=source,
         origin=origin,
         annotations=dict(annotation.annotations),
         obligations=obligations,
+        ceiling=ceiling,
     )

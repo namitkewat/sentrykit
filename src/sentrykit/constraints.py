@@ -23,20 +23,25 @@ proposed must not be a way around the rule that governs it.
 
 from __future__ import annotations
 
+import json
 import logging
 import re
-from collections.abc import Collection, Mapping
+from collections.abc import Callable, Collection, Mapping
 from typing import Final, Literal, NamedTuple
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
+
+from sentrykit.errors import ConfigurationError
 
 __all__ = [
+    "CEILING_RULES",
     "ArgumentConstraint",
     "ConstraintSet",
     "DefaultsResult",
     "FilterResult",
     "RejectedArgument",
     "Rule",
+    "parse_ceiling",
 ]
 
 _LOGGER: Final = logging.getLogger("sentrykit.constraints")
@@ -96,6 +101,54 @@ def _as_number(value: object) -> int | float | None:
     if isinstance(value, int | float):
         return value
     return None
+
+
+def _union(
+    first: tuple[object, ...] | None, second: tuple[object, ...] | None
+) -> tuple[object, ...] | None:
+    """Combine two deny-sets, preserving first-seen order and dropping repeats."""
+    if first is None or second is None:
+        return first if first is not None else second
+    combined = list(first)
+    combined += [
+        member for member in second if not any(_same_value(member, seen) for seen in combined)
+    ]
+    return tuple(combined)
+
+
+def _tighter(
+    first: int | float | None,
+    second: int | float | None,
+    *,
+    loosen: Callable[[int | float, int | float], int | float],
+) -> int | float | None:
+    """Return whichever bound is tighter, or the only one that is set.
+
+    ``loosen`` is the function that would *widen* the bound -- ``min`` for a lower bound and
+    ``max`` for an upper one -- so whichever value it does not pick is the tighter one.
+    """
+    if first is None or second is None:
+        return first if first is not None else second
+    return second if loosen(first, second) == first else first
+
+
+def _both_patterns(first: str | None, second: str | None) -> str | None:
+    """Return a pattern matching exactly the strings that both of these match in full.
+
+    Each side is asserted as a zero-width lookahead anchored at the end of the string, which
+    is what :meth:`ArgumentConstraint.check`'s ``fullmatch`` means, and a permissive
+    consuming tail satisfies the match itself. Composing this way rather than concatenating
+    keeps each pattern's own anchors and alternation inside its own group.
+
+    A capturing group in either pattern is renumbered by the composition, so a backreference
+    would resolve to the wrong group. :func:`parse_ceiling` refuses a declared pattern
+    carrying one, which is the layer that can: a pattern in a grant is the operator's own.
+    """
+    if first is None or second is None:
+        return first if first is not None else second
+    if first == second:
+        return first
+    return f"(?=(?:{first})\\Z)(?=(?:{second})\\Z)(?s:.*)"
 
 
 Rule = Literal["allow-set", "deny-set", "pattern", "minimum", "maximum", "not-comparable"]
@@ -287,6 +340,54 @@ class ArgumentConstraint(BaseModel):
 
         return None
 
+    def intersected_with(self, other: ArgumentConstraint) -> ArgumentConstraint:
+        """Return the constraint satisfying both this one and ``other``.
+
+        The counterpart to :meth:`ConstraintSet.merged_with`, which *overrides*. Layering a
+        ceiling declared in reviewed policy text over a principal's grant must never widen
+        what they may pass, so every rule composes in the tightening direction: allow-sets
+        intersect, deny-sets union, bounds move inward, ``required`` is sticky, and two
+        patterns must both match in full.
+
+        ``default`` and ``policy`` come from the receiver where it has them. A ceiling
+        declares no default -- a per-principal default is grant data, not reviewed logic --
+        and the receiver's ``policy`` names the specific, per-principal layer, while the
+        layer being intersected in is already named by the decision's determining policies,
+        which the envelope and the audit record carry.
+
+        Args:
+            other: The constraint to narrow by.
+
+        Returns:
+            A constraint no value satisfies unless it satisfies both. It may well be
+            unsatisfiable -- two disjoint allow-sets intersect to none, and nothing then
+            passes, which is the fail-closed direction.
+        """
+        fields: dict[str, object] = {
+            "deny": _union(self.deny, other.deny),
+            "pattern": _both_patterns(self.pattern, other.pattern),
+            "minimum": _tighter(self.minimum, other.minimum, loosen=min),
+            "maximum": _tighter(self.maximum, other.maximum, loosen=max),
+            "required": self.required or other.required,
+            "policy": self.policy or other.policy,
+        }
+        if self.allow is None or other.allow is None:
+            fields["allow"] = self.allow if self.allow is not None else other.allow
+        else:
+            fields["allow"] = tuple(
+                member
+                for member in self.allow
+                if any(_same_value(member, permitted) for permitted in other.allow)
+            )
+        # Named only when one side configured one, because ``has_default`` is read off
+        # ``model_fields_set``: naming the field unconditionally would turn "no default" into
+        # "a default of None" and start injecting it.
+        if self.has_default:
+            fields["default"] = self.default
+        elif other.has_default:
+            fields["default"] = other.default
+        return ArgumentConstraint.model_validate(fields)
+
     def inconsistencies(self) -> tuple[str, ...]:
         """Every way this constraint contradicts itself, as sentences an operator can act on.
 
@@ -398,6 +499,28 @@ class ConstraintSet(BaseModel):
         which keeps "what applies here" answerable by reading one object.
         """
         return ConstraintSet(arguments={**self.arguments, **other.arguments})
+
+    def intersected_with(self, other: ConstraintSet) -> ConstraintSet:
+        """Return the set satisfying both, argument by argument.
+
+        Where both sets constrain an argument, the two constraints intersect; where only one
+        does, that one applies unchanged. Unlike :meth:`merged_with` this can only ever
+        narrow, which is what makes it the safe direction for layering a ceiling declared in
+        reviewed policy text over a principal's grants.
+
+        Args:
+            other: The set to narrow by.
+
+        Returns:
+            The intersected set.
+        """
+        arguments = dict(self.arguments)
+        for name, constraint in other.arguments.items():
+            existing = arguments.get(name)
+            arguments[name] = (
+                constraint if existing is None else existing.intersected_with(constraint)
+            )
+        return ConstraintSet(arguments=arguments)
 
     def filter(self, proposed: Mapping[str, object]) -> FilterResult:
         """Split proposed arguments into those the policy accepts and those it does not.
@@ -522,3 +645,111 @@ class ConstraintSet(BaseModel):
     def describe(self) -> dict[str, object]:
         """Summarize every constraint, for the allowed-set half of an error payload."""
         return {name: constraint.describe() for name, constraint in self.arguments.items()}
+
+
+CEILING_RULES: Final = ("allow", "deny", "pattern", "minimum", "maximum", "required")
+"""The rules a policy-declared ceiling may set.
+
+``default`` is absent on purpose. :meth:`ArgumentConstraint.describe` already withholds a
+default *value* from callers because a per-principal default can itself be sensitive -- it is
+someone's tenant id, not a rule -- so it is grant data, and reviewed policy text is where
+rules live. ``policy`` is absent because sentrykit fills it in with the id of the policy that
+carried the declaration; a self-reported provenance would be unverifiable.
+"""
+
+_BACKREFERENCE: Final = re.compile(r"\\[1-9]")
+"""A numbered backreference, which cannot survive being composed with another pattern."""
+
+
+def parse_ceiling(declaration: str | None, *, policy: str) -> ConstraintSet:
+    """Parse an argument ceiling declared in reviewed policy text.
+
+    A ceiling is a compact JSON object mapping an argument name to the rules that bound it::
+
+        {"limit": {"maximum": 100}, "region": {"allow": ["eu", "us"]}}
+
+    It reaches sentrykit as a Cedar annotation value, and Cedar type-checks annotation values
+    not at all -- a policy carrying a nonsense one validates clean. Every check is therefore
+    ours, and every one of them happens **here**, at load, so a malformed declaration fails
+    at wiring rather than silently enforcing nothing at decision time.
+
+    Args:
+        declaration: The annotation's value. A valueless annotation arrives as ``None``.
+        policy: Id of the policy that carried it, recorded on every constraint so a rejection
+            names the reviewed file it came from.
+
+    Returns:
+        The declared ceiling.
+
+    Raises:
+        ConfigurationError: If the declaration is absent, is not a JSON object of objects,
+            names a rule a ceiling may not set, carries a value of the wrong type, declares a
+            pattern that will not compile or that carries a backreference, or describes a
+            constraint no value could satisfy.
+    """
+    if declaration is None or not declaration.strip():
+        # An annotation that declares nothing enforces nothing, and a reviewer reading the
+        # file would believe a ceiling exists. That is the silent failure this whole function
+        # is arranged to prevent, so it is an error rather than an empty set.
+        raise ConfigurationError(f"policy {policy!r} declares an empty argument ceiling")
+
+    try:
+        parsed = json.loads(declaration)
+    except json.JSONDecodeError as exc:
+        raise ConfigurationError(
+            f"policy {policy!r} declares an argument ceiling that is not valid JSON: {exc}"
+        ) from exc
+    if not isinstance(parsed, dict):
+        raise ConfigurationError(
+            f"policy {policy!r} declares an argument ceiling that is not a JSON object; "
+            'expected {"<argument>": {"<rule>": <value>}}'
+        )
+
+    arguments: dict[str, ArgumentConstraint] = {}
+    for name, rules in parsed.items():
+        if not isinstance(rules, dict):
+            raise ConfigurationError(
+                f"policy {policy!r} declares a ceiling for argument {name!r} that is not a "
+                "JSON object of rules"
+            )
+        for rule in rules:
+            if rule not in CEILING_RULES:
+                raise ConfigurationError(
+                    f"policy {policy!r} declares {rule!r} for argument {name!r}; a ceiling "
+                    f"may set only {', '.join(CEILING_RULES)}"
+                    + (
+                        " -- a default is per-principal grant data, not reviewed logic"
+                        if rule == "default"
+                        else ""
+                    )
+                )
+        # Sequences arrive from JSON as lists; the model wants tuples, and coercing here
+        # keeps the error below about the *rule* rather than about a container type.
+        fields: dict[str, object] = {
+            rule: tuple(value) if isinstance(value, list) else value
+            for rule, value in rules.items()
+        }
+        try:
+            constraint = ArgumentConstraint.model_validate({**fields, "policy": policy})
+        except ValidationError as exc:
+            raise ConfigurationError(
+                f"policy {policy!r} declares a ceiling for argument {name!r} that does not "
+                f"type-check: {exc.errors()[0]['msg']}"
+            ) from exc
+        if constraint.pattern is not None and _BACKREFERENCE.search(constraint.pattern):
+            raise ConfigurationError(
+                f"policy {policy!r} declares a pattern carrying a backreference for argument "
+                f"{name!r}; a ceiling's pattern is composed with the principal's own, which "
+                "renumbers its groups"
+            )
+        problems = constraint.inconsistencies()
+        if problems:
+            raise ConfigurationError(
+                f"policy {policy!r} declares a ceiling for argument {name!r} that cannot be "
+                "satisfied: " + "; ".join(problems)
+            )
+        arguments[name] = constraint
+
+    if not arguments:
+        raise ConfigurationError(f"policy {policy!r} declares an empty argument ceiling")
+    return ConstraintSet(arguments=arguments)

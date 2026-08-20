@@ -133,6 +133,21 @@ A few deliberate sharp edges:
 - An unparseable `pattern` **rejects the value** and logs once, rather than raising. Filtering
   promises not to raise, so a malformed grant fails closed.
 
+### Two layers: the grant and the ceiling
+
+Constraints reach a decision from two places, and they **intersect**:
+
+- a **grant** in the store says what *this principal* may pass — mutable, per-principal, and
+  the only layer that can carry a `default`;
+- a **ceiling** declared in a reviewed `.cedar` file says what *anybody* may pass for that
+  action — version-controlled, covered by the policy-set hash, and unable to widen anything.
+
+Because intersection can only narrow, the reviewed file states the maximum and the store
+states what each principal actually has. A ceiling is also the one thing a policy can declare
+that reaches narrow-and-continue rather than the gate: Cedar can only deny, so "you asked for
+500, you may have 100, here it is at 100" has nowhere else to live. See
+[Argument ceilings](policies.md#argument-ceilings).
+
 ### A constraint has to be satisfiable
 
 Because constraints are data, one can be written that nothing satisfies. `minimum=100,
@@ -193,14 +208,43 @@ Conflating a policy denial with an engine failure would let a typo in a policy q
 door. `AuthzDenied.engine_errors` is populated only in the last row, so an operator can tell
 a correctly enforced boundary from a broken policy set.
 
+The last row has one exception. A failed evaluation reports no determining policies, so it
+also reports no [argument ceilings](policies.md#argument-ceilings) — the call would proceed
+*unbounded*. A governor whose policy set declares any ceiling therefore refuses an engine
+failure under either fail mode.
+
 `fail_mode="open"` exists to tolerate *operator* error — a policy set that will not evaluate
 should not take an application down with it. It is not a tolerance for caller input, which is
 why the boundary below is enforced ahead of the gate rather than through it.
 
-## What may become an entity reference
+## Arguments as policy input
 
 The proposed arguments are exposed to policy as `context.args`, so a Cedar `forbid` can
-inspect them directly:
+inspect them directly. That backstop is defense in depth: the Python-side filter is the
+enforcement, and the `forbid` catches a filter that was never configured.
+
+Everything in `context.args` is **caller data**. Two consequences follow, and the second one
+is the sharp edge.
+
+### Supplied data cannot spell Cedar's escape forms
+
+Cedar's request JSON reserves record keys beginning with `__` for its own escape forms:
+`__entity` promotes a record into a typed entity reference, `__extn` into an extension value.
+sentrykit refuses any supplied mapping that spells one, anywhere in the request, with
+`ReservedKey` — so a `dict`-valued argument cannot promote itself into a typed entity.
+
+The refusal is deliberately not routed through `fail_mode`: it happens before Cedar is
+consulted, so there is no engine failure for `open` to tolerate.
+
+### An entity-valued argument lets the caller choose the entity — *type included*
+
+If your callable annotates a parameter as `EntityRef`, you have said that the caller names an
+entity, and every web and agent integration validates the caller's JSON against that
+annotation **before** the decorator runs. `{"type": "Region", "id": "eu"}` therefore reaches
+policy as a genuine `Region::"eu"` — and `{"type": "Group", "id": "approved"}` reaches it as a
+genuine `Group::"approved"`, because the caller picked the type too.
+
+That matters because Cedar's `in` is reflexive, so this looks like a guard and is not one:
 
 ```
 @id("region-must-be-approved")
@@ -208,18 +252,29 @@ forbid (principal, action, resource)
 when { context.args has region && !(context.args.region in Group::"approved") };
 ```
 
-That backstop is defense in depth: the Python-side filter is the enforcement, and the
-`forbid` catches a filter that was never configured. For it to mean anything, a caller must
-not be able to choose what *type* their argument has.
+A caller who passes the *approved group itself* as the region is trivially "in" it, and the
+`forbid` does not fire. **Pin the type.** Cedar's `is` operator is the whole fix:
 
-Cedar's request JSON reserves record keys beginning with `__` for its own escape forms —
-`__entity` promotes a record into a typed entity reference, `__extn` into an extension value.
-So sentrykit refuses any supplied mapping that spells one, anywhere in the request, with
-`ReservedKey`. Only an `EntityRef` your application constructed becomes an entity reference.
+```
+@id("region-must-be-approved")
+forbid (principal, action, resource)
+when {
+  context.args has region &&
+  !(context.args.region is Region && context.args.region in Group::"approved")
+};
+```
 
-The refusal is deliberately not routed through `fail_mode`: it happens before Cedar is
-consulted, so there is no engine failure for `open` to tolerate. Nothing legitimate is lost —
-pass `EntityRef("Region", "eu")` and it reaches policy as a genuine `Region::"eu"`.
+Two further defenses, either of which also closes it, and which compose:
+
+- **Bound the argument.** An allow-set of `EntityRef` values in a grant, or an
+  [argument ceiling](policies.md#argument-ceilings) in the policy, decides which entities the
+  caller may name before Cedar ever sees the value.
+- **Declare a Cedar schema.** A schema saying `args.region` is a `Region` makes the mismatched
+  request fail to parse at all, which is `no-decision` — refused under the default
+  `fail_mode="closed"`.
+
+If a parameter is not meant to be caller-chosen, do not annotate it as an `EntityRef`: build
+the reference in your own code from something you trust.
 
 ## Verbosity
 
