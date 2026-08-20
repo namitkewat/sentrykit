@@ -6145,7 +6145,7 @@ packages:
 - pypi: .
   name: sentrykit
   requires_dist:
-  - cedarpy>=4.1
+  - cedarpy>=4.8,<5
   - pydantic-settings>=2.2
   - pydantic>=2.7
   - typing-extensions>=4.10
