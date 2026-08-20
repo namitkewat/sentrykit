@@ -20,7 +20,7 @@ sentrykit = { path = ".", editable = true }
 
 # ---- Feature: core runtime (always on) -------------------------------------
 [feature.core.pypi-dependencies]
-cedarpy = ">=4.1"
+cedarpy = ">=4.8,<5"
 pydantic = ">=2.7"
 pydantic-settings = ">=2.2"
 typing-extensions = ">=4.10"

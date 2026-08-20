@@ -176,6 +176,18 @@ packaging, documentation and CI.
   instead of two copies, with isolation unchanged.
 
 ### Fixed
+- **The declared `cedarpy` floor was `>=4.1`, which does not have the API the engine calls.**
+  `sentrykit.cedar` parses the policy set, the entity graph and the schema once at wiring time
+  through `PolicySet`, `Entities` and `Schema`, reuses those handles per decision, and
+  type-checks policy with `validate_policies`. cedarpy 4.1 exposes none of those four names —
+  measured against the 4.1.0 wheel, where `is_authorized` takes policy text and entity JSON on
+  every call instead — so a resolver free to pick it installed cleanly and then raised
+  `AttributeError` the first time a governor was built. The requirement is now
+  `cedarpy>=4.8,<5` in both `pyproject.toml` and `pixi.toml`: 4.8 is the lowest release
+  confirmed to carry the whole surface, and the upper bound keeps a Cedar major an explicit
+  decision rather than a silent resolve. **`pixi.lock` has to be regenerated on Linux** — the
+  twelve `linux-64`-only environments make `pixi lock` unsolvable from `win-64`, and the lock
+  records the old requirement string in the editable package's `requires_dist`.
 
 - **An injected default is now checked against its own constraint.** The filter checked a
   *supplied* value and default injection checked nothing, so the way to defeat a constraint
