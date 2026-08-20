@@ -5,8 +5,34 @@ All notable changes to this project are documented here. Format follows
 
 ## [Unreleased]
 
-Release hardening. No library capability was added or changed except the one behaviour noted
-under *Changed*; everything else is packaging, documentation and CI.
+### Security
+- **Cedar's reserved `__` escape keys can no longer be spelled by a caller.**
+  `coerce_value` recursed into supplied mappings without filtering them, so a dict-valued
+  argument could carry `{"__entity": {"type": "Group", "id": "approved"}}` and reach the
+  evaluator as a genuine `Group::"approved"`. Against the argument-aware `forbid` backstop
+  the docs describe — `forbid ... when { !(context.args.region in Group::"approved") }` —
+  that produced a **clean allow with no engine error**, because Cedar's `in` is reflexive
+  and passing the approved group itself satisfies it. `fail_mode="closed"` could not see it:
+  `CedarDecision.failed` was `False`. A Cedar schema declaring `context.args` contained the
+  escalation, but `PolicyEngine`'s `schema` parameter is optional and the shipped
+  `pack.cedarschema` declares no `context.args` member, so a deployment using argument-aware
+  policies could not straightforwardly have one.
+  - Any key beginning with `__` — the whole reserved prefix, not just the two spellings
+    Cedar defines today — now raises the new `ReservedKey` error, checked before the value
+    is coerced and at any nesting depth (inside a list, inside a nested record).
+  - Dropping the key was rejected as a fix because it silently turns off a `forbid` that
+    tests `context.args has ...`; escaping it was rejected because the forgery would then
+    fail only as a Cedar *type* error, which `fail_mode="open"` tolerates. Refusing is the
+    only option that holds under both fail modes, and the refusal is raised ahead of the
+    gate so there is no engine failure for `open` to arbitrate.
+  - The refusal is audited as an ordinary denial, so a forged request leaves a record.
+  - `EntityRef` is unaffected: it has its own trusted path to the `{"__entity": ...}` form,
+    and remains the only way to hand Cedar an entity reference.
+  - The sibling `__extn` form is closed by the same check. It was the less severe of the two
+    — it produced an engine error, so `fail_mode="closed"` already refused it — and was a
+    live bypass only under `fail_mode="open"`.
+
+The remainder of this release is hardening, documentation and CI.
 
 ### Added
 - **A Sphinx documentation system** replacing mkdocs, producing four artifacts from the

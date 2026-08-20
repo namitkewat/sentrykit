@@ -79,6 +79,7 @@ from sentrykit.errors import (
     DefaultUnavailable,
     NoContext,
     NoValidArguments,
+    ReservedKey,
     SentrykitError,
     ValidationFailed,
 )
@@ -143,6 +144,10 @@ STATUS_BY_ERROR: Final[Mapping[type[BaseException], int]] = {
     # otherwise would send callers to a scheme it knows nothing about.
     AuthzDenied: 403,
     NoContext: 403,
+    # A supplied value spelled one of Cedar's reserved escape keys. The request was never
+    # decided, so this is a refusal rather than a 400: telling the caller which spelling was
+    # rejected would be telling them what to try next.
+    ReservedKey: 403,
     # The caller proposed something policy will not accept. Their request, their fix.
     ArgumentRejected: 400,
     NoValidArguments: 400,
@@ -223,6 +228,8 @@ def reason_for(error: Exception) -> str:
             return f"The policy denied action {error.action}."
         case NoContext():
             return f"No principal in context for action {error.action}; the call was denied."
+        case ReservedKey():
+            return "The request contained a reserved key and was denied."
         case ArgumentRejected():
             return f"Argument {error.name!r} was rejected: {error.reason}"
         case NoValidArguments():

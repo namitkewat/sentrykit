@@ -384,3 +384,34 @@ into every call that omitted the argument.
 **Alternatives.** A `--as-role` flag letting an operator declare their own roles (a hole that
 defeats the self-governance in ADR-024). Leaving the gap and documenting it (the criterion
 "grant/revoke work" would have been false from any shell).
+
+## ADR-026 — Cedar's reserved `__` keys are refused, not dropped or escaped
+**Decision.** `_coerce_mapping` rejects any supplied record key beginning with `__` — the
+whole reserved prefix, not the two spellings Cedar defines today — with a new `ReservedKey`
+error, checked before the value is coerced and at any nesting depth. The refusal is raised in
+`cedar.py` and converted by `Governor.plan` into an audited refusal that `fail_mode` never
+sees. `EntityRef` keeps its own trusted path to `{"__entity": ...}` and is unaffected.
+**Why.** `coerce_value` recursed into supplied mappings and stringified their keys, so a
+dict-valued argument carrying `{"__entity": {"type": "Group", "id": "approved"}}` reached the
+evaluator as a genuine `Group::"approved"`. Measured end to end through `PolicyEngine` against
+the argument-aware `forbid` backstop the docs describe: the forged group produced **allow,
+`failed=False`** — invisible to `fail_mode="closed"` — while `Region::"cn"` correctly denied.
+Cedar's `in` is reflexive, so passing the approved group *as* the region satisfies
+`context.args.region in Group::"approved"`. A Cedar schema declaring `context.args` contains
+it (the forgery becomes `no-decision`, `failed=True`), but `PolicyEngine`'s `schema` is
+optional and the shipped `pack.cedarschema` declares no `context.args` member, so the
+mitigation is not one a host reliably has.
+**Why not drop, and why not escape.** Dropping the reserved key leaves the enclosing record
+present but empty, and dropping the whole entry makes `context.args has region` false — which
+silently switches *off* the backstop the check exists to protect. Escaping the key leaves a
+record where an entity was expected, which fails only as a Cedar **type error**; that is an
+engine failure, and `fail_mode="open"` tolerates engine failures. Refusing ahead of the gate
+is the only option that holds under both fail modes, and it keeps fail-open meaning "tolerate
+operator error" rather than "tolerate attacker input".
+**On `__extn`.** The sibling form is less severe — it produces an engine error, so
+`fail_mode="closed"` already refused it — and was a live bypass only under `fail_mode="open"`.
+The same prefix check closes it, so it needs no separate rule.
+**Consequence.** A host that legitimately wants an argument to reach policy as an entity
+passes an `EntityRef`, which is the only way it ever worked as intended. `ReservedKey` maps to
+403 rather than 400: naming the rejected spelling back to the caller would be telling them
+what to try next.

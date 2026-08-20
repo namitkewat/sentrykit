@@ -139,6 +139,7 @@ A few deliberate sharp edges:
 | `NoValidArguments` | The caller supplied arguments and **every one** was rejected. |
 | `DefaultUnavailable` | A required argument has neither a supplied value nor a default. |
 | `ValidationFailed` | The final argument set failed the callable's model. Carries pydantic's structured errors. |
+| `ReservedKey` | Supplied data spelled one of Cedar's reserved `__` keys. Refused under either fail mode. |
 | `ConfigurationError` | Bad settings, an unparseable policy, or no installed governor. |
 
 `NoValidArguments` fires *even when defaults could complete the call*. That is deliberate:
@@ -161,6 +162,34 @@ arbitrates **engine failure only**:
 Conflating a policy denial with an engine failure would let a typo in a policy quietly open a
 door. `AuthzDenied.engine_errors` is populated only in the last row, so an operator can tell
 a correctly enforced boundary from a broken policy set.
+
+`fail_mode="open"` exists to tolerate *operator* error — a policy set that will not evaluate
+should not take an application down with it. It is not a tolerance for caller input, which is
+why the boundary below is enforced ahead of the gate rather than through it.
+
+## What may become an entity reference
+
+The proposed arguments are exposed to policy as `context.args`, so a Cedar `forbid` can
+inspect them directly:
+
+```
+@id("region-must-be-approved")
+forbid (principal, action, resource)
+when { context.args has region && !(context.args.region in Group::"approved") };
+```
+
+That backstop is defense in depth: the Python-side filter is the enforcement, and the
+`forbid` catches a filter that was never configured. For it to mean anything, a caller must
+not be able to choose what *type* their argument has.
+
+Cedar's request JSON reserves record keys beginning with `__` for its own escape forms —
+`__entity` promotes a record into a typed entity reference, `__extn` into an extension value.
+So sentrykit refuses any supplied mapping that spells one, anywhere in the request, with
+`ReservedKey`. Only an `EntityRef` your application constructed becomes an entity reference.
+
+The refusal is deliberately not routed through `fail_mode`: it happens before Cedar is
+consulted, so there is no engine failure for `open` to tolerate. Nothing legitimate is lost —
+pass `EntityRef("Region", "eu")` and it reaches policy as a genuine `Region::"eu"`.
 
 ## Verbosity
 

@@ -18,7 +18,7 @@ that nobody spells is still public, because the function that returns it is.
 
 ---
 
-## `sentrykit` — the top-level surface (76 names)
+## `sentrykit` — the top-level surface (77 names)
 
 This is the import people write. Everything in it is **public**.
 
@@ -84,6 +84,7 @@ This is the import people write. Everything in it is **public**.
 | `DefaultUnavailable` | public | A required argument was dropped and policy supplies no default. |
 | `ValidationFailed` | public | The final argument dict failed the callable's pydantic model. |
 | `NoContext` | public | No resolvable principal. The fail-closed refusal. |
+| `ReservedKey` | public | Supplied data spelled one of Cedar's reserved `__` escape keys. Distinct from `AuthzDenied` because it is not a policy verdict — the request was refused before the policy set was consulted. |
 | `AuditUnavailable` | public | The sink refused a write on an allow path, so the call is refused. |
 | `ConfigurationError` | public | Misconfiguration: bad DSN, missing backend, unusable settings. |
 

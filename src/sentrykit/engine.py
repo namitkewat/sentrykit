@@ -44,6 +44,7 @@ from sentrykit.errors import (
     ConfigurationError,
     DefaultUnavailable,
     NoValidArguments,
+    ReservedKey,
     SentrykitError,
     ValidationFailed,
 )
@@ -543,18 +544,40 @@ class Governor:
             callable_name=spec.name,
         )
 
-        decision = self._policy.evaluate(
-            CedarRequest(
-                principal=principal.uid,
-                action=action,
-                resource=resource,
-                context=env,
-                # The principal snapshot is a per-request delta so a concurrent decision for
-                # a different principal never sees it.
-                entities=(Entity(principal.uid, principal.attributes, principal.all_parents()),),
-                correlation_id=invocation_id,
+        try:
+            decision = self._policy.evaluate(
+                CedarRequest(
+                    principal=principal.uid,
+                    action=action,
+                    resource=resource,
+                    context=env,
+                    # The principal snapshot is a per-request delta so a concurrent decision
+                    # for a different principal never sees it.
+                    entities=(
+                        Entity(principal.uid, principal.attributes, principal.all_parents()),
+                    ),
+                    correlation_id=invocation_id,
+                )
             )
-        )
+        except ReservedKey as exc:
+            # Refused before Cedar is consulted, so there is no Cedar verdict to report and
+            # nothing for ``fail_mode`` to arbitrate: the request is forged, not the policy
+            # set broken, and fail-open exists to tolerate operator error rather than caller
+            # input. The synthesized decision exists only so the refusal is as auditable as
+            # any other -- a clean deny with no determining policy, which is what a default
+            # deny already looks like.
+            _LOGGER.error(
+                "Supplied data spelled a reserved Cedar key; refusing the request",
+                extra={**context, "reserved_key": exc.key, "path": exc.path},
+            )
+            refused = CedarDecision(
+                allowed=False,
+                decision="deny",
+                correlation_id=invocation_id,
+                policy_set_hash=self._policy.policy_set_hash,
+            )
+            self._audit_refusal(invocation, refused, spec, exc)
+            raise
 
         rejected: tuple[RejectedArgument, ...] = ()
         try:

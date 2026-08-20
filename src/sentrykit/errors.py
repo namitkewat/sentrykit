@@ -73,6 +73,38 @@ class AuthzDenied(SentrykitError):
         super().__init__(detail)
 
 
+class ReservedKey(SentrykitError):
+    """Raised when caller-supplied data spells one of Cedar's reserved ``__`` keys.
+
+    Cedar's request JSON reserves record keys beginning with ``__`` for its own escape
+    forms: ``__entity`` promotes a plain record into a typed entity reference, and
+    ``__extn`` into an extension value. A caller who can put either key inside an argument
+    can therefore hand the evaluator an entity reference of their own choosing, and an
+    argument-aware ``forbid`` will read it as a genuine one -- so
+    ``forbid ... when { !(context.args.region in Group::"approved") }`` is satisfied by
+    passing the approved group itself as the region, because Cedar's ``in`` is reflexive.
+
+    sentrykit refuses the request instead of deciding it, and the refusal is deliberately
+    *not* arbitrated by ``fail_mode``: a forged request is not a broken policy set, and
+    ``fail_mode="open"`` exists to tolerate operator error, never caller input.
+
+    Attributes:
+        key: The reserved key that was supplied.
+        path: Where it appeared inside the request context, e.g. ``args.region`` or
+            ``args.regions[2].id``. Empty when the value was coerced on its own.
+    """
+
+    def __init__(self, key: str, path: str = "") -> None:
+        self.key = key
+        self.path = path
+        located = f" at {path!r}" if path else ""
+        super().__init__(
+            f"reserved key {key!r}{located} is not permitted in supplied data: keys "
+            "beginning with '__' are Cedar's own escape forms and may not be spelled by "
+            "a caller"
+        )
+
+
 class ArgumentRejected(SentrykitError):
     """Raised (in strict mode) when a supplied argument violates its policy constraint."""
 

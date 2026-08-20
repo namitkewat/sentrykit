@@ -39,6 +39,12 @@ protected callable and refuses the side effect *before* it happens.
   on-behalf-of, expiry, break-the-glass and separation-of-duties are resolved deterministically
   by Cedar's entity hierarchy. They are never inferred by a model and never scattered across
   `if` statements, which means they can be reviewed, replayed and reasoned about.
+- **The shape of the request itself.** Cedar reserves record keys beginning with `__` for the
+  escape forms that promote a plain record into a typed entity reference. A caller who could
+  spell one could choose what type their argument has, and an argument-aware `forbid` would
+  read the forgery as genuine. Only an `EntityRef` your application constructs becomes an
+  entity reference; supplied data carrying a reserved key is refused before the policy set is
+  consulted, under either fail mode.
 - **What an agent is shown.** On the agent side the tool manifest is filtered per principal: a
   tool is hidden from a caller exactly when invoking it would be refused. Hiding is a usability
   affordance rather than a control — the dispatch path re-runs the identical decision, so a

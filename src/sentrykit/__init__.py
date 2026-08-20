@@ -83,6 +83,7 @@ from sentrykit.errors import (
     DefaultUnavailable,
     NoContext,
     NoValidArguments,
+    ReservedKey,
     SentrykitError,
     ValidationFailed,
 )
@@ -152,6 +153,7 @@ __all__ = [
     "Principal",
     "ProtectedMeta",
     "RejectedArgument",
+    "ReservedKey",
     "Sensitive",
     "SentrykitError",
     "Settings",

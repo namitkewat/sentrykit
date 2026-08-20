@@ -14,10 +14,14 @@ Three things this module owns that callers should not re-implement:
    diagnostics; the human-meaningful name is the policy's ``@id("...")`` annotation.
    :attr:`CedarDecision.determining_policies` carries the annotation when one exists and the
    generated id otherwise, so denial messages and audit records stay readable.
-3. **Value coercion.** Cedar's type system has no floating-point and no null. A stray
-   ``None`` in the request context turns the whole decision into ``NoDecision``, and a
-   ``None`` in an entity attribute makes the entity set fail to parse outright. Every value
-   handed to Cedar passes through :func:`coerce_value` first.
+3. **Value coercion, and the boundary it defends.** Cedar's type system has no
+   floating-point and no null. A stray ``None`` in the request context turns the whole
+   decision into ``NoDecision``, and a ``None`` in an entity attribute makes the entity set
+   fail to parse outright. Every value handed to Cedar passes through :func:`coerce_value`
+   first. The same function is the one place that decides what may become a Cedar *entity
+   reference*: only an :class:`EntityRef` the application constructed can, and a supplied
+   mapping spelling Cedar's reserved ``__`` escape keys is refused with
+   :class:`~sentrykit.errors.ReservedKey` instead.
 """
 
 from __future__ import annotations
@@ -35,9 +39,10 @@ from typing import Final, Literal, NamedTuple
 
 import cedarpy
 
-from sentrykit.errors import ConfigurationError
+from sentrykit.errors import ConfigurationError, ReservedKey
 
 __all__ = [
+    "RESERVED_KEY_PREFIX",
     "CedarDecision",
     "CedarRequest",
     "Entity",
@@ -57,6 +62,14 @@ _LOGGER: Final = logging.getLogger("sentrykit.cedar")
 _UID_RE: Final = re.compile(
     r'^(?P<type>[A-Za-z_][A-Za-z0-9_]*(?:::[A-Za-z_][A-Za-z0-9_]*)*)::"(?P<id>.*)"$'
 )
+
+RESERVED_KEY_PREFIX: Final = "__"
+"""Prefix Cedar reserves for its own escape forms in request and entity JSON.
+
+``__entity`` and ``__extn`` are the two Cedar defines today, and the prefix as a whole is
+reserved — so the check is on the prefix, not on the two spellings, and stays correct if
+Cedar adds a third.
+"""
 
 DecisionLiteral = Literal["allow", "deny", "no-decision"]
 """Normalized spelling of Cedar's ``Allow`` / ``Deny`` / ``NoDecision``."""
@@ -400,8 +413,19 @@ def coerce_value(value: object) -> object | None:
     and ``str`` pass through; ``datetime`` and ``date`` become epoch seconds so policies can
     compare them against ``context.now``; ``float`` and ``Decimal`` are rendered as strings,
     since silently truncating them to integers would change what a policy decides;
-    ``EntityRef`` becomes Cedar's ``{"__entity": ...}`` form; mappings and sequences recurse,
-    dropping any element or entry that coerces to ``None``. Anything else is stringified.
+    :class:`EntityRef` becomes Cedar's ``{"__entity": ...}`` form; mappings and sequences
+    recurse, dropping any element or entry that coerces to ``None``. Anything else is
+    stringified.
+
+    **Cedar's escape forms have exactly one entrance, and it is :class:`EntityRef`.** A
+    record key beginning with ``__`` is reserved by Cedar — ``__entity`` promotes a record
+    into a typed entity reference, ``__extn`` into an extension value — so a supplied
+    mapping that spells one would be indistinguishable from a reference the application
+    built itself. Any such key raises :class:`~sentrykit.errors.ReservedKey` rather than
+    being coerced, dropped or escaped: dropping it would silently turn off an argument-aware
+    ``forbid`` that tests ``context.args has ...``, and escaping it would leave a value that
+    only fails downstream as a Cedar *type* error, which ``fail_mode="open"`` would tolerate.
+    Refusing here refuses under either fail mode.
 
     Naive ``datetime`` values are read as UTC rather than as local time, so a decision does
     not depend on the timezone of the host that happened to evaluate it.
@@ -412,6 +436,19 @@ def coerce_value(value: object) -> object | None:
     Returns:
         A Cedar-safe value, or ``None`` when the value has no Cedar representation and
         should be omitted.
+
+    Raises:
+        ReservedKey: If a mapping anywhere inside ``value`` carries a key beginning with
+            ``__``.
+    """
+    return _coerce(value, "")
+
+
+def _coerce(value: object, path: str) -> object | None:
+    """Coerce one value, carrying ``path`` so a rejection can say where it came from.
+
+    Split from :func:`coerce_value` only to keep the path out of the public signature: a
+    caller coercing a single value has no path to give, and the recursion needs one.
     """
     if value is None:
         return None
@@ -421,7 +458,7 @@ def coerce_value(value: object) -> object | None:
     if isinstance(value, EntityRef):
         return {"__entity": value.as_json()}
     if isinstance(value, Enum):
-        return coerce_value(value.value)
+        return _coerce(value.value, path)
     # datetime before date: datetime is a subclass of date.
     if isinstance(value, dt.datetime):
         moment = value if value.tzinfo is not None else value.replace(tzinfo=dt.UTC)
@@ -433,32 +470,47 @@ def coerce_value(value: object) -> object | None:
     if isinstance(value, float | Decimal):
         return str(value)
     if isinstance(value, Mapping):
-        return _coerce_mapping({str(key): item for key, item in value.items()})
+        return _coerce_mapping({str(key): item for key, item in value.items()}, path)
     if isinstance(value, set | frozenset):
-        return _coerce_sequence(sorted(value, key=repr))
+        return _coerce_sequence(sorted(value, key=repr), path)
     if isinstance(value, Sequence) and not isinstance(value, str | bytes | bytearray):
-        return _coerce_sequence(value)
+        return _coerce_sequence(value, path)
     return str(value)
 
 
-def _coerce_mapping(mapping: Mapping[str, object]) -> dict[str, object]:
+def _coerce_mapping(mapping: Mapping[str, object], path: str = "") -> dict[str, object]:
     """Coerce every value of ``mapping``, dropping the keys with no Cedar representation.
 
     Dropping rather than substituting is deliberate: Cedar has no null, so a record with a
     ``None`` member is unrepresentable, while a record with the member *absent* is exactly
     what ``has`` tests for in a policy.
+
+    Reserved keys are checked *before* anything is coerced, so a forged escape form never
+    reaches the evaluator and never reaches the record being built either.
+
+    Raises:
+        ReservedKey: If any key begins with ``__``.
     """
     coerced: dict[str, object] = {}
     for key, value in mapping.items():
-        item = coerce_value(value)
+        name = str(key)
+        if name.startswith(RESERVED_KEY_PREFIX):
+            raise ReservedKey(name, path)
+        item = _coerce(value, _within(path, name))
         if item is not None:
-            coerced[str(key)] = item
+            coerced[name] = item
     return coerced
 
 
-def _coerce_sequence(values: Iterable[object]) -> list[object]:
+def _coerce_sequence(values: Iterable[object], path: str = "") -> list[object]:
     """Coerce every element of ``values``, dropping the ones with no Cedar representation."""
-    return [item for item in (coerce_value(value) for value in values) if item is not None]
+    coerced = (_coerce(value, f"{path}[{index}]") for index, value in enumerate(values))
+    return [item for item in coerced if item is not None]
+
+
+def _within(path: str, key: str) -> str:
+    """Extend a dotted path with one record member, for a rejection's ``path``."""
+    return f"{path}.{key}" if path else key
 
 
 def _entities_json(entities: Iterable[Entity]) -> str:
