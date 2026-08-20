@@ -20,17 +20,50 @@ the `cedarpy` binding) and it targets two worlds with one decorator:
 - **Web frameworks:** FastAPI, Flask (Django/Litestar/Starlette later).
 - **Agent tooling:** FastMCP servers, Pydantic-AI (LangChain/others later).
 
-The single most important product idea:
+The one idea:
 
-> The LLM (or the caller) *proposes*; the **policy decides**. Complex, nested
-> authorization relationships that span multiple calls and entities — user → team →
-> project → resource, delegation chains, on-behalf-of, expiry, break-the-glass — must be
-> resolved **deterministically by Cedar**, never inferred by a model or scattered across
-> `if` statements. sentrykit is where that relationship resolution is offloaded to.
+> The LLM (or the caller) *proposes*; the **policy decides** — and what it decides
+> includes the **arguments**, not only the call.
+
+That second clause is the product. Cedar answers a boolean question at the gate; everything
+sentrykit adds sits above that answer, and it is what a host would otherwise assemble itself:
+
+1. **Per-(principal, action) argument constraints** — allow-sets, deny-sets, patterns and
+   numeric bounds, decided per argument.
+2. **Narrow-and-continue instead of refuse.** A value above what the principal may have is
+   rejected and their own default fills the gap, so the call proceeds. It is
+   reject-and-refill, **never a clamp to the bound** — no sentence anywhere may imply the
+   resulting value equals the maximum. With no default the argument is dropped; if nothing
+   the caller supplied survives, the call is refused with `NoValidArguments`.
+3. **Policy-supplied default injection**, for arguments the caller omitted *and* for ones
+   that were just dropped. A default is itself checked against the constraint that governs
+   it, so omitting an argument is not a way around the rule on it.
+4. **Grant-time constraint validation.** A constraint no value could satisfy, or whose own
+   default it would reject, is refused when a store writes it rather than discovered by
+   whoever calls next.
+5. **A masked, hash-chained audit trail** — one record per decision and per admin mutation,
+   masked before the append-only write and pinned to a hash of the exact policy text.
+
+Sitting across the first four: an **argument ceiling** declared in reviewed `.cedar` text
+says what *anybody* may pass for an action and intersects with the store's per-principal
+grants, so the reviewed file states the maximum and can only narrow. A ceiling is the one
+declaration that reaches narrow-and-continue at all, because Cedar's effect vocabulary is
+permit/forbid (ADR-028).
+
+**Relationship resolution is a supported capability that composes, not the headline.**
+Complex, nested authorization relationships that span multiple calls and entities — user →
+team → project → resource, delegation chains, on-behalf-of, expiry, break-the-glass — are
+resolved **deterministically by Cedar's entity hierarchy**, never inferred by a model or
+scattered across `if` statements. That is Cedar's strength and sentrykit inherits it: the
+foundation the argument layer stands on, rather than the thing that distinguishes sentrykit
+from the engine underneath (ADR-008, amended).
 
 Positioning we are committed to: **self-hosted, framework-agnostic (web *and* agents),
 Cedar-based, audit-first, one decorator.** We are not a content filter and not an output
-validator. We refuse the *side effect* before it happens.
+validator. We refuse the *side effect* before it happens. Where a comparison genuinely helps
+a reader, name another project's **capability** and never a verdict — general-purpose policy
+engines and relationship systems answer allow/deny at the gate, and sentrykit adds the layer
+above that answer. No comparison tables, no scorecards, no "unlike".
 
 ---
 
