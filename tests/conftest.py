@@ -87,6 +87,15 @@ def clean_process_state(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     """Give every test an empty environment, no settings, no principal, and no governor."""
     for name in [name for name in os.environ if name.startswith(ENV_PREFIX)]:
         monkeypatch.delenv(name, raising=False)
+    # Empty, and never merely absent. `examples.ollama` treats an unset URL as "look on
+    # localhost" and an empty one as "do not look", so deleting the variable along with every
+    # other `SENTRYKIT_*` one is what would send the agent examples at whatever daemon happens
+    # to be listening on the machine running the suite. An example's behaviour must not depend
+    # on that, and a test that reached for a live model would be asserting against a different
+    # model on every laptop. Setting it here rather than in the agent suite's own conftest
+    # because the reach is an *import* away from any test: anything that calls `default_model()`
+    # or `create_server()` probes, and nobody should have to remember which of those it touched.
+    monkeypatch.setenv("SENTRYKIT_OLLAMA_URL", "")
     _reset()
     yield
     _reset()

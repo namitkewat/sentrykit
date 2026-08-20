@@ -26,6 +26,7 @@ import asyncio
 import json
 from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -35,6 +36,7 @@ pytest.importorskip("mcp")
 pytest.importorskip("pydantic_ai")
 
 import mcp
+from examples import ollama
 from examples.fastmcp_server.policy import POLICY_TEXT as MCP_POLICY_TEXT
 from examples.fastmcp_server.policy import build_grants as build_mcp_grants
 from examples.fastmcp_server.server import create_server
@@ -48,6 +50,7 @@ from examples.pydantic_ai_agent.agent import (
 from examples.pydantic_ai_agent.agent import offered_tools as offered_tools_for
 from examples.pydantic_ai_agent.policy import POLICY_TEXT as AGENT_POLICY_TEXT
 from examples.pydantic_ai_agent.policy import build_grants as build_agent_grants
+from examples.pydantic_ai_agent.service import brief_orders as agent_brief_orders
 from examples.pydantic_ai_agent.service import search_orders as agent_search_orders
 from mcp.server.mcpserver import MCPServer
 from mcp.types import CallToolResult
@@ -58,6 +61,7 @@ from pydantic_ai.models.test import TestModel
 from pydantic_ai.usage import RunUsage
 
 import sentrykit
+from sentrykit.context import principal_context
 from sentrykit.decorator import protect
 from sentrykit.integrations.base import DEFAULT_PRINCIPAL_HEADER
 from sentrykit.integrations.fastmcp import FastMCPProvider, protect_server, registered_tools
@@ -73,6 +77,7 @@ from sentrykit.integrations.tools import (
     governed_meta,
     permitted_tools,
 )
+from sentrykit.stores.memory import InMemoryAuditSink
 
 SEARCH = 'Action::"orders.search"'
 EXPORT = 'Action::"orders.export"'
@@ -149,26 +154,122 @@ def agent() -> Agent[Caller, str]:
 def test_the_manifest_is_per_caller_exactly_as_the_readme_prints_it(
     agent: Agent[Caller, str],
 ) -> None:
-    """The README — "The manifest is per-caller": `['search_orders']` / `['export_orders']`."""
-    assert asyncio.run(offered_tools_for(agent, Caller("alice"))) == ["search_orders"]
-    assert asyncio.run(offered_tools_for(agent, Caller("bob"))) == ["export_orders"]
+    """The README — "The manifest is per-caller": all three printed lists, in order.
+
+    Seven tools are registered and no caller is offered all seven. `desk_status` is in every
+    list because its permit names no principal; `approve_refund` is in dana's alone; and
+    `issue_refund` is in alice's and dana's because the permit authorizing it is
+    unconditional — a permit reading `context.args` would evaluate to false against a probe
+    that proposes nothing and hide the tool from the people who may use it.
+    """
+    assert asyncio.run(offered_tools_for(agent, Caller("alice"))) == [
+        "desk_status",
+        "brief_orders",
+        "search_orders",
+        "read_order",
+        "issue_refund",
+    ]
+    assert asyncio.run(offered_tools_for(agent, Caller("bob"))) == ["desk_status", "export_orders"]
+    assert asyncio.run(offered_tools_for(agent, Caller("dana"))) == [
+        "desk_status",
+        "brief_orders",
+        "search_orders",
+        "read_order",
+        "issue_refund",
+        "approve_refund",
+    ]
+
+
+@pytest.mark.integration
+def test_a_protected_callable_that_is_no_tool_is_decided_inside_the_tool_that_calls_it(
+    agent: Agent[Caller, str],
+) -> None:
+    """The README — "a protected callable that is not a tool": two envelopes, one tool call.
+
+    `summarize_orders` is protected and registered nowhere, so no model was ever told it
+    exists and none could propose it. It is decided anyway, against the same ambient
+    principal, because the gate is on the *call* and not on the registration — and its own
+    envelope survives in place under `brief`, rather than being merged into the outer one.
+    """
+    assert asyncio.run(propose(agent, Caller("alice"), "brief_orders")) == {
+        "brief": {
+            "open": 3,
+            "closed": 11,
+            "_authz": {
+                "decision": "allow",
+                "action": 'Action::"orders.summarize"',
+                "resource": ORDERS,
+                "principal": 'User::"alice"',
+            },
+        },
+        "_authz": {
+            "decision": "allow",
+            "action": 'Action::"orders.brief"',
+            "resource": ORDERS,
+            "principal": 'User::"alice"',
+        },
+    }
+
+
+@pytest.mark.integration
+def test_the_protected_callable_that_is_no_tool_is_offered_to_nobody(
+    agent: Agent[Caller, str],
+) -> None:
+    """`summarize_orders` is in no principal's manifest, because it is registered as no tool.
+
+    The companion to the test above, and the half that would rot silently: a registration
+    added by accident would still make every assertion about the *decision* pass, while
+    handing every model a tool the example says it was never offered.
+    """
+    for who in ("alice", "bob", "dana"):
+        assert "summarize_orders" not in asyncio.run(offered_tools_for(agent, Caller(who)))
+
+
+@pytest.mark.integration
+def test_a_refusal_inside_the_nested_callable_travels_out_unchanged() -> None:
+    """The README — "an inner refusal propagates out unchanged".
+
+    Driven against a policy set that permits `orders.brief` and nothing else, because on the
+    example's own policy alice may do both and the refusal is unreachable. What comes out of
+    `brief_orders` is the *inner* `AuthzDenied`, still naming `Action::"orders.summarize"` —
+    not a partial answer, not a re-wrapped outer refusal, and not the outer action.
+    """
+    permits_only_the_outer_call = (
+        '@id("support-may-brief")\n'
+        "permit (\n"
+        '  principal in Role::"support",\n'
+        '  action == Action::"orders.brief",\n'
+        '  resource == Tool::"orders"\n'
+        ");"
+    )
+    store = build_agent_grants()
+    sentrykit.install(permits_only_the_outer_call, grant_store=store)
+    alice = store.get_principal("alice")
+    assert alice is not None
+
+    with principal_context(alice), pytest.raises(sentrykit.AuthzDenied) as refusal:
+        agent_brief_orders()
+
+    assert refusal.value.action == 'Action::"orders.summarize"'
+    assert refusal.value.resource == ORDERS
 
 
 @pytest.mark.integration
 def test_the_narrowed_search_returns_exactly_what_the_readme_prints(
     agent: Agent[Caller, str],
 ) -> None:
-    """The README — "Argument filtering, then default injection"."""
+    """The README — "an allow-set, rejected and refilled"."""
     assert asyncio.run(propose(agent, Caller("alice"), "search_orders", region="cn", limit=5)) == {
         "region": "eu",
         "limit": 5,
+        "status": "open",
         "orders": ["order-0", "order-1", "order-2"],
         "_authz": {
             "decision": "allow",
             "action": SEARCH,
             "resource": ORDERS,
             "principal": 'User::"alice"',
-            "processed": {"limit": 5, "region": "eu"},
+            "processed": {"limit": 5, "status": "open", "region": "eu"},
             "rejected": [
                 {
                     "name": "region",
@@ -187,22 +288,23 @@ def test_the_narrowed_search_returns_exactly_what_the_readme_prints(
 def test_the_model_may_omit_both_arguments_and_gets_what_the_readme_prints(
     agent: Agent[Caller, str],
 ) -> None:
-    """The README — "Defaults for arguments nobody proposed", proposed by the *model*.
+    """The README — "default injection", proposed by the *model*.
 
     The whole dict, because every part of it is a claim: the values, the empty proposal behind
-    them, and `defaults_applied` naming both — which is the envelope saying the model chose
-    neither.
+    them, and `defaults_applied` naming `region` and `limit` and *not* `status` — which is the
+    envelope distinguishing a value policy supplied from one Python had already answered for.
     """
     assert asyncio.run(propose(agent, Caller("alice"), "search_orders")) == {
         "region": "eu",
         "limit": 10,
+        "status": "open",
         "orders": ["order-0", "order-1", "order-2"],
         "_authz": {
             "decision": "allow",
             "action": SEARCH,
             "resource": ORDERS,
             "principal": 'User::"alice"',
-            "processed": {"region": "eu", "limit": 10},
+            "processed": {"status": "open", "region": "eu", "limit": 10},
             "defaults_applied": {"region": "eu", "limit": 10},
         },
     }
@@ -212,16 +314,39 @@ def test_the_model_may_omit_both_arguments_and_gets_what_the_readme_prints(
 def test_a_call_whose_every_argument_was_refused_is_itself_refused(
     agent: Agent[Caller, str],
 ) -> None:
-    """The README — "Nothing left to run with": no default rescues a wholly refused call."""
-    refused = asyncio.run(propose(agent, Caller("alice"), "search_orders", region="cn", limit=999))
+    """The README — "narrowing refines a proposal, it does not rescue one".
+
+    The README reaches this refusal through `issue_refund`, and the reason is a real property
+    of the boundary rather than a choice of tool. Pydantic-AI materializes the advertised
+    schema's defaults before dispatch, so a parameter carrying a Python default arrives as a
+    proposed argument whether or not the model named it — and any tool that has one can never
+    run out of surviving arguments. `issue_refund` has none, so both proposed values can be
+    refused with nothing left behind them.
+
+    `amount` has a default of 50 and does not rescue the call: a default fills a gap in a
+    proposal, it does not stand in for one.
+    """
+    refused = asyncio.run(
+        propose(agent, Caller("alice"), "issue_refund", order_id="refund-me", amount=900)
+    )
 
     assert isinstance(refused, Mapping)
     assert refused["detail"] == "Every supplied argument was rejected by policy."
     assert refused["error"] == "NoValidArguments"
     envelope = refused["_authz"]
-    assert [item["name"] for item in envelope["rejected"]] == ["region", "limit"]
-    assert envelope["allowed"]["region"]["allow"] == ["eu", "uk"]
-    assert envelope["allowed"]["limit"]["maximum"] == 50
+    assert [item["name"] for item in envelope["rejected"]] == ["order_id", "amount"]
+    assert envelope["allowed"]["order_id"] == {
+        "pattern": "ord-[0-9]{4}",
+        "policy": "alice-order-id",
+        "required": False,
+        "has_default": False,
+    }
+    assert envelope["allowed"]["amount"]["maximum"] == 750
+    assert envelope["allowed"]["amount"]["has_default"] is True
+    # `allowed` is not an `AuthzEnvelope` field: its presence is the tell that this report was
+    # built from the refusal rather than from a decision, which is also why it names no action.
+    assert "action" not in envelope
+    assert "resource" not in envelope
 
 
 @pytest.mark.integration
@@ -236,7 +361,9 @@ def test_a_hidden_tool_gets_the_model_the_correction_the_readme_quotes(
     """
     correction = asyncio.run(propose(agent, Caller("bob"), "search_orders", region="eu", limit=3))
 
-    assert correction == "Unknown tool name: 'search_orders'. Available tools: 'export_orders'"
+    assert correction == (
+        "Unknown tool name: 'search_orders'. Available tools: 'desk_status', 'export_orders'"
+    )
 
 
 @pytest.mark.integration
@@ -262,16 +389,17 @@ def test_hiding_is_not_the_enforcement_exactly_as_the_readme_prints(
 def test_the_argument_aware_forbid_prints_what_the_readme_says_it_does(
     agent: Agent[Caller, str],
 ) -> None:
-    """The README — "A policy that reads the argument": csv allowed, pdf refused."""
+    """The README — "a policy that reads the proposed argument": csv allowed, pdf refused."""
     assert asyncio.run(propose(agent, Caller("bob"), "export_orders", fmt="csv")) == {
         "fmt": "csv",
+        "scope": "open",
         "exported": 42,
         "_authz": {
             "decision": "allow",
             "action": EXPORT,
             "resource": ORDERS,
             "principal": 'User::"bob"',
-            "processed": {"fmt": "csv"},
+            "processed": {"fmt": "csv", "scope": "open"},
         },
     }
     assert asyncio.run(propose(agent, Caller("bob"), "export_orders", fmt="pdf")) == {
@@ -355,16 +483,19 @@ def test_governed_tool_re_declares_the_arguments_the_framework_would_have_requir
 def test_the_advertised_schema_is_the_shape_the_readme_describes(
     agent: Agent[Caller, str],
 ) -> None:
-    """The README — "keyword-only and optional", and "`optional=()` keeps everything required".
+    """The README — "keyword-only and optional", and which parameters stay out of that set.
 
-    `search_orders` opts in and loses its `required` list entirely; `export_orders` opts out
-    with `optional=()` and keeps `fmt` required, because `fmt` is a genuine choice by whoever
-    wants the export and not something policy could supply. The two are asserted together
-    since the paragraph is about the *choice* between them.
+    The advertised schema *is* the mechanism: a model reads it and nothing else, so a
+    parameter it marks `required` can never be omitted and no policy default for that
+    parameter is ever reachable. The README names the split — `region`, `limit`, `fmt`,
+    `amount`, `order_id` and `refund_id` are omittable, while `status` and `scope` keep their
+    Python defaults — and it is the *contrast* that is the claim, so both halves are asserted
+    on one tool: `search_orders` advertises no `required` list at all, `region` is nullable
+    with a `None` default, and `status` is a plain string with its own default, untouched.
     """
     offered = {
         definition.name: definition.parameters_json_schema
-        for caller in (Caller("alice"), Caller("bob"))
+        for caller in (Caller("alice"), Caller("bob"), Caller("dana"))
         for definition in _definitions_offered_to(agent, caller)
     }
 
@@ -375,8 +506,26 @@ def test_the_advertised_schema_is_the_shape_the_readme_describes(
         "default": None,
         "description": "Which region to search. Constrained per principal.",
     }
-    assert offered["export_orders"]["required"] == ["fmt"]
-    assert offered["export_orders"]["properties"]["fmt"]["type"] == "string"
+    assert search["properties"]["status"]["type"] == "string"
+    assert search["properties"]["status"]["default"] == "open"
+
+    export = offered["export_orders"]
+    assert "required" not in export
+    assert export["properties"]["fmt"]["anyOf"] == [{"type": "string"}, {"type": "null"}]
+    assert export["properties"]["fmt"]["default"] is None
+    assert export["properties"]["scope"] == {
+        "default": "open",
+        "description": (
+            "Which orders to include. The caller's own business, so it keeps a Python\ndefault."
+        ),
+        "type": "string",
+    }
+
+    # A tool whose every parameter is policy-suppliable loses `required` too, which is what
+    # makes a wholly refused proposal reachable at this boundary at all.
+    refund = offered["issue_refund"]
+    assert "required" not in refund
+    assert sorted(refund["properties"]) == ["amount", "order_id", "region"]
 
 
 @pytest.mark.integration
@@ -533,18 +682,74 @@ ALICE = {DEFAULT_PRINCIPAL_HEADER: "alice"}
 BOB = {DEFAULT_PRINCIPAL_HEADER: "bob"}
 """The README's `BOB`, verbatim."""
 
+DANA = {DEFAULT_PRINCIPAL_HEADER: "dana"}
+"""The README's `DANA`, verbatim."""
+
 
 @pytest.mark.integration
 async def test_the_manifest_the_mcp_readme_prints_is_the_manifest_served() -> None:
-    """The README — "The manifest is per-principal", all three printed lists."""
+    """The README — "The manifest is per-principal", all four printed lists.
+
+    The anonymous list is the one that keeps the other three honest: no principal means no
+    entitlement to anything, so the manifest is empty rather than unfiltered.
+    """
     async with serving() as client:
         alice = await client.list_tools(meta=ALICE)
         bob = await client.list_tools(meta=BOB)
+        dana = await client.list_tools(meta=DANA)
         anonymous = await client.list_tools(meta={})
 
-    assert [tool.name for tool in alice.tools] == ["search_orders", "read_order"]
-    assert [tool.name for tool in bob.tools] == ["export_orders"]
+    assert [tool.name for tool in alice.tools] == [
+        "desk_status",
+        "brief_orders",
+        "search_orders",
+        "read_order",
+        "issue_refund",
+    ]
+    assert [tool.name for tool in bob.tools] == ["desk_status", "export_orders"]
+    assert [tool.name for tool in dana.tools] == [
+        "desk_status",
+        "brief_orders",
+        "search_orders",
+        "read_order",
+        "issue_refund",
+        "approve_refund",
+    ]
     assert [tool.name for tool in anonymous.tools] == []
+
+
+@pytest.mark.integration
+async def test_one_dispatch_of_brief_orders_writes_the_two_records_the_mcp_readme_prints() -> None:
+    """The README — "One dispatch, two audit records, the outer one written **before** the
+    body ran".
+
+    Two protected callables entered in one dispatch means two decisions and two records, and
+    their order is the claim rather than a detail: the gate refuses a side effect *before* it
+    happens, so the outer record cannot wait for the body to finish. Only the delta this one
+    dispatch appended is read — a ``tools/list`` probe decides every tool and writes records of
+    its own, and counting those would make the assertion about the harness instead.
+
+    ``summarize_orders`` is registered as no tool and still has a record of its own, which is
+    the audit trail agreeing with the manifest about what happened rather than about what was
+    advertised.
+    """
+    sink = InMemoryAuditSink()
+
+    async with mcp.Client(create_server(audit_sink=sink)) as client:
+        mark = len(sink.records)
+        result = await client.call_tool("brief_orders", {}, meta=ALICE)
+        written = sink.records[mark:]
+
+    assert result.is_error is not True
+    assert [record.action for record in written] == [
+        'Action::"orders.brief"',
+        'Action::"orders.summarize"',
+    ]
+    assert [record.decision for record in written] == ["allow", "allow"]
+    assert [record.callable_name for record in written] == [
+        "examples.fastmcp_server.service.brief_orders",
+        "examples.fastmcp_server.service.summarize_orders",
+    ]
 
 
 @pytest.mark.integration
@@ -566,6 +771,158 @@ async def test_the_mcp_readme_default_injection_prints_what_it_says() -> None:
     assert body["limit"] == 10
     assert envelope["defaults_applied"] == {"region": "eu", "limit": 10}
     assert "rejected" not in envelope
+
+
+@pytest.mark.integration
+async def test_the_bare_protect_is_served_under_the_derived_ids_the_mcp_readme_prints() -> None:
+    """The README — "The bare `@protect`": the action *and* the resource, both derived.
+
+    `desk_status` declares neither, so both come from the callable's import path and the
+    reviewed policy has to name that exact string. Which is the fragility the README warns
+    about, and the reason to pass an explicit `action=` as soon as the policy is expected to
+    outlive the module layout: moving the function changes the id and the permit stops
+    matching, with nothing to say so.
+    """
+    async with serving() as client:
+        result = await client.call_tool("desk_status", {}, meta=ALICE)
+
+    envelope = body_of(result)["_authz"]
+    assert result.is_error is not True
+    assert envelope["action"] == 'Action::"examples.fastmcp_server.service.desk_status"'
+    assert envelope["resource"] == 'Resource::"examples.fastmcp_server.service.desk_status"'
+
+
+@pytest.mark.integration
+async def test_the_reviewed_ceiling_prints_what_the_mcp_readme_says_it_does() -> None:
+    """The README — "The reviewed ceiling, and why the answer is not the ceiling".
+
+    Dana asks for 500, the ceiling declared in `policies/10-orders.cedar` is 100, and she runs
+    with **25**. The rejection is asserted whole because its `policy` is the load-bearing part:
+    `support-may-search` names the reviewed file, which is what distinguishes a ceiling refusal
+    from a grant one. Nothing was clamped — a refused value is discarded and the principal's
+    own default takes its place.
+    """
+    async with serving() as client:
+        result = await client.call_tool(
+            "search_orders", {"limit": 500, "status": "open"}, meta=DANA
+        )
+
+    body = body_of(result)
+    assert body["limit"] == 25
+    assert body["_authz"]["rejected"] == [
+        {
+            "name": "limit",
+            "rule": "maximum",
+            "reason": "Value is above the maximum of 100",
+            "policy": "support-may-search",
+            "value": 500,
+        }
+    ]
+    assert body["_authz"]["defaults_applied"] == {"limit": 25, "region": "eu"}
+
+
+@pytest.mark.integration
+async def test_the_two_argument_rules_print_what_the_mcp_readme_says_they_do() -> None:
+    """The README — "Two arguments that are only wrong together" and the desk limit.
+
+    Three claims the README makes as one story. `region="uk"` and `amount=750` are each within
+    alice's grants and the pair is refused anyway, by a rule no per-argument bound could
+    express. Push past the desk limit and a *different* `forbid` refuses, this one reading the
+    proposed amount together with the principal — so the identical call is permitted for dana.
+    Both refusals name the `forbid` that fired, because a `forbid` that fires is determining.
+    """
+    order: dict[str, Any] = {"order_id": "ord-0007"}
+
+    async with serving() as client:
+        # After the server is built, not before: `create_server` calls `configure()` itself,
+        # so a verbosity set beforehand would be the one this line was meant to replace.
+        sentrykit.configure(verbosity="debug")
+        call = partial(client.call_tool, "issue_refund")
+        fine = await call(order | {"amount": 100, "region": "uk"}, meta=ALICE)
+        pair = await call(order | {"amount": 750, "region": "uk"}, meta=ALICE)
+        over = await call(order | {"amount": 5000, "region": "eu"}, meta=ALICE)
+        admin = await call(order | {"amount": 5000, "region": "eu"}, meta=DANA)
+
+    assert fine.is_error is not True
+    assert body_of(fine)["region"] == "uk"
+    assert pair.is_error is True
+    assert body_of(pair)["_authz"]["determining_policies"] == ["no-large-cross-region-refunds"]
+    assert over.is_error is True
+    assert body_of(over)["_authz"]["determining_policies"] == [
+        "refunds-above-the-desk-limit-need-an-admin"
+    ]
+    assert admin.is_error is not True
+    assert body_of(admin)["amount"] == 5000
+
+
+@pytest.mark.integration
+async def test_the_two_refusals_that_are_not_the_gate_print_what_the_mcp_readme_says() -> None:
+    """The README — "Two refusals that are not the gate", both shapes and both text lines.
+
+    Both come from the argument layer after the gate said yes, so neither names an action or a
+    resource: there was no denied decision to name. `NoValidArguments` carries an `allowed`
+    block describing what alice may pass instead — the thing a model needs in order to retry,
+    and the tell that a report was built from a refusal rather than from a decision.
+    `DefaultUnavailable` is the other shape: `amount` survived, so the call was not refused for
+    want of arguments; the one that failed simply had no answer available.
+    """
+    async with serving() as client:
+        nothing_left = await client.call_tool(
+            "issue_refund", {"order_id": "refund-me", "amount": 900}, meta=ALICE
+        )
+        no_refill = await client.call_tool(
+            "issue_refund", {"order_id": "refund-me", "amount": 100, "region": "eu"}, meta=ALICE
+        )
+
+    refused = body_of(nothing_left)
+    assert refused["error"] == "NoValidArguments"
+    assert nothing_left.content[0].text == "Every supplied argument was rejected by policy."
+    assert [item["name"] for item in refused["_authz"]["rejected"]] == ["order_id", "amount"]
+    assert sorted(refused["_authz"]["allowed"]) == ["amount", "order_id", "region"]
+    assert "action" not in refused["_authz"]
+
+    unavailable = body_of(no_refill)
+    assert unavailable["error"] == "DefaultUnavailable"
+    assert no_refill.content[0].text == (
+        "Argument 'order_id' is required and no policy default is configured."
+    )
+    assert unavailable["_authz"]["rejected"] == [
+        {"name": "order_id", "reason": "No policy default is configured."}
+    ]
+    assert "action" not in unavailable["_authz"]
+
+
+@pytest.mark.integration
+async def test_a_schema_default_reaches_the_decorator_even_when_the_caller_named_none() -> None:
+    """The README's boundary note: mcp materializes a schema default before dispatch.
+
+    So `export_orders(fmt="xml")` narrows here rather than running out of arguments — `scope`
+    carries a Python default, is advertised with it, and arrives as a proposed argument
+    whichever way the caller wrote the call. The two proposals below are byte-for-byte
+    different and reach the decorator identically.
+
+    A web route forwards only what the caller sent, so the same lone `fmt="xml"` is a
+    `NoValidArguments` refusal there. That is a real difference between the boundaries rather
+    than a disagreement about the rule, and both are pinned as they are.
+
+    An *omittable* parameter is advertised as nullable instead, which is how an omission stays
+    an omission across the wire: `fmt` left out entirely lands in `defaults_applied` and in no
+    rejection at all.
+    """
+    async with serving() as client:
+        alone = await client.call_tool("export_orders", {"fmt": "xml"}, meta=BOB)
+        beside = await client.call_tool("export_orders", {"fmt": "xml", "scope": "open"}, meta=BOB)
+        omitted = await client.call_tool("export_orders", {"scope": "open"}, meta=BOB)
+
+    assert alone.is_error is not True
+    assert body_of(alone) == body_of(beside)
+    assert body_of(alone)["fmt"] == "csv"
+    assert body_of(alone)["scope"] == "open"
+    assert body_of(alone)["_authz"]["rejected"][0]["rule"] == "deny-set"
+    assert body_of(alone)["_authz"]["defaults_applied"] == {"fmt": "csv"}
+
+    assert body_of(omitted)["_authz"]["defaults_applied"] == {"fmt": "csv"}
+    assert "rejected" not in body_of(omitted)["_authz"]
 
 
 @pytest.mark.integration
@@ -663,7 +1020,12 @@ async def test_severing_one_edge_does_what_the_mcp_readme_says_it_does() -> None
 
     assert refused.is_error is True
     assert body_of(refused)["error"] == "AuthzDenied"
-    assert [tool.name for tool in listed.tools] == ["search_orders"]
+    assert [tool.name for tool in listed.tools] == [
+        "desk_status",
+        "brief_orders",
+        "search_orders",
+        "issue_refund",
+    ]
     assert still_allowed.is_error is not True
     assert body_of(still_allowed)["region"] == "eu"
 
@@ -999,15 +1361,26 @@ def test_the_agents_page_promise_that_governed_tool_hands_the_callable_back(
 
 
 @pytest.mark.integration
-def test_both_examples_really_do_run_offline(agent: Agent[Caller, str]) -> None:
-    """`docs/agents.md` — "Both run offline, with no API key and no network call".
+def test_with_no_daemon_reachable_both_examples_run_on_a_deterministic_model(
+    agent: Agent[Caller, str],
+) -> None:
+    """With no daemon reachable, both agent examples fall back to a deterministic model.
 
-    The agent example's default model is the checkable half: `default_model()` returns a
-    `TestModel` unless `SENTRYKIT_EXAMPLE_MODEL` is set, and the root `conftest` strips every
-    `SENTRYKIT_*` variable, so this is the state a reader with no configuration is in. The MCP
-    example has no model at all — its client speaks to the server over an in-memory transport,
-    which every other test in this module has already demonstrated by not opening a socket.
+    Which is also the guarantee this whole suite rests on, so it is pinned rather than
+    assumed. Both examples ask `examples.ollama.choose_model()` whether a local model is
+    within reach, and on a machine running a daemon the honest answer is *yes* — so a suite
+    that let them ask would drive one example against whatever model that laptop happened to
+    have pulled. `examples.ollama` documents the off switch for exactly this: setting
+    `SENTRYKIT_OLLAMA_URL` to an empty value returns before any socket is opened. The root
+    `conftest` sets it for every test, and this is the test that notices if it stops working.
+
+    The MCP example asks the same question through the same module, so `choose_model()`
+    answering `None` covers both. Its client speaks to the server over an in-memory transport
+    and has no model of its own, which every other test here demonstrates by not opening a
+    socket.
     """
+    assert ollama.endpoint() == ""
+    assert ollama.choose_model() is None
     assert isinstance(default_model(), TestModel)
     assert isinstance(agent.model, TestModel)
 

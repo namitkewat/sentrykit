@@ -411,13 +411,16 @@ async def test_severing_the_chain_leaves_the_role_gate_alone() -> None:
     """Alice can still search on the severed graph, because that gate is a role and not a chain.
 
     Without this the previous test would also pass against a store that had simply lost alice.
+    The whole manifest is pinned rather than one membership, because what makes the point is
+    that ``read_order`` is the *only* thing missing from it: everything she holds by role is
+    still advertised, so the one tool that went is the one the cut edge was carrying.
     """
     async with serving(severed=True) as caller:
         result = await caller.call("search_orders", user="alice")
         manifest = await caller.manifest(user="alice")
 
     assert result.is_error is not True
-    assert manifest == ("search_orders",)
+    assert manifest == ("desk_status", "brief_orders", "search_orders", "issue_refund")
 
 
 @pytest.mark.integration
