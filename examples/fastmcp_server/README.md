@@ -565,11 +565,16 @@ To run that half:
 3. optionally pin one with `SENTRYKIT_OLLAMA_MODEL`, or point at another daemon with
    `SENTRYKIT_OLLAMA_URL`.
 
+Setting `SENTRYKIT_OLLAMA_URL` to an *empty* value turns the search off outright — no socket is
+opened and the in-process drive above is the whole demonstration. That is how the test suite
+stays hermetic, and it is also the switch to reach for when you have a daemon and want the
+reproducible run anyway.
+
 With no daemon reachable the section says so and the run continues:
 
 ```
 --- the model proposes; the policy decides ---
-  no tool-capable Ollama model at http://127.0.0.1:1.
+  no tool-capable model answered at http://127.0.0.1:1.
   the deterministic drive above is the whole demonstration: every outcome in it
   is decided from the principal and the proposed arguments, never from which
   model proposed them. Install Ollama and pull a tool-capable model to see a

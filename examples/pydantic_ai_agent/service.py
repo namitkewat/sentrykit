@@ -118,7 +118,7 @@ def read_order(order_id: str) -> dict[str, object]:
     Returns:
         The order, which the engine annotates with ``_authz`` in place.
     """
-    return {"order_id": order_id, "total": 41.50}
+    return {"order_id": order_id, "project": "orders-eu", "total": 120}
 
 
 @protect(action='Action::"orders.export"', resource='Tool::"orders"')
@@ -161,7 +161,7 @@ def issue_refund(order_id: str, amount: int, region: str) -> dict[str, object]:
     Returns:
         The refund, which the engine annotates with ``_authz`` in place.
     """
-    return {"order_id": order_id, "amount": amount, "region": region, "refund_id": "rf-1"}
+    return {"refund_id": "rf-1", "order_id": order_id, "amount": amount, "region": region}
 
 
 @protect(action='Action::"refunds.approve"', resource='Tool::"refunds"')

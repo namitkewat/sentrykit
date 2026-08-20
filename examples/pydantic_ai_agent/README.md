@@ -98,6 +98,10 @@ no API key, no account:
 3. optionally `SENTRYKIT_OLLAMA_MODEL=qwen2.5:3b` to pin which one, and
    `SENTRYKIT_OLLAMA_URL` if the daemon is not on `http://localhost:11434`.
 
+Setting `SENTRYKIT_OLLAMA_URL` to an *empty* value turns the search off outright — no socket is
+opened and the deterministic model is used. That is how the test suite stays hermetic, and it
+is also the switch to reach for when you have a daemon and want the reproducible run anyway.
+
 With a daemon answering, that section reads like this — the model chose the tool and drafted
 the arguments itself:
 
@@ -115,10 +119,10 @@ and prints why:
 
 ```
 model: TestModel
-No Ollama daemon answered at http://127.0.0.1:1, so this section runs on a
-stand-in that calls every visible tool with generated arguments. Install Ollama
-and pull a tool-capable model to see a real one propose these calls; every
-authorization outcome above is identical either way.
+  -- no tool-capable model answered at http://127.0.0.1:1
+This section runs on a stand-in that calls every visible tool with generated
+arguments. Install Ollama and pull a tool-capable model to see a real one
+propose these calls; every authorization outcome above is identical either way.
 ```
 
 The fallback is not a lesser mode. Every authorization outcome in the table below is identical

@@ -58,7 +58,7 @@ def desk_status() -> dict[str, object]:
     Returns:
         The desk's status.
     """
-    return {"desk": "orders", "open": True, "queue": 3}
+    return {"desk": "orders", "open": True}
 
 
 # Protected, and NOT registered as a tool anywhere in this example. A model cannot propose it;
@@ -140,7 +140,7 @@ def read_order(order_id: str) -> dict[str, object]:
     Returns:
         The order.
     """
-    return {"order_id": order_id, "total": "42.00", "currency": "EUR"}
+    return {"order_id": order_id, "project": "orders-eu", "total": 120}
 
 
 # A gate that reads the proposed argument, over an argument layer that also reads it. Cedar
@@ -194,7 +194,7 @@ def issue_refund(order_id: str, amount: int, region: str) -> dict[str, object]:
     Returns:
         The refund.
     """
-    return {"order_id": order_id, "amount": amount, "region": region, "refund_id": "rf-1"}
+    return {"refund_id": "rf-1", "order_id": order_id, "amount": amount, "region": region}
 
 
 # The admin action, and the cheapest possible demonstration that a gate is about the principal
