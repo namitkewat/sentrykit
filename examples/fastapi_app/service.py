@@ -105,7 +105,10 @@ def read_order(order_id: str) -> dict[str, object]:
     policy written.
 
     In the ``_authz`` envelope: an allow for Alice and a deny for Bob, from one policy that
-    mentions neither of them.
+    mentions neither of them. Bob's deny **names nothing**: no permit reached him, so no
+    policy was determining and ``determining_policies`` is empty even at ``debug``. A refusal
+    by a ``forbid`` names that ``forbid``; a refusal because nothing permitted the call has
+    nothing to name. His refusal on ``orders.search`` reads the same way.
 
     Args:
         order_id: Which order to read.
@@ -148,20 +151,25 @@ def export_orders(fmt: str, scope: str = "open") -> dict[str, object]:
 def issue_refund(order_id: str, amount: int, region: str) -> dict[str, object]:
     """Issue a refund against an order.
 
-    Three governed arguments, and two policies that decide on the **relationship between**
-    two of them. A refund of 750 is fine and a ``uk`` refund is fine, and together they are
-    forbidden; a refund of 5000 is refused for support and permitted for an admin, by one
-    condition rather than by two policies. Cedar evaluates the whole request at once, so
-    sentrykit needs no extra syntax to express either rule.
+    An unconditional permit, and two ``forbid`` rules over it that read the proposal. A refund
+    of 750 is fine and a ``uk`` refund is fine, and together they are forbidden — that rule
+    decides purely on the **relationship between two arguments**. A refund of 5000 is refused
+    for support and permitted for an admin — that rule decides on **an argument together with
+    the principal**. Cedar evaluates the whole request at once, so sentrykit needs no extra
+    syntax to express either one.
+
+    The permit is unconditional on purpose. A permit whose ``when`` clause read
+    ``context.args`` would come out false for a caller who has proposed nothing yet, and an
+    agent asking which tools it may attempt proposes nothing. Permit broadly, forbid narrowly.
 
     The layers are separately visible here. At 900 the gate says yes — it is under the desk
     limit — and Alice's own grant then rejects the value and refills it with 50.
 
-    In the ``_authz`` envelope: a cross-region refusal is a named deny; a refusal by the desk
-    limit is a **default deny** whose ``determining_policies`` is empty at ``debug``, because
-    a ``when`` clause that comes out false leaves no policy determining. An ``order_id`` that
-    fails its pattern has no default to fall back on and raises ``DefaultUnavailable``,
-    whose body names the argument rather than an action — the gate had already said yes.
+    In the ``_authz`` envelope: both refusals are **named** denies at ``debug``, by
+    ``no-large-cross-region-refunds`` and ``refunds-above-the-desk-limit-need-an-admin``
+    respectively, because a ``forbid`` that fires is determining. An ``order_id`` that fails
+    its pattern has no default to fall back on and raises ``DefaultUnavailable``, whose body
+    names the argument rather than an action — the gate had already said yes.
 
     Args:
         order_id: The order being refunded. Governed by a pattern with no default.

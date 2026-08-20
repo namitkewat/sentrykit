@@ -19,7 +19,9 @@ example that is framework-specific:
 * ``POST /orders/export`` — an **async** route reading its body by hand, refused three
   different ways: by role, by a ``forbid`` that reads the proposed argument, and by having
   nothing left to run with.
-* ``POST /refunds`` — two policies that decide on the relationship *between* arguments.
+* ``POST /refunds`` — a broad permit with two narrow ``forbid`` rules over it: one
+  decides on an argument *together with* the principal, the other purely on the
+  relationship *between* two arguments.
 * ``POST /refunds/{refund_id}/approve`` — the admin action.
 
 Authentication is a stub: the ``x-user`` header names the principal. That is the seam a real
@@ -183,11 +185,11 @@ def create_app() -> FastAPI:
 
     @app.post("/refunds")
     async def refund(request: Request) -> dict[str, object]:
-        """Issue a refund, and let two policies judge the arguments together.
+        """Issue a refund, and let two ``forbid`` rules read the proposed arguments.
 
-        Nothing in this handler compares ``amount`` to ``region``. Cedar receives the whole
-        proposal and answers about all of it at once, so the cross-region rule and the desk
-        limit are policy text rather than code here.
+        Nothing in this handler compares ``amount`` to ``region``, and nothing here asks who
+        the caller is. Cedar receives the whole proposal and answers about all of it at once,
+        so the cross-region rule and the desk limit are policy text rather than code here.
 
         Returns:
             The refund, with the ``_authz`` envelope.
@@ -231,7 +233,7 @@ FLOWS: Final[tuple[_Flow, ...]] = (
     ("dana", "GET", "/orders?limit=500&status=open", None),
     # Multi-hop relationship: the permit names a project, not a person.
     ("alice", "GET", "/orders/o-1", None),
-    # The same chain length, the other project.
+    # The same chain length, the other project. No permit reaches bob, so nothing is named.
     ("bob", "GET", "/orders/o-1", None),
     # Plainly allowed.
     ("bob", "POST", "/orders/export", {"fmt": "csv"}),
@@ -243,7 +245,8 @@ FLOWS: Final[tuple[_Flow, ...]] = (
     ("bob", "POST", "/orders/export", {"fmt": "xml"}),
     # A forbid reading the raw proposal, before the argument layer runs.
     ("bob", "POST", "/orders/export", {"fmt": "pdf"}),
-    # The role gate.
+    # The role gate, and the other refusal that names nothing: no permit reaches bob, so no
+    # policy was determining and the request falls through to Cedar's default deny.
     ("bob", "GET", "/orders", None),
     # Two arguments, each fine, and fine together.
     ("alice", "POST", "/refunds", {"order_id": "ord-0007", "amount": 100, "region": "uk"}),
@@ -251,9 +254,10 @@ FLOWS: Final[tuple[_Flow, ...]] = (
     ("alice", "POST", "/refunds", {"order_id": "ord-0007", "amount": 750, "region": "uk"}),
     # The gate said yes at 900; her own grant then rejected it and refilled with 50.
     ("alice", "POST", "/refunds", {"order_id": "ord-0007", "amount": 900, "region": "eu"}),
-    # The desk limit. A `when` clause that comes out false is a default deny: nothing named.
+    # The desk limit, as a narrow forbid over a broad permit. A forbid that fires is
+    # determining, so this refusal names `refunds-above-the-desk-limit-need-an-admin`.
     ("alice", "POST", "/refunds", {"order_id": "ord-0007", "amount": 5000, "region": "eu"}),
-    # The same call, the admin branch of the same condition.
+    # The same call, exempted from that forbid by its last clause: dana is an admin.
     ("dana", "POST", "/refunds", {"order_id": "ord-0007", "amount": 5000, "region": "eu"}),
     # A pattern rejection with no default to refill from.
     ("alice", "POST", "/refunds", {"order_id": "refund-me", "amount": 100, "region": "eu"}),

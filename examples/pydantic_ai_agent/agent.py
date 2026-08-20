@@ -1,40 +1,52 @@
 """A Pydantic-AI agent that acts *for* a human, and a policy that knows which human.
 
-Run it with `pixi run -e agent run-agent`. It needs no API key and makes no network call: the
-default model is `pydantic_ai.models.test.TestModel`, and the narrative is driven by
-`pydantic_ai.models.function.FunctionModel`, which lets the example show **exactly which tools
-the model was offered** rather than asserting it in prose. Set `SENTRYKIT_EXAMPLE_MODEL` to a
-model name to point the free-form run at a real model instead.
+Run it with `pixi run -e agent run-agent`. It needs nothing installed beyond the `agent`
+environment, and it will use a real model when one is within reach: if an
+[Ollama](https://ollama.com) daemon is running locally with a tool-capable model, the free-form
+section at the end runs on it, and otherwise on `pydantic_ai.models.test.TestModel`. Every
+authorization outcome is identical either way — the decision is made from the principal and
+the proposed arguments, never from which model proposed them. `SENTRYKIT_OLLAMA_MODEL` pins
+which local model to use and `SENTRYKIT_OLLAMA_URL` points at a daemon that is not on
+`localhost:11434`; both are optional, and there is no other model setting.
 
 ## What it demonstrates
 
-One agent, two registered tools, and two callers:
+Seven governed tools, one protected callable that is deliberately *not* a tool, three humans,
+and one manifest that changes depending on whose behalf the agent is running. Between them
+they exercise every surface an argument rule can be written on:
 
-* `alice` is `support`. She may search orders, with a constrained `region` and a capped
-  `limit`. `export_orders` is **not in the manifest her model is offered**.
-* `bob` is `auditor`. He may export orders — but not as a PDF, which a `forbid` policy
-  refuses by reading the proposed argument. `search_orders` is **not in the manifest his model
-  is offered**, and calling it anyway is still refused.
+* the **decorator** — `@protect` bare, and with an explicit action and resource;
+* the **grant store** — allow-sets, deny-sets, patterns, bounds and defaults, per principal
+  and per action;
+* **reviewed policy** — an argument ceiling declared in `policies/10-orders.cedar`, and two
+  rules that decide on the *relationship between* two proposed arguments.
+
+The model **proposes**. The policy **decides**. When a proposed value is not one the principal
+may pass, it is rejected and their own default refills the gap — reject-and-refill, so the
+value the call runs with is the principal's default and never the bound that refused them.
+
+## On-behalf-of
 
 The agent process has no identity of its own. Whoever the application names in `deps` is the
-principal, and that is the whole idea: an agent acting for a human *is* that human. The
-model cannot influence it — `deps` is supplied by the application at `run()` time and never
-appears in anything the model can write.
+principal, and that is the whole idea: an agent acting for a human *is* that human. The model
+cannot influence it — `deps` is supplied by the application at `run()` time and never appears
+in anything the model can write: not in the prompt, not in the tool schemas, not in the
+arguments it proposes.
 
 ## Nothing is wired at import
 
-`build_agent()` calls `configure()` and `install()`, which mutate process-global state. A
-module-level `agent = build_agent()` would run that wiring for anyone who so much as imported
-the module — including a test collector, and including a second example app in the same
-process. `pixi run -e agent run-agent` invokes `main()` through `__main__` instead, and every
-test builds its own.
+`build_agent()` calls `configure()` and `install()`, which mutate process-global state, and
+`default_model()` probes for a local daemon. A module-level `agent = build_agent()` would run
+all of that for anyone who so much as imported the module — including a test collector.
+`pixi run -e agent run-agent` invokes `main()` through `__main__` instead, and every test
+builds its own.
 """
 
 from __future__ import annotations
 
 import asyncio
-import os
-from dataclasses import dataclass
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass, field
 
 from pydantic_ai import Agent, RunContext
 from pydantic_ai.messages import (
@@ -45,21 +57,37 @@ from pydantic_ai.messages import (
     ToolCallPart,
     ToolReturnPart,
 )
-from pydantic_ai.models import Model, infer_model
+from pydantic_ai.models import Model
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_ai.models.test import TestModel
 from pydantic_ai.usage import RunUsage
 
-from examples.pydantic_ai_agent.policy import POLICY_TEXT, build_grants
-from examples.pydantic_ai_agent.service import export_orders, search_orders
+from examples import ollama
+from examples.pydantic_ai_agent.policy import POLICY_DIR, build_grants
+from examples.pydantic_ai_agent.service import (
+    approve_refund,
+    brief_orders,
+    desk_status,
+    export_orders,
+    issue_refund,
+    read_order,
+    search_orders,
+)
 from sentrykit import configure, install
 from sentrykit.integrations.pydantic_ai import PydanticAIProvider, governed_tool, tool_adapter
+from sentrykit.stores.filesystem import FilesystemPolicySource
 
-MODEL_ENV_VAR = "SENTRYKIT_EXAMPLE_MODEL"
-"""Environment variable that opts the free-form run into a real model. Unset means offline."""
+PROMPT = (
+    "Look at the orders on this desk and tell me what you found. Use the tools you have and "
+    "do not ask me for details: leave out any argument you are unsure of, because policy "
+    "fills those in."
+)
+"""The user turn. The scripted models ignore it; a real model does not.
 
-PROMPT = "Look at the orders you are allowed to look at."
-"""The user turn. The scripted models ignore it; a real model does not."""
+The last sentence is doing real work. An argument the model omits is one the principal's own
+default supplies, so a model that guesses less gets *more* done — which is only true because
+the tool schema was re-declared to let it omit them.
+"""
 
 
 @dataclass(frozen=True)
@@ -79,48 +107,120 @@ class Caller:
 
 
 def default_model() -> Model:
-    """The model the agent runs on when the caller names none.
+    """Pick the model to run the free-form section on: a local one if there is one.
 
-    Offline by default: an example that needed an API key to run would not be run. Setting
-    :data:`MODEL_ENV_VAR` to a Pydantic-AI model name (``openai:gpt-4o``,
-    ``anthropic:claude-sonnet-4-5``, …) opts into a real one, which is the only thing in this
-    file that can reach the network.
+    An example that needed an API key would not be run, so the live path is Ollama: no
+    account, no key, nothing to configure when the daemon is already on the machine. When
+    there is none, a ``TestModel`` drives the same tools with generated arguments.
 
     Returns:
-        The inferred model when :data:`MODEL_ENV_VAR` is set, otherwise a ``TestModel`` that
-        calls every visible tool and reports what they returned.
+        An Ollama-backed model when the daemon reports a tool-capable one, otherwise a
+        ``TestModel``.
     """
-    named = os.environ.get(MODEL_ENV_VAR)
-    return infer_model(named) if named else TestModel()
+    name = ollama.choose_model()
+    if name is None:
+        return TestModel()
+    try:
+        # Imported here rather than at module scope: both come from the optional ``openai``
+        # package, and the example has to keep running where it is absent.
+        from pydantic_ai.models.openai import OpenAIChatModel
+        from pydantic_ai.providers.ollama import OllamaProvider
+    except ImportError:
+        return TestModel()
+    return OpenAIChatModel(name, provider=OllamaProvider(base_url=f"{ollama.endpoint()}/v1"))
+
+
+def describe_model(model: Model) -> str:
+    """Name a model the way the demonstration prints it.
+
+    Args:
+        model: The model in use.
+
+    Returns:
+        The class name, plus the model id when it has one worth showing.
+    """
+    name = getattr(model, "model_name", "")
+    kind = type(model).__name__
+    return f"{kind} ({name})" if name and name != "test" else kind
 
 
 def build_agent(model: Model | None = None) -> Agent[Caller, str]:
-    """Wire settings, grants, policy, the provider and the two governed tools into one agent.
+    """Wire settings, grants, reviewed policy, the provider and the governed tools.
 
     Args:
-        model: The model to run on. Defaults to :func:`default_model`.
+        model: The model to run on. Defaults to :func:`default_model`, which probes for a
+            local daemon; passing one explicitly skips the probe entirely.
 
     Returns:
-        The agent, with both tools registered, each governed and each hidden from any run
-        whose principal could not invoke it.
+        The agent, with every tool registered, governed, and hidden from any run whose
+        principal could not invoke it.
     """
-    # ``verbose`` so the ``_authz`` envelope actually carries processed values, applied
-    # defaults and rejection reasons — the model is one of the audiences for that explanation.
-    # A production agent would leave this at ``summary``.
+    # ``verbose`` so the ``_authz`` envelope carries processed values, applied defaults and
+    # rejection reasons — the model is one of the audiences for that explanation, and it is
+    # what lets it choose a different call instead of guessing. Production would use
+    # ``summary``.
     configure(verbosity="verbose")
 
     store = build_grants()
     provider = PydanticAIProvider(grants=store)
-    install(POLICY_TEXT, grant_store=store, context_provider=provider)
+    # Policy logic comes off disk, reviewed in git; grants come from the store, mutable as
+    # data. ``policies=`` and ``policy_source=`` are mutually exclusive, which is the wiring
+    # saying out loud that there is one place policy logic lives.
+    install(
+        policy_source=FilesystemPolicySource(POLICY_DIR),
+        grant_store=store,
+        context_provider=provider,
+    )
 
     agent: Agent[Caller, str] = Agent(model or default_model(), deps_type=Caller)
-    # ``governed_tool`` returns the protected callable unchanged, so ``search_orders`` here is
-    # still the same function the rest of the program imports and calls directly.
-    governed_tool(agent, provider=provider)(search_orders)
-    # ``optional=()`` overrides the default and keeps ``fmt`` required. Nothing about it is
-    # policy's to supply — it is a genuine choice by whoever wants the export — so letting the
-    # model leave it out would only produce a refusal it could not have predicted.
-    governed_tool(agent, provider=provider, optional=())(export_orders)
+    register = governed_tool(agent, provider=provider)
+
+    # ``governed_tool`` returns the protected callable unchanged, so every name below is still
+    # the same function the rest of the program imports and calls directly. Registering a tool
+    # does not take a function away from anybody.
+
+    # The bare-@protect callable. Its action id is this module's neighbour's import path —
+    # ``Action::"examples.pydantic_ai_agent.service.desk_status"`` — which is what the policy
+    # permitting it has to name.
+    register(desk_status)
+
+    # Its body calls ``summarize_orders``, which is protected and is NOT registered here. The
+    # inner call is decided separately against the same principal, so watch for two decisions
+    # from one tool call: the gate is on the call, never on the registration.
+    register(brief_orders)
+
+    # ``region`` and ``limit`` have no Python defaults, so ``optional`` defaults to exactly
+    # those two and the model may omit either — which is what makes alice's defaults, and
+    # dana's, reachable at all. ``status`` has a Python default, is therefore never absent,
+    # and is left alone. Watch ``_authz.defaults_applied`` for what policy filled in and
+    # ``_authz.rejected`` for what it threw away first.
+    register(search_orders)
+
+    # The relationship case: nothing in the permit names a principal. Watch ``_authz.decision``
+    # flip between alice and bob on the identical call and identical arguments.
+    register(read_order)
+
+    # ``fmt`` is omittable for the same reason ``region`` is: bob's grant gives it a default,
+    # so leaving it out is a policy-supplied value rather than a refusal he could not have
+    # predicted. (Keeping it required with ``optional=()`` would be right only if no principal
+    # had a default for it — an argument that can never be absent can never be filled in.)
+    # Watch the two fates of one argument here: ``xml`` is refilled with ``csv`` by his grant,
+    # while ``pdf`` is denied outright by reviewed policy and there is nothing to refill.
+    register(export_orders)
+
+    # Three arguments decided by three different mechanisms in one call: ``order_id`` by a
+    # pattern with no default, ``amount`` by a bounded range *and* by a forbid weighing it
+    # against the principal, ``region`` by an allow-set *and* by a forbid weighing it against
+    # ``amount``. It is in alice's and dana's manifests because the permit granting it is
+    # unconditional — a permit that read ``context.args`` would evaluate to false against a
+    # manifest probe, which proposes nothing, and the tool would be hidden from everybody.
+    # ``governed_tool(..., filter_manifest=False)`` is the escape hatch when a policy has to be
+    # written that way; enforcement is intact either way.
+    register(issue_refund)
+
+    # The admin action, and the clearest look at the manifest filter: it is in dana's manifest
+    # and absent from alice's, because alice would be refused whatever she passed.
+    register(approve_refund)
     return agent
 
 
@@ -165,7 +265,7 @@ async def propose(
         caller: Whose behalf the run acts on.
         tool: The tool name to propose.
         **arguments: The arguments to propose. Omitting one is a state ``governed_tool``
-            deliberately keeps expressible, so that policy can fill it in — see the README.
+            deliberately keeps expressible, so that policy can fill it in.
 
     Returns:
         The tool's result — the ordinary mapping with its ``_authz`` envelope when the call was
@@ -209,41 +309,352 @@ def dispatch_context(agent: Agent[Caller, str], caller: Caller) -> RunContext[Ca
     return RunContext(deps=caller, model=agent.model, usage=RunUsage())
 
 
-async def demonstrate(agent: Agent[Caller, str]) -> None:
-    """Print the manifest and the outcomes for both callers.
+async def dispatch(
+    agent: Agent[Caller, str], caller: Caller, fn: Callable[..., object], **arguments: object
+) -> object:
+    """Invoke a governed tool directly, with no model and no manifest in the way.
+
+    Args:
+        agent: The agent whose run context is borrowed.
+        caller: Whose behalf the dispatch acts on.
+        fn: The protected callable to dispatch.
+        **arguments: The arguments to pass.
+
+    Returns:
+        Whatever the adapter returned — the result with its envelope, or the refusal payload.
+    """
+    adapter = tool_adapter(fn)
+    return await adapter(dispatch_context(agent, caller), **arguments)
+
+
+@dataclass(frozen=True)
+class Flow:
+    """One call the demonstration makes, and how it makes it.
+
+    Attributes:
+        number: Its row in the printed table.
+        principal: Whose behalf it runs on.
+        fn: The protected callable being called. Its ``__name__`` is also its tool name.
+        arguments: What is proposed. An absent argument is the interesting case.
+        mark: ``" "`` when the model proposes the call. ``"*"`` when the tool is hidden from
+            this principal, so the demonstration dispatches it directly instead — footnoted
+            under the table.
+    """
+
+    number: int
+    principal: str
+    fn: Callable[..., object]
+    arguments: Mapping[str, object] = field(default_factory=dict)
+    mark: str = " "
+
+
+FLOWS: tuple[Flow, ...] = (
+    Flow(1, "alice", desk_status),
+    Flow(2, "alice", brief_orders),
+    Flow(3, "alice", search_orders),
+    Flow(4, "alice", search_orders, {"region": "cn", "limit": 5}),
+    Flow(5, "alice", search_orders, {"limit": 500, "status": "open"}),
+    Flow(6, "dana", search_orders, {"limit": 500, "status": "open"}),
+    Flow(7, "alice", read_order, {"order_id": "o-1"}),
+    Flow(8, "bob", read_order, {"order_id": "o-1"}, mark="*"),
+    Flow(9, "bob", export_orders, {"fmt": "csv"}),
+    Flow(10, "bob", export_orders, {"scope": "open"}),
+    Flow(11, "bob", export_orders, {"fmt": "xml", "scope": "open"}),
+    Flow(12, "alice", issue_refund, {"order_id": "refund-me", "amount": 900}),
+    Flow(13, "bob", export_orders, {"fmt": "pdf"}),
+    Flow(14, "bob", search_orders, mark="*"),
+    Flow(15, "alice", issue_refund, {"order_id": "ord-0007", "amount": 100, "region": "uk"}),
+    Flow(16, "alice", issue_refund, {"order_id": "ord-0007", "amount": 750, "region": "uk"}),
+    Flow(17, "alice", issue_refund, {"order_id": "ord-0007", "amount": 900, "region": "eu"}),
+    Flow(18, "alice", issue_refund, {"order_id": "ord-0007", "amount": 5000, "region": "eu"}),
+    Flow(19, "dana", issue_refund, {"order_id": "ord-0007", "amount": 5000, "region": "eu"}),
+    Flow(20, "alice", issue_refund, {"order_id": "refund-me", "amount": 100, "region": "eu"}),
+    Flow(21, "dana", approve_refund, {"refund_id": "rf-1"}),
+    Flow(22, "alice", approve_refund, {"refund_id": "rf-1"}, mark="*"),
+)
+"""Every flow the example prints, in the order it prints them."""
+
+
+def render_call(flow: Flow) -> str:
+    """Render a flow as the Python call it is.
+
+    Args:
+        flow: The flow.
+
+    Returns:
+        Something like ``search_orders(region='cn', limit=5)``.
+    """
+    inner = ", ".join(f"{name}={value!r}" for name, value in flow.arguments.items())
+    return f"{flow.fn.__name__}({inner})"
+
+
+def render_outcome(payload: object) -> str:
+    """Turn what a governed tool returned into one legible line.
+
+    Reads only the ``_authz`` envelope and the refusal payload — the same two things a model,
+    or a caller, has to work from.
+
+    Args:
+        payload: The tool's return value, or the retry message a model got instead.
+
+    Returns:
+        ``allowed``, ``narrowed: …``, ``defaulted: …``, ``denied: …``, or the error name.
+    """
+    if not isinstance(payload, Mapping):
+        return f"not offered: {payload}"
+
+    envelope = payload.get("_authz")
+    envelope = envelope if isinstance(envelope, Mapping) else {}
+    error = payload.get("error")
+    if error == "AuthzDenied":
+        reason = envelope.get("reason") or payload.get("detail")
+        policies = envelope.get("determining_policies") or ()
+        named = f" [{', '.join(str(p) for p in policies)}]" if policies else ""
+        return f"denied: {reason}{named}"
+    if error is not None:
+        # NoValidArguments and DefaultUnavailable come from the argument layer, not the gate.
+        # Their ``_authz`` is built from the exception rather than from a decision, so it
+        # names the rejected arguments and what would have been accepted, and carries no
+        # ``action`` or ``resource`` — the gate is not what refused. The error name and the
+        # detail are the whole story, so those are what this line prints.
+        return f"{error}: {payload.get('detail')}"
+
+    rejected = envelope.get("rejected") or ()
+    defaults = dict(envelope.get("defaults_applied") or {})
+    notes: list[str] = []
+    for item in rejected:
+        if not isinstance(item, Mapping):  # pragma: no cover - defensive
+            continue
+        name = str(item.get("name"))
+        rule = item.get("rule")
+        policy = item.get("policy")
+        refill = defaults.pop(name, None)
+        source = f", {policy}" if policy else ""
+        # "refilled with" and never "clamped to": the value that breached a bound is thrown
+        # away, and the principal's own default takes its place.
+        notes.append(f"{name}={item.get('value')!r} rejected ({rule}{source}) -> {name}={refill!r}")
+    filled = ", ".join(f"{name}={value!r}" for name, value in defaults.items())
+    if notes:
+        tail = f"; defaulted: {filled}" if filled else ""
+        return f"narrowed: {'; '.join(notes)}{tail}"
+    if filled:
+        return f"defaulted: {filled}"
+    return "allowed"
+
+
+async def run_flow(agent: Agent[Caller, str], flow: Flow) -> str:
+    """Run one flow and render its outcome.
+
+    Args:
+        agent: The agent to drive.
+        flow: The flow to run.
+
+    Returns:
+        The rendered outcome.
+    """
+    caller = Caller(flow.principal)
+    if flow.mark != " ":
+        # Around the model, straight to the adapter. The tool is hidden from this principal,
+        # so no model could propose it — and dispatching it by name anyway is what proves
+        # hiding is an affordance and the gate is the enforcement.
+        return render_outcome(await dispatch(agent, caller, flow.fn, **flow.arguments))
+    return render_outcome(await propose(agent, caller, flow.fn.__name__, **flow.arguments))
+
+
+def abbreviate(text: str, limit: int = 220) -> str:
+    """Shorten a model's answer to something a terminal can show on a few lines.
+
+    Args:
+        text: The answer.
+        limit: How many characters to keep.
+
+    Returns:
+        The answer, truncated with an ellipsis when it was longer.
+    """
+    flat = " ".join(text.split())
+    return flat if len(flat) <= limit else f"{flat[:limit]} [...]"
+
+
+def banner(title: str) -> None:
+    """Print a section heading.
+
+    Args:
+        title: The heading text.
+    """
+    print(f"\n=== {title} " + "=" * max(0, 92 - len(title)))
+
+
+async def show_manifests(agent: Agent[Caller, str]) -> None:
+    """Print each principal's tool manifest, as the model is given it.
+
+    Args:
+        agent: The agent to inspect.
+    """
+    banner("the manifest each model is offered")
+    for name in ("alice", "bob", "dana"):
+        offered = await offered_tools(agent, Caller(name))
+        print(f"{name:<6}: {', '.join(offered)}")
+    print(
+        "\nA tool is hidden exactly when this principal would be refused whatever they passed."
+        "\nA model can only propose what it was shown, so bob's model never asks to search."
+    )
+
+
+async def show_flows(agent: Agent[Caller, str]) -> None:
+    """Run every flow and print the table.
 
     Args:
         agent: The agent to drive.
     """
-    for caller in (Caller("alice"), Caller("bob")):
-        print(f"\n=== acting for {caller.principal} " + "=" * 44)
-        print(f"tools the model is offered : {await offered_tools(agent, caller)}")
-        for label, tool, arguments in (
-            ("search, nothing proposed ", "search_orders", {}),
-            ("search, region=uk limit=5", "search_orders", {"region": "uk", "limit": 5}),
-            ("search, region=cn limit=5", "search_orders", {"region": "cn", "limit": 5}),
-            ("search, region=cn lim=999", "search_orders", {"region": "cn", "limit": 999}),
-            ("export, fmt=csv          ", "export_orders", {"fmt": "csv"}),
-            ("export, fmt=pdf          ", "export_orders", {"fmt": "pdf"}),
-        ):
-            print(f"{label} -> {await propose(agent, caller, tool, **arguments)}")
+    banner("every flow, decided")
+    print(f"{'#':>3}  {'who':<5}  {'call':<59}  outcome")
+    for flow in FLOWS:
+        print(f"{flow.number:>3}{flow.mark} {flow.principal:<5}  {render_call(flow):<59}  ", end="")
+        print(await run_flow(agent, flow))
+    print(
+        "\n* Hidden from that principal's manifest, so dispatched by name with no model in the"
+        "\n  loop. The gate refuses it exactly as if it had never been hidden."
+        "\n\nA tool call carries the advertised schema's defaults, so an argument with a Python"
+        "\ndefault arrives even when the model did not propose it -- which is why flow 11 still"
+        "\nnarrows: scope survives, and a surviving argument is what a rejected one is refilled"
+        "\nalongside. Flow 12 proposes two arguments and both are rejected, so nothing is left"
+        "\nto run with: narrowing refines a proposal, it does not rescue one."
+    )
 
-    # The manifest is an affordance for the model, never the gate. Bob was never offered the
-    # search, so his model cannot propose it -- but a host that ignores the manifest and
-    # dispatches the adapter itself meets the identical decision.
-    print("\n=== bypassing the manifest, with no model in the loop " + "=" * 13)
-    outcome = await tool_adapter(search_orders)(dispatch_context(agent, Caller("bob")))
-    print(f"search_orders(), acting for bob -> {outcome}")
 
-    print("\n=== free-form, on the agent's own model " + "=" * 27)
-    print(f"model: {type(agent.model).__name__} (set {MODEL_ENV_VAR} to use a real one)")
-    for caller in (Caller("alice"), Caller("bob")):
-        result = await agent.run(PROMPT, deps=caller)
-        print(f"{caller.principal}: {result.output}")
+async def show_ceiling(agent: Agent[Caller, str]) -> None:
+    """Spell out the ceiling case, which is the one worth reading twice.
+
+    Args:
+        agent: The agent to drive.
+    """
+    banner("the ceiling, read twice")
+    result = await propose(agent, Caller("dana"), "search_orders", limit=500, status="open")
+    limit = result.get("limit") if isinstance(result, Mapping) else None
+    print(
+        "dana proposed limit=500.\n"
+        "The ceiling declared in policies/10-orders.cedar is 100.\n"
+        f"She ran with limit={limit}, which is her own default.\n\n"
+        "That is reject-and-refill: a value the principal may not pass is thrown away and\n"
+        "their default fills the gap. The result is never the bound that refused it, so it\n"
+        "is not 100 and could not be. The rejection names support-may-search because the\n"
+        "reviewed ceiling is what refused her; a rejection from her own grant would name the\n"
+        "grant instead."
+    )
+
+
+async def show_nesting(agent: Agent[Caller, str]) -> None:
+    """Show one tool call producing two decisions, against a callable that is not a tool.
+
+    Args:
+        agent: The agent to drive.
+    """
+    banner("one tool call, two decisions")
+    result = await propose(agent, Caller("alice"), "brief_orders")
+    outer = result.get("_authz", {}) if isinstance(result, Mapping) else {}
+    inner_result = result.get("brief", {}) if isinstance(result, Mapping) else {}
+    inner = inner_result.get("_authz", {}) if isinstance(inner_result, Mapping) else {}
+    print(f"outer  {outer.get('action')}  {outer.get('decision')}")
+    print(f"inner  {inner.get('action')}  {inner.get('decision')}")
+    print(
+        "\nsummarize_orders is protected and is not registered as a tool, so no model was ever"
+        "\ntold it exists and none could propose it. It is still decided, because the gate is"
+        "\non the call and not on the registration. Two decisions means two audit records at"
+        "\nwhatever sink is wired, and the outer one is written before the body runs, so a"
+        "\nrefusal inside cannot erase the fact that the outer call was permitted. An inner"
+        "\nrefusal propagates out unchanged rather than becoming a partial answer."
+    )
+
+
+async def show_who_decided(agent: Agent[Caller, str]) -> None:
+    """Re-run three refusals at ``debug`` verbosity, where the envelope names the policies.
+
+    Args:
+        agent: The agent to drive.
+    """
+    banner("which policy decided, and when nothing did")
+    # ``debug`` adds ``determining_policies`` to the envelope. It is off by default because it
+    # tells a caller which reviewed policy rules govern them, which is more than most callers
+    # should learn from a refusal. Restored below, so the rest of the run is unaffected.
+    configure(verbosity="debug")
+    try:
+        pdf = await propose(agent, Caller("bob"), "export_orders", fmt="pdf")
+        over = await propose(
+            agent, Caller("alice"), "issue_refund", order_id="ord-0007", amount=5000, region="eu"
+        )
+        gated = await dispatch(agent, Caller("bob"), search_orders)
+    finally:
+        configure(verbosity="verbose")
+    print(f"13  bob    export_orders(fmt='pdf')       {render_outcome(pdf)}")
+    print(f"18  alice  issue_refund(.., amount=5000)  {render_outcome(over)}")
+    print(f"14  bob    search_orders()                {render_outcome(gated)}")
+    print(
+        "\nA forbid that fires is named, and both of these refusals are one. Flow 14 is the"
+        "\nother shape: no permit matched bob at all, so the decision is the default deny and"
+        "\nnothing was determining. It names no policy because there is no rule to point at,"
+        "\nand saying otherwise would be inventing one."
+    )
+
+
+async def show_free_form(agent: Agent[Caller, str]) -> None:
+    """Let the agent's own model choose what to do, and print what it managed.
+
+    Args:
+        agent: The agent to drive.
+    """
+    banner("free-form, on the agent's own model")
+    print(f"model: {describe_model(agent.model)}")
+    if isinstance(agent.model, TestModel):
+        print(
+            f"  -- {ollama.why_no_model()}\n"
+            "This section runs on a stand-in that calls every visible tool with generated\n"
+            "arguments. Install Ollama and pull a tool-capable model to see a real one\n"
+            "propose these calls; every authorization outcome above is identical either way."
+        )
+    print()
+
+    for name in ("alice", "bob", "dana"):
+        try:
+            result = await agent.run(PROMPT, deps=Caller(name))
+        # Deliberately broad: a small local model fails in a lot of ways, and the point of
+        # this section is that none of them are the policy layer's problem.
+        except Exception as exc:
+            # A small model may propose malformed arguments, insist on a tool it was never
+            # offered, or exhaust its retries. None of that reaches the policy layer: the
+            # decision already happened, or never had to. sentrykit refusing a call the model
+            # should not have proposed is the point, not a failure of the demonstration.
+            print(f"{name:<6}: run did not finish -- {type(exc).__name__}: {exc}")
+            continue
+        called = [
+            part.tool_name
+            for message in result.all_messages()
+            for part in message.parts
+            if isinstance(part, ToolCallPart)
+        ]
+        print(f"{name:<6}: proposed {', '.join(called) or 'nothing'}")
+        print(f"{'':<6}  answered {abbreviate(str(result.output))}")
+
+
+async def demonstrate(agent: Agent[Caller, str]) -> None:
+    """Print the manifests, every flow, the ceiling case and the free-form run.
+
+    Args:
+        agent: The agent to drive.
+    """
+    print(
+        "sentrykit logs a `Argument dropped by policy` warning on every rejection. They are\n"
+        "this run's own log lines arriving on stderr, one per narrowed argument below."
+    )
+    await show_manifests(agent)
+    await show_flows(agent)
+    await show_ceiling(agent)
+    await show_nesting(agent)
+    await show_who_decided(agent)
+    await show_free_form(agent)
 
 
 def main() -> None:
-    """Build the agent and run the whole demonstration offline."""
+    """Build the agent and run the whole demonstration."""
     asyncio.run(demonstrate(build_agent()))
 
 

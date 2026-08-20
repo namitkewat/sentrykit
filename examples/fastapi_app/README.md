@@ -14,7 +14,7 @@ same `policies/` on Flask. Diff the two directories: only the boundary wiring di
 | File | What is in it |
 | --- | --- |
 | `policies/10-orders.cedar` | Reviewed policy *logic* for orders, including the `@constraints` argument ceiling |
-| `policies/20-refunds.cedar` | Reviewed policy logic for refunds — two rules that decide on the relationship *between* arguments |
+| `policies/20-refunds.cedar` | Reviewed policy logic for refunds — a broad permit with two narrow `forbid` rules over it: one decides on an argument *together with* the principal, one on the relationship *between* two arguments |
 | `policy.py` | `POLICY_DIR` / `POLICY_TEXT` (the files above) and `build_grants()` (the entity graph and the per-principal argument constraints — *data*) |
 | `service.py` | The seven `@protect`-ed callables. No web framework, no request object |
 | `main.py` | `create_app()`: settings, grants, policy source, provider, `protect_app`, routes. Plus `FLOWS` and `serve()`, the demonstration |
@@ -275,7 +275,13 @@ curl -s -i localhost:8000/orders -H 'x-user: bob'
 #       "error":"AuthzDenied", ...}
 ```
 
-### Refunds: rules about arguments *together*
+A refusal of this shape **names nothing**. No permit reaches Bob for `orders.search`, so no
+policy was determining, the request falls through to Cedar's default deny, and
+`determining_policies` is empty even at `verbosity="debug"` — flow 8 reads the same way.
+That is what to expect whenever nothing permitted the call. A refusal by a `forbid`, as in
+flows 13, 16 and 18, names the `forbid` that fired.
+
+### Refunds: a broad permit, and two narrow rules that read the proposal
 
 **15 and 16 — refused by the relationship, not by either value.** A refund of 750 is inside
 Alice's bounds and `uk` is one of her regions. Together they trip
@@ -312,8 +318,10 @@ curl -s -X POST localhost:8000/refunds -H 'x-user: alice' \
 #            "defaults_applied":{"amount":50}}}
 ```
 
-**18 and 19 — the same call, two principals.** `refunds-within-desk-limits` permits amounts up
-to 1000 *or* an admin. Alice fails the condition; Dana satisfies its second branch.
+**18 and 19 — the same call, two principals.** `support-may-issue-refunds` permits the call
+unconditionally, and `refunds-above-the-desk-limit-need-an-admin` forbids anything over 1000
+from a principal who is not an admin. That rule decides on **an argument together with the
+principal**: Alice trips it, Dana is exempted by its last clause.
 
 ```bash
 curl -s -i -X POST localhost:8000/refunds -H 'x-user: alice' \
@@ -327,9 +335,14 @@ curl -s -X POST localhost:8000/refunds -H 'x-user: dana' \
 # {"refund_id":"rf-1","order_id":"ord-0007","amount":5000,"region":"eu", ...}
 ```
 
-Alice's refusal is a **default deny**: her `when` clause came out false, so no policy was
-determining and `determining_policies` is empty even at `verbosity="debug"`. Nothing is named
-because nothing decided.
+Alice's refusal is a **named** deny: a `forbid` that fires is determining, so at
+`verbosity="debug"` her envelope carries
+`"determining_policies":["refunds-above-the-desk-limit-need-an-admin"]`.
+
+The permit underneath is unconditional on purpose. Fold the desk limit into a `when` on it and
+the permit would depend on `context.args has amount` — false for a caller who has proposed
+nothing yet, which is exactly what an agent asking which tools it may attempt looks like.
+Permit broadly, forbid narrowly.
 
 **20 — a pattern rejection with nothing to refill from.** `order_id` is governed by a pattern
 and carries no default, so a value that fails it leaves a hole the policy cannot fill. The

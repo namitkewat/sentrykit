@@ -22,12 +22,19 @@ Configuration is two environment variables, both optional:
 
 | variable | default | meaning |
 | --- | --- | --- |
-| `SENTRYKIT_OLLAMA_URL` | `http://localhost:11434` | where the daemon is |
-| `SENTRYKIT_OLLAMA_MODEL` | the first tool-capable model the daemon reports | which model to use |
+| `SENTRYKIT_OLLAMA_URL` | `http://localhost:11434` | where the daemon is; empty means do not look |
+| `SENTRYKIT_OLLAMA_MODEL` | the first tool-capable model it reports | which model to use |
 
 Naming a model that the daemon does not have is treated as *no model*: the examples fall back
 rather than failing, because a typo in an environment variable should not stop an example
 running.
+
+Setting `SENTRYKIT_OLLAMA_URL` to the empty string turns the search off outright — no socket is
+opened and no model is found, so the examples take the deterministic path. That is what a test
+suite wants: an example's behaviour must not depend on whether the machine running it happens
+to have a daemon, and a test that reached for one would be asserting against a different model
+on every developer's laptop. It is also the switch to reach for when you have a daemon and want
+the reproducible run anyway.
 """
 
 from __future__ import annotations
@@ -46,6 +53,7 @@ __all__ = [
     "choose_model",
     "endpoint",
     "tool_capable_models",
+    "why_no_model",
 ]
 
 URL_ENV_VAR: Final = "SENTRYKIT_OLLAMA_URL"
@@ -73,9 +81,10 @@ def endpoint() -> str:
     """Return the daemon's base URL, with no trailing slash.
 
     Returns:
-        The configured URL, or :data:`DEFAULT_URL`.
+        The configured URL, or :data:`DEFAULT_URL`. Empty when the search has been turned off
+        by setting :data:`URL_ENV_VAR` to the empty string.
     """
-    return os.environ.get(URL_ENV_VAR, DEFAULT_URL).rstrip("/")
+    return os.environ.get(URL_ENV_VAR, DEFAULT_URL).strip().rstrip("/")
 
 
 def _post(path: str, payload: dict[str, Any] | None, *, timeout: float) -> Any | None:
@@ -95,11 +104,17 @@ def _post(path: str, payload: dict[str, Any] | None, *, timeout: float) -> Any |
         The decoded JSON answer, or ``None`` if the daemon could not be reached or did not
         answer with JSON.
     """
+    base = endpoint()
+    if not base:
+        # The search is off. Returning before opening a socket is the whole point: this is the
+        # path a test suite takes, and it must not depend on what is listening on this machine.
+        return None
+
     # The URL is this module's own, assembled from configuration rather than from anything a
     # caller or a model supplied.
     body = json.dumps(payload).encode() if payload is not None else None
     request = urllib.request.Request(
-        f"{endpoint()}{path}",
+        f"{base}{path}",
         data=body,
         headers={"content-type": "application/json"},
     )
@@ -154,6 +169,22 @@ def choose_model() -> str | None:
         # than failing: the point of the variable is to steer the example, not to gate it.
         return pinned if pinned in capable else capable[0]
     return capable[0]
+
+
+def why_no_model() -> str:
+    """Explain, in one clause, why the deterministic path was taken.
+
+    The two reasons want different sentences and an example that ran them together would
+    print "no model at " to anyone who turned the search off. Both examples print this, so
+    both say the same thing.
+
+    Returns:
+        A clause that completes "this section runs on a stand-in because ...".
+    """
+    base = endpoint()
+    if not base:
+        return f"the search for one is turned off ({URL_ENV_VAR} is set to an empty value)"
+    return f"no tool-capable model answered at {base}"
 
 
 def chat(
