@@ -356,6 +356,11 @@ def check_several_arguments_are_decided_in_one_call(client: WebCaller) -> None:
     which is what makes it readable as an account of the whole call rather than of one
     argument. ``status`` is in ``processed`` and in neither of the others: it carries a Python
     default, nobody's policy has an opinion about it, and it arrives untouched.
+
+    The rejection is asserted whole because ``docs/web-frameworks.md`` prints it whole, under
+    "The ceiling is reviewed text, and it can only narrow": alice's grant caps ``limit`` at 50,
+    and grants filter before ceilings, so the tighter of the two bounds is the one that reports
+    and the reason names 50 rather than the reviewed 100.
     """
     reply = client.get("/orders?limit=500&status=open", user="alice")
 
@@ -368,7 +373,15 @@ def check_several_arguments_are_decided_in_one_call(client: WebCaller) -> None:
         "_authz": reply.authz,
     }
     assert reply.authz["processed"] == {"status": "open", "region": "eu", "limit": 10}
-    assert [item["name"] for item in reply.authz["rejected"]] == ["limit"]
+    assert reply.authz["rejected"] == [
+        {
+            "name": "limit",
+            "rule": "maximum",
+            "reason": "Value is above the maximum of 50",
+            "policy": "alice-limit",
+            "value": 500,
+        }
+    ]
     assert reply.authz["defaults_applied"] == {"region": "eu", "limit": 10}
 
 
@@ -379,12 +392,21 @@ def check_a_denied_format_is_rejected_and_refilled_beside_a_surviving_argument(
 
     ``scope`` is what keeps it alive: a rejected argument is refilled *alongside* whatever
     survived, and a proposal with nothing left in it is refused instead — the next row.
+
+    The whole result is asserted rather than the two arguments, because
+    ``docs/web-frameworks.md`` prints the whole result: ``exported`` is what the body returned
+    once policy had settled ``fmt``, so a refill that reached the envelope without reaching the
+    call would still pass an assertion about ``fmt`` alone.
     """
     reply = client.post("/orders/export", json={"fmt": "xml", "scope": "open"}, user="bob")
 
     assert reply.status == 200
-    assert reply.body["fmt"] == "csv"
-    assert reply.body["scope"] == "open"
+    assert reply.body == {
+        "fmt": "csv",
+        "scope": "open",
+        "exported": 42,
+        "_authz": reply.authz,
+    }
     assert reply.authz["rejected"] == [
         {
             "name": "fmt",
@@ -407,15 +429,27 @@ def check_the_same_denied_format_alone_leaves_nothing_to_run_with(client: WebCal
     survives. That is a property of the boundary, not a disagreement about the rule.
 
     The refusal is exception-derived, so it names no action and no resource, and carries an
-    ``allowed`` block saying what bob may pass instead.
+    ``allowed`` block saying what bob may pass instead. ``docs/web-frameworks.md`` prints that
+    block whole, so it is asserted whole — and the rejection beside it carries no ``value``,
+    which is the tell that this envelope was built from an exception rather than trimmed from
+    a decision: there was no decision to read the offending value back off.
     """
     reply = client.post("/orders/export", json={"fmt": "xml"}, user="bob")
 
     assert reply.status == 400
     assert reply.error == "NoValidArguments"
-    assert [item["name"] for item in reply.authz["rejected"]] == ["fmt"]
-    assert reply.authz["allowed"]["fmt"]["deny"] == ["xml"]
-    assert reply.authz["allowed"]["fmt"]["has_default"] is True
+    assert reply.body["detail"] == "Every supplied argument was rejected by policy."
+    assert reply.authz["rejected"] == [
+        {
+            "name": "fmt",
+            "rule": "deny-set",
+            "reason": "Value is explicitly denied",
+            "policy": "bob-fmt",
+        }
+    ]
+    assert reply.authz["allowed"] == {
+        "fmt": {"deny": ["xml"], "policy": "bob-fmt", "required": False, "has_default": True}
+    }
     assert "action" not in reply.authz
 
 

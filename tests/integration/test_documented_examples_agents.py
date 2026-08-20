@@ -4,7 +4,9 @@ The unit-suite `test_documented_examples*.py` modules pin the quickstart and the
 and `test_documented_examples_web.py` pins the web page; this pins the two agent examples —
 `examples/fastmcp_server/README.md`, `examples/pydantic_ai_agent/README.md` — and the module
 docstrings of `sentrykit.integrations.fastmcp`, `sentrykit.integrations.pydantic_ai` and
-`sentrykit.integrations.tools`.
+`sentrykit.integrations.tools`. It also pins `docs/agents.md`, the page a reader meets before
+either README — including the five blocks it reproduces from what `run-agent` prints, each
+checked by running the section that prints it and reading the block back out of the page.
 
 Same reason as ever, restated because it keeps mattering: documentation that has drifted from
 the code is worse than none, because a reader trusts it, copies it, and then debugs the wrong
@@ -23,8 +25,11 @@ what it buys.
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import io
 import json
-from collections.abc import AsyncIterator, Mapping
+import re
+from collections.abc import AsyncIterator, Callable, Coroutine, Mapping
 from contextlib import asynccontextmanager
 from functools import partial
 from pathlib import Path
@@ -37,15 +42,23 @@ pytest.importorskip("pydantic_ai")
 
 import mcp
 from examples import ollama
+from examples.fastmcp_server import service as mcp_service
 from examples.fastmcp_server.policy import POLICY_TEXT as MCP_POLICY_TEXT
 from examples.fastmcp_server.policy import build_grants as build_mcp_grants
+from examples.fastmcp_server.server import FLOWS as MCP_FLOWS
 from examples.fastmcp_server.server import create_server
+from examples.pydantic_ai_agent.agent import FLOWS as AGENT_FLOWS
 from examples.pydantic_ai_agent.agent import (
     Caller,
     build_agent,
     default_model,
     dispatch_context,
     propose,
+    show_ceiling,
+    show_flows,
+    show_free_form,
+    show_nesting,
+    show_who_decided,
 )
 from examples.pydantic_ai_agent.agent import offered_tools as offered_tools_for
 from examples.pydantic_ai_agent.policy import POLICY_TEXT as AGENT_POLICY_TEXT
@@ -1400,3 +1413,248 @@ def test_the_agents_page_warning_about_omittable_none_is_true(
     assert isinstance(dispatched, Mapping)
     assert dispatched["region"] == "eu"
     assert dispatched["_authz"]["defaults_applied"] == {"region": "eu"}
+
+
+# --- what `pixi run -e agent run-agent` prints -------------------------------------------------
+#
+# `docs/agents.md` reproduces five of the example's printed blocks. Each is pinned by running
+# the section that prints it and reading the block back out of the page, rather than by
+# transcribing it here: a transcription agrees with itself forever, and what has to hold is
+# that the page and the program say the same thing.
+
+
+AGENTS_PAGE = Path("docs/agents.md")
+"""The page these tests pin, read rather than transcribed."""
+
+
+def page_block(opens_with: str) -> list[str]:
+    """Return the non-blank lines of the one page block whose first line starts as given.
+
+    Args:
+        opens_with: How the block's first line begins.
+
+    Returns:
+        The block's lines, blanks dropped so the page's own spacing is not the assertion.
+
+    Raises:
+        AssertionError: If the page carries no such block, or more than one.
+    """
+    text = AGENTS_PAGE.read_text(encoding="utf-8")
+    blocks = [
+        block
+        for block in re.findall(r"^```[a-z]*\n(.*?)^```", text, re.S | re.M)
+        if block.lstrip().startswith(opens_with)
+    ]
+    assert len(blocks) == 1, f"agents.md has {len(blocks)} blocks opening with {opens_with!r}"
+    return [line for line in blocks[0].splitlines() if line.strip()]
+
+
+def printed_by(
+    section: Callable[[Agent[Caller, str]], Coroutine[Any, Any, None]], agent: Agent[Caller, str]
+) -> list[str]:
+    """Run one section of the example's self-drive and return the lines it printed.
+
+    Args:
+        section: The example's ``show_*`` coroutine function.
+        agent: The agent it drives.
+
+    Returns:
+        The captured lines with the section banner and the blanks dropped, so what is left is
+        what the page reproduces.
+    """
+    captured = io.StringIO()
+    with contextlib.redirect_stdout(captured):
+        asyncio.run(section(agent))
+    lines = [line for line in captured.getvalue().splitlines() if line.strip()]
+    return [line for line in lines if not line.startswith("===")]
+
+
+@pytest.mark.integration
+def test_the_flow_table_the_agents_page_prints_is_the_table_run_agent_prints(
+    agent: Agent[Caller, str],
+) -> None:
+    """`docs/agents.md` — "Every flow, decided": every row, including the three starred ones.
+
+    Twenty-two rows covering the whole decision surface at an agent boundary, so one equality
+    here stands in for a page-sized list of literals. The `*` on flows 8, 14 and 22 is the part
+    that could rot silently: it marks a tool hidden from that principal, dispatched by name
+    with no model in the loop, and it is the page's evidence for the second half of the
+    filtering guarantee. A tool that stopped being hidden would still be refused, and the row
+    would still read `denied` — only the marker would be wrong.
+    """
+    page = page_block("#  who")
+
+    printed = printed_by(show_flows, agent)
+
+    assert len(page) == 23, "one header and 22 flows"
+    assert printed[: len(page)] == page
+    assert [row[:4] for row in page if row[3:4] == "*"] == ["  8*", " 14*", " 22*"]
+
+
+@pytest.mark.integration
+def test_the_ceiling_block_the_agents_page_prints_is_what_run_agent_prints(
+    agent: Agent[Caller, str],
+) -> None:
+    """`docs/agents.md` — "The ceiling, and why the answer is never the ceiling", all three lines.
+
+    The three lines are one argument: she asked for 500, the reviewed bound is 100, and she ran
+    with 25. The last is the load-bearing one, and it is load-bearing *because* of the other
+    two — a page that printed only the answer would be indistinguishable from a page describing
+    a clamp.
+    """
+    page = page_block("dana proposed")
+
+    printed = printed_by(show_ceiling, agent)
+
+    assert printed[: len(page)] == page
+    assert page == [
+        "dana proposed limit=500.",
+        "The ceiling declared in policies/10-orders.cedar is 100.",
+        "She ran with limit=25, which is her own default.",
+    ]
+
+
+@pytest.mark.integration
+def test_the_nesting_block_the_agents_page_prints_is_what_run_agent_prints(
+    agent: Agent[Caller, str],
+) -> None:
+    """`docs/agents.md` — "a protected callable that is not a tool": the outer and inner lines.
+
+    One dispatch, two decisions. The inner action is the one no model was ever offered and none
+    could propose, and it is named here because it was decided all the same.
+    """
+    page = page_block("outer")
+
+    printed = printed_by(show_nesting, agent)
+
+    assert printed[: len(page)] == page
+    assert page == [
+        'outer  Action::"orders.brief"  allow',
+        'inner  Action::"orders.summarize"  allow',
+    ]
+
+
+@pytest.mark.integration
+def test_the_debug_block_the_agents_page_prints_is_what_run_agent_prints(
+    agent: Agent[Caller, str],
+) -> None:
+    """`docs/agents.md` — "Both refusals are **named**": the three-line `debug` block.
+
+    The absence on the third line is the assertion. Flows 13 and 18 each tripped a `forbid`,
+    and a `forbid` that fires is determining, so each carries its policy id in brackets. Flow
+    14 matched no permit at all, so nothing was determining and there is no bracket — reporting
+    one would be inventing a rule that never ran.
+    """
+    page = page_block("13  bob")
+
+    printed = printed_by(show_who_decided, agent)
+
+    assert printed[: len(page)] == page
+    assert page[0].endswith("[no-pdf-exports]")
+    assert page[1].endswith("[refunds-above-the-desk-limit-need-an-admin]")
+    assert page[2].endswith('denied: The policy denied action Action::"orders.search".')
+    assert "[" not in page[2]
+
+
+@pytest.mark.integration
+def test_the_fallback_banner_the_agents_page_prints_is_what_run_agent_prints(
+    agent: Agent[Caller, str],
+) -> None:
+    """`docs/agents.md` — The optional local model: the two lines printed with no daemon in play.
+
+    Which is also the switch this whole suite rests on. `SENTRYKIT_OLLAMA_URL` set to an empty
+    value is the documented way to turn the search off outright, the root `conftest` sets it for
+    every test, and this is the banner a reader gets when they reach for it themselves. No
+    socket is opened to produce either line.
+    """
+    page = page_block("model: TestModel")
+
+    printed = printed_by(show_free_form, agent)
+
+    assert printed[: len(page)] == page
+    assert page == [
+        "model: TestModel",
+        "  -- the search for one is turned off (SENTRYKIT_OLLAMA_URL is set to an empty value)",
+    ]
+
+
+# --- the page's own MCP snippets ---------------------------------------------------------------
+
+
+@pytest.mark.integration
+async def test_the_agents_page_prints_flow_five_and_flow_three_as_the_server_answers_them() -> None:
+    """`docs/agents.md` — "Several arguments decided in one call", both halves of it.
+
+    Flow 5 is the page's snippet: `limit` proposed, rejected and refilled; `region` never
+    proposed and injected; `status` left alone because no constraint governs it. Flow 3 is the
+    sentence under it — the model proposes nothing, both governed arguments turn up in
+    `defaults_applied` and neither in `rejected`, and `processed` comes out identical. That
+    identity is the claim worth pinning: the two calls end in the same place by different
+    routes, and only the envelope says which route was taken.
+    """
+    async with serving() as client:
+        proposed = await client.call_tool(
+            "search_orders", {"limit": 500, "status": "open"}, meta=ALICE
+        )
+        omitted = await client.call_tool("search_orders", {}, meta=ALICE)
+
+    narrowed = body_of(proposed)["_authz"]
+    defaulted = body_of(omitted)["_authz"]
+
+    assert narrowed["processed"] == {"status": "open", "region": "eu", "limit": 10}
+    assert narrowed["rejected"][0]["reason"] == "Value is above the maximum of 50"
+    assert narrowed["defaults_applied"] == {"region": "eu", "limit": 10}
+
+    assert defaulted["processed"] == narrowed["processed"]
+    assert defaulted["defaults_applied"] == {"region": "eu", "limit": 10}
+    assert "rejected" not in defaulted
+
+
+@pytest.mark.integration
+def test_the_boundary_note_holds_on_the_pydantic_ai_boundary_too(
+    agent: Agent[Caller, str],
+) -> None:
+    """`docs/agents.md` — "A parameter with a Python default arrives whether or not the model
+    proposed it", which the page states of *both* agent boundaries and shows on one.
+
+    So the unshown half is the one asserted here. `export_orders(fmt="xml")` is a
+    `NoValidArguments` refusal at a web boundary and a narrowed call at both agent ones, for the
+    same reason in both: `scope` carries a Python default, is advertised with it, and arrives as
+    a proposed argument that survives filtering. The MCP half is pinned beside the fastmcp
+    README; if these two ever disagreed, the page's "both frameworks" would be wrong.
+    """
+    narrowed = asyncio.run(propose(agent, Caller("bob"), "export_orders", fmt="xml"))
+
+    assert isinstance(narrowed, Mapping)
+    assert "error" not in narrowed
+    assert narrowed["_authz"]["processed"] == {"scope": "open", "fmt": "csv"}
+    assert narrowed["_authz"]["rejected"][0]["rule"] == "deny-set"
+
+
+# --- the counts the page and the README both state ---------------------------------------------
+
+
+@pytest.mark.integration
+def test_both_agent_examples_hold_the_flows_and_the_tools_the_page_counts() -> None:
+    """`docs/agents.md` — "Seven governed tools, plus one protected callable that is
+    deliberately registered as no tool at all"; and the README's "22-flow table".
+
+    The page also says the MCP server "prints the same 22 flows in its own format", which is a
+    claim about two independently written tables, so it is checked as one: the same principal,
+    the same tool and the same proposed arguments, row for row. A flow added to one example and
+    not the other would leave both tables 22 rows long and the sentence wrong.
+    """
+    registered = sorted(registered_tools(create_server()))
+    protected = sorted(
+        name
+        for name, value in vars(mcp_service).items()
+        if callable(value) and sentrykit.is_protected(value)
+    )
+
+    assert len(AGENT_FLOWS) == 22
+    assert len(MCP_FLOWS) == 22
+    assert [(flow.principal, flow.fn.__name__, dict(flow.arguments)) for flow in AGENT_FLOWS] == [
+        (principal, tool, dict(arguments)) for principal, tool, arguments, _ in MCP_FLOWS
+    ]
+    assert len(registered) == 7
+    assert protected == sorted([*registered, "summarize_orders"])
