@@ -116,6 +116,7 @@ from mcp.types import CallToolResult, TextContent
 
 from sentrykit.context import Channel
 from sentrykit.decorator import protect, protected_meta
+from sentrykit.envelope import current_recorder, last_envelope, narrowing_guidance
 from sentrykit.errors import ConfigurationError, SentrykitError
 from sentrykit.integrations.base import (
     DEFAULT_PRINCIPAL_HEADER,
@@ -133,6 +134,8 @@ from sentrykit.stores.base import GrantStore
 __all__ = [
     "CALL_TOOL_METHOD",
     "LIST_TOOLS_METHOD",
+    "NARROWED_ARGUMENTS_META_KEY",
+    "NARROWED_META_KEY",
     "FastMCPProvider",
     "SentrykitToolMiddleware",
     "governed_tool",
@@ -701,7 +704,7 @@ class SentrykitToolMiddleware:
         provider = _effective_provider(self._provider)
         established = provider.establish(ctx)
         try:
-            return await call_next(ctx)
+            return _report_narrowing(provider, await call_next(ctx))
         except (_ToolRefusal, SentrykitError) as raised:
             refusal = raised.refusal if isinstance(raised, _ToolRefusal) else raised
             _LOGGER.info(
@@ -765,6 +768,73 @@ class SentrykitToolMiddleware:
             entry for entry in advertised if _advertise(entry, source=source, permitted=permitted)
         ]
         return result
+
+
+NARROWED_META_KEY: str = "sentrykit/narrowed"
+"""``_meta`` key announcing that a tool call ran with a value the model did not propose."""
+
+NARROWED_ARGUMENTS_META_KEY: str = "sentrykit/narrowedArguments"
+"""``_meta`` key naming the narrowed arguments, in first-seen order."""
+
+
+def _report_narrowing(provider: FastMCPProvider, result: HandlerResult) -> HandlerResult:
+    """Carry narrowing out of a ``tools/call`` whose result could not carry it in band.
+
+    A tool returning a mapping gets the whole ``_authz`` envelope inside its own payload, and
+    the model reads it there — that path is measured and works. A tool returning a list, a
+    string or a model does not: mcp wraps the value as ``structuredContent.result``, there is
+    no mapping for :func:`~sentrykit.envelope.attach_envelope` to write into, and the
+    narrowing becomes invisible. This is the other half of that story.
+
+    Two destinations, because they answer to different readers:
+
+    * ``_meta`` takes the machine-readable facts. It is the spec's open map for exactly this,
+      and the keys are prefixed so they cannot collide with the server's own.
+    * one appended text block takes the guidance sentence, because ``_meta`` is protocol
+      metadata that a client is under no obligation to show anyone, and the reader who needs
+      this is the model. Appended rather than substituted: the tool's own content is
+      untouched, so the data still reaches the model exactly as the tool produced it.
+
+    Nothing is added when the envelope already went into the result in band -- a fact the
+    boundary's recorder carries rather than a shape this function guesses at, because mcp
+    populates ``structuredContent`` only when it has an output schema to validate against and
+    the envelope may therefore be in the content text instead.
+
+    Args:
+        provider: The provider whose recorder says what was narrowed.
+        result: Whatever the handler returned.
+
+    Returns:
+        The result. Annotated when there was narrowing to report, and the same object
+        untouched otherwise — including for any result shape this does not recognize, since
+        a report must never be able to damage the answer it describes.
+    """
+    narrowed, arguments = provider.narrowing()
+    if not narrowed or not isinstance(result, dict):
+        return result
+    recorder = current_recorder()
+    if recorder is not None and recorder.last_was_in_band:
+        # The tool returned a mapping and the envelope is already inside it, where the model
+        # reads it. Annotating again would say the same thing twice in two places.
+        return result
+
+    meta = dict(result.get("_meta") or {})
+    meta[NARROWED_META_KEY] = True
+    meta[NARROWED_ARGUMENTS_META_KEY] = list(arguments)
+    annotated: dict[str, Any] = {**result, "_meta": meta}
+
+    envelope = last_envelope()
+    guidance = envelope.guidance if envelope is not None else None
+    if guidance is None and arguments:
+        # The decision was made in a context whose ``last_envelope`` did not reach here, so
+        # the sentence is rebuilt from the names the recorder did carry. The unsupplied-case
+        # wording is unavailable this way, so it is not claimed.
+        guidance = narrowing_guidance(arguments)
+    if guidance is not None:
+        content = list(annotated.get("content") or [])
+        content.append({"type": "text", "text": guidance})
+        annotated["content"] = content
+    return annotated
 
 
 def _keep_private(result: dict[str, Any]) -> None:

@@ -38,6 +38,14 @@ PRINCIPAL_HEADER = "x-user"
 
 
 @pytest.mark.integration
+def test_narrowing_is_reported_out_of_band_over_fastapi(
+    fastapi_client: Any, narrowing_contract_case: Callable[[Any], None]
+) -> None:
+    """The headers that report narrowing whatever the route's return type is. ADR-029."""
+    narrowing_contract_case(fastapi_client)
+
+
+@pytest.mark.integration
 def test_the_shared_web_contract_holds_over_fastapi(
     fastapi_client: Any, web_contract_case: Callable[[Any], None]
 ) -> None:

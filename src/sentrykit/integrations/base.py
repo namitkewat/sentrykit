@@ -63,14 +63,15 @@ can mean anything.
 from __future__ import annotations
 
 import logging
+import re
 import uuid
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from typing import Final, Generic, TypeVar
 
 from sentrykit.cedar import EntityRef
 from sentrykit.config import Settings, Verbosity, settings_for
 from sentrykit.context import Channel, ContextScope, Principal, clear_context, establish
-from sentrykit.envelope import set_last_envelope
+from sentrykit.envelope import current_recorder, record_decisions, set_last_envelope
 from sentrykit.errors import (
     ArgumentRejected,
     AuditUnavailable,
@@ -89,6 +90,8 @@ __all__ = [
     "DEFAULT_PRINCIPAL_HEADER",
     "DEFAULT_REQUEST_ID_HEADER",
     "DEFAULT_STATUS",
+    "NARROWED_ARGUMENTS_HEADER",
+    "NARROWED_HEADER",
     "STATUS_BY_ERROR",
     "STATUS_PHRASES",
     "BaseContextProvider",
@@ -99,6 +102,7 @@ __all__ = [
     "action_of",
     "error_envelope",
     "error_payload",
+    "narrowing_headers",
     "reason_for",
     "status_for",
 ]
@@ -137,6 +141,58 @@ else, which the docs say in as many words. Real deployments pass ``identify=``.
 
 DEFAULT_REQUEST_ID_HEADER: Final = "x-request-id"
 """Header a correlation id is taken from when the caller supplies one."""
+
+NARROWED_HEADER: Final = "x-sentrykit-narrowed"
+"""Response header announcing that a value the caller proposed did not survive.
+
+Emitted **only when something was narrowed**, which is the same discipline
+:meth:`~sentrykit.envelope.AuthzEnvelope.as_dict` applies to the ``narrowed`` field: the
+exceptional outcome is the one worth a line, and two headers on every ordinary response is a
+cost paid by every caller to say "nothing happened". See ADR-029.
+"""
+
+NARROWED_ARGUMENTS_HEADER: Final = "x-sentrykit-narrowed-arguments"
+"""Response header naming the narrowed arguments, comma-separated, first-seen order."""
+
+_HEADER_SAFE: Final = re.compile(r"\A[A-Za-z0-9_.-]+\Z")
+"""What may go in a header value without encoding.
+
+Python parameter names are identifiers, and an identifier may contain non-ASCII characters —
+``def search(región: str)`` is legal. An HTTP field value is visible ASCII, so a name outside
+this set cannot be spelled here at all.
+"""
+
+
+def narrowing_headers(narrowed: bool, arguments: Sequence[str]) -> dict[str, str]:
+    """Build the response headers that report narrowing, for any framework.
+
+    Lives here rather than in each adapter so the two web providers cannot disagree about the
+    header names or about when to emit them — the kind of drift that makes a documented
+    contract a per-framework surprise.
+
+    Deliberately excludes :attr:`~sentrykit.envelope.AuthzEnvelope.guidance`. It is a
+    sentence of prose, it can exceed 300 characters, and one of its two forms contains an em
+    dash, which is not spellable in an HTTP field value without encoding. A header is for a
+    fact a machine acts on; the prose belongs in the body or in
+    :func:`~sentrykit.envelope.last_envelope`. ADR-029 records that decision and its cost.
+
+    Args:
+        narrowed: Whether anything was narrowed while serving this response.
+        arguments: The narrowed argument names.
+
+    Returns:
+        The headers to add, empty when nothing was narrowed. The argument header is omitted
+        — while :data:`NARROWED_HEADER` is still emitted — if any name cannot be spelled in a
+        field value, so the caller is told *that* narrowing happened even when it cannot be
+        told *which*, and is never handed a list that silently dropped an entry.
+    """
+    if not narrowed:
+        return {}
+    headers = {NARROWED_HEADER: "true"}
+    if arguments and all(_HEADER_SAFE.match(name) for name in arguments):
+        headers[NARROWED_ARGUMENTS_HEADER] = ", ".join(arguments)
+    return headers
+
 
 STATUS_BY_ERROR: Final[Mapping[type[BaseException], int]] = {
     # Authorization refusals. A missing principal is a 403 and not a 401 on purpose: sentrykit
@@ -629,6 +685,11 @@ class BaseContextProvider(Generic[RequestT]):
             ConfigurationError: If the request is not this framework's, or an identity
                 resolved with no grant store to materialize it from.
         """
+        # Installed before anything protected can run, and unconditionally -- including for an
+        # unauthenticated caller, so the shape is the same on both paths and a boundary never
+        # has to ask whether a recorder exists. It is the only channel that survives a
+        # decision made inside a copied context, which is every sync framework route.
+        record_decisions()
         narrowed = self.narrow(request)
         principal = self.resolve_principal(narrowed)
         if principal is None:
@@ -637,6 +698,25 @@ class BaseContextProvider(Generic[RequestT]):
             clear_context()
             return None
         return establish(principal, **self.environment_for(narrowed))
+
+    def narrowing(self) -> tuple[bool, tuple[str, ...]]:
+        """What the boundary should report about narrowing, for this request.
+
+        Reads the :class:`~sentrykit.envelope.EnvelopeRecorder`
+        :meth:`establish` installed, so it answers even when the decision was made in a sync
+        route's context copy -- where :func:`~sentrykit.envelope.last_envelope` returns
+        ``None``. The union across every decision in the request is what a response-level
+        report needs: one route may make several protected calls.
+
+        Returns:
+            Whether anything was narrowed, and the argument names, in first-seen order. Both
+            empty when nothing was narrowed, when verbosity is ``off``, or when no recorder
+            is installed.
+        """
+        recorder = current_recorder()
+        if recorder is None:
+            return False, ()
+        return recorder.narrowed, recorder.narrowed_arguments
 
     def release(self, scope: ContextScope | None) -> None:
         """Undo :meth:`establish`, at teardown. Always safe to call.
@@ -654,3 +734,6 @@ class BaseContextProvider(Generic[RequestT]):
         else:
             clear_context()
         set_last_envelope(None)
+        recorder = current_recorder()
+        if recorder is not None:
+            recorder.close()

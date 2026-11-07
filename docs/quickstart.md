@@ -193,8 +193,9 @@ verbosity above `off`.
 
 The envelope is attached under `_authz` when the result is a mapping. For any other return
 type the result is handed back untouched — rewrapping it would change your function's type —
-and the envelope is available from `last_envelope()`, which is how the framework providers
-attach it to an HTTP response.
+and the envelope is available from `last_envelope()`, which is the real channel: the framework
+providers read it rather than the key, and a route returning a JSON array is reported through
+response headers instead. See [how the envelope reaches you](concepts.md#how-the-envelope-reaches-you-and-why-_authz-is-the-second-best-way).
 
 ## 6. Denials
 

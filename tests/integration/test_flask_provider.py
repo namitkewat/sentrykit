@@ -37,6 +37,14 @@ def _report_principal() -> dict[str, object]:
 
 
 @pytest.mark.integration
+def test_narrowing_is_reported_out_of_band_over_flask(
+    flask_client: Any, narrowing_contract_case: Callable[[Any], None]
+) -> None:
+    """The headers that report narrowing whatever the route's return type is. ADR-029."""
+    narrowing_contract_case(flask_client)
+
+
+@pytest.mark.integration
 def test_the_shared_web_contract_holds_over_flask(
     flask_client: Any, web_contract_case: Callable[[Any], None]
 ) -> None:

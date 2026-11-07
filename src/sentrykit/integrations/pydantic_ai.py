@@ -100,10 +100,11 @@ import logging
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any, Final, Literal
 
-from pydantic_ai import Agent, RunContext, ToolDefinition
+from pydantic_ai import Agent, RunContext, ToolDefinition, ToolReturn
 
 from sentrykit.context import Channel, Principal
 from sentrykit.decorator import protect, protected_meta
+from sentrykit.envelope import current_recorder, last_envelope, narrowing_guidance
 from sentrykit.errors import ConfigurationError, SentrykitError
 from sentrykit.integrations.base import (
     DEFAULT_PRINCIPAL_HEADER,
@@ -403,6 +404,49 @@ def _effective_provider(provider: PydanticAIProvider | None) -> PydanticAIProvid
     return PydanticAIProvider()
 
 
+def _report_narrowing(provider: PydanticAIProvider, result: object) -> object:
+    """Carry narrowing out of a tool result that could not carry it in band.
+
+    The counterpart of the MCP path, in Pydantic-AI's own vocabulary. A tool returning a
+    mapping already has the ``_authz`` envelope inside its payload and the model reads it
+    there. A tool returning a list, a string or a model has nowhere for that to go, and the
+    narrowing would otherwise be invisible to the one reader who needs it.
+
+    :class:`~pydantic_ai.messages.ToolReturn` is the right carrier because it is **additive**,
+    which was verified rather than assumed: ``return_value`` stays the tool's own result and
+    reaches the model as the ``ToolReturnPart`` exactly as before, ``content`` arrives as a
+    *separate* prompt part, and ``metadata`` rides along for the application. So the data is
+    not displaced by the note about it — which is the failure this whole change exists to
+    avoid, inverted.
+
+    Args:
+        provider: The provider whose recorder says what was narrowed.
+        result: Whatever the tool returned.
+
+    Returns:
+        The result unchanged when nothing was narrowed, or when the envelope already went
+        into it in band -- which the boundary's recorder states as a fact rather than this
+        function inferring it from the result's shape. Otherwise a
+        :class:`~pydantic_ai.messages.ToolReturn` wrapping it.
+    """
+    narrowed, arguments = provider.narrowing()
+    if not narrowed:
+        return result
+    recorder = current_recorder()
+    if recorder is not None and recorder.last_was_in_band:
+        return result
+
+    envelope = last_envelope()
+    guidance = envelope.guidance if envelope is not None else None
+    if guidance is None and arguments:
+        guidance = narrowing_guidance(arguments)
+    return ToolReturn(
+        return_value=result,
+        content=guidance,
+        metadata={"narrowed": True, "narrowed_arguments": list(arguments)},
+    )
+
+
 def tool_adapter(
     fn: Callable[..., object],
     *,
@@ -474,7 +518,7 @@ def tool_adapter(
         established = active.establish(ctx)
         try:
             result = inner(*args, **kwargs)
-            return await result if awaitable else result
+            return _report_narrowing(active, await result if awaitable else result)
         except SentrykitError as exc:
             if on_refusal == "raise":
                 raise

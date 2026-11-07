@@ -11,6 +11,46 @@ boundaries.
 
 ### Added
 
+- **Narrowing now reaches the caller whatever the protected callable returns.** The three
+  outcome fields below shipped inside the `_authz` key, and that key can only be written into a
+  mapping — so a callable returning a list, a string, a model or `None` reported nothing at all.
+  A web route returning a JSON array is the commonest shape there is, which made the benefit of
+  having those fields conditional on a detail of the application's return type.
+
+  `last_envelope()` is now documented as the mechanism and `_authz` as a convenience layered on
+  top of it. Behind both, a boundary installs an `EnvelopeRecorder` — a mutable object reached
+  *through* a context variable rather than a value stored in one, which is what makes it survive
+  a decision taken inside a copied context. That distinction is the whole mechanism: a sync
+  framework route runs in a worker thread holding a copy, so a plain `ContextVar` write is
+  discarded before the middleware that has to write the response headers ever sees it. The
+  recorder accumulates every decision in the request, because "was anything narrowed while
+  serving this response" is not answerable from the most recent envelope alone.
+
+  What each boundary now carries, with no wiring:
+
+  * **FastAPI and Flask** — `x-sentrykit-narrowed: true` and
+    `x-sentrykit-narrowed-arguments: a, b`, emitted only when something was narrowed.
+    `guidance` is deliberately **not** a header: it is prose past 300 characters and its
+    unsupplied-argument form contains an em dash, which an HTTP field value cannot spell.
+  * **MCP** — the `sentrykit/narrowed` and `sentrykit/narrowedArguments` `_meta` keys, plus one
+    **appended** text content block carrying `guidance`, because `_meta` is protocol metadata a
+    client is under no obligation to show the one reader who needs it.
+  * **Pydantic-AI** — a `ToolReturn` whose `metadata` carries the facts and whose `content`
+    becomes a separate prompt part. Verified additive rather than assumed: `return_value` still
+    reaches the model as the `ToolReturnPart`, so the data is never displaced by the note about
+    it.
+
+  Both agent adapters leave a mapping return alone, since it already carries the whole envelope
+  where the model reads it. Whether that happened is a fact the recorder records rather than one
+  the adapter infers from the result's shape — mcp populates `structuredContent` only when it
+  has an output schema to validate against, so the envelope may be in the content text instead.
+
+  Measured on the same seven-model harness, with a **list-returning** tool and the guidance
+  delivered out of band: 5 of 7 and then 7 of 7 runs served the user real data, against 3 of 7
+  for the old exceptions-only envelope — so the benefit no longer depends on the return shape,
+  and the separate message appears to be at least as strong a signal as the in-band field.
+  ADR-029 records the decisions and what is still not covered.
+
 - **The `_authz` envelope now reports the outcome of a narrowed call, not only its exceptions.**
   Three new fields: `narrowed` (the call ran with a value the caller did not propose),
   `narrowed_arguments` (which ones) and `guidance` (one sentence on what the result means and

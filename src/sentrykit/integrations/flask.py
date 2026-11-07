@@ -51,6 +51,7 @@ from sentrykit.integrations.base import (
     DEFAULT_REQUEST_ID_HEADER,
     STATUS_BY_ERROR,
     BaseContextProvider,
+    narrowing_headers,
 )
 from sentrykit.registry import DSN, register_context_provider
 
@@ -179,6 +180,27 @@ class FlaskProvider(BaseContextProvider[Request]):
         # ``g`` records that this hook ran rather than leaving teardown to guess.
         setattr(g, SCOPE_KEY, self.establish(current_request))
 
+    def after_request(self, response: Response) -> Response:
+        """Add the narrowing headers to the outgoing response.
+
+        Registered as an ``after_request`` hook, which is the last place the headers are still
+        mutable and runs before ``teardown_request`` drops the recorder. Flask serves a request
+        on one thread in one context, so unlike the ASGI side there is no copied-context
+        problem here — the recorder is used anyway, because it is the channel that answers the
+        *response-level* question (a view may make several protected calls) and because one
+        answer shared by both frameworks is worth more than two shaped by their own plumbing.
+
+        Args:
+            response: The response Flask is about to send.
+
+        Returns:
+            The same response, with the headers added when anything was narrowed. An
+            unprotected route, or one that narrowed nothing, is returned untouched.
+        """
+        for name, value in narrowing_headers(*self.narrowing()).items():
+            response.headers[name] = value
+        return response
+
     def teardown_request(self, error: BaseException | None = None) -> None:
         """Release the context established for the current request.
 
@@ -270,8 +292,8 @@ def install_error_handlers(
 def protect_app(app: Flask, *, provider: FlaskProvider | None = None) -> FlaskProvider:
     """Wire sentrykit into ``app`` in one call.
 
-    Registers the ``before_request`` establishment, the ``teardown_request`` release, and the
-    error handlers, application-wide.
+    Registers the ``before_request`` establishment, the ``after_request`` narrowing headers,
+    the ``teardown_request`` release, and the error handlers, application-wide.
 
     Args:
         app: The application.
@@ -288,6 +310,7 @@ def protect_app(app: Flask, *, provider: FlaskProvider | None = None) -> FlaskPr
     # Bound methods: ``before_request`` takes no arguments and ``teardown_request`` takes the
     # exception, which is exactly what Flask passes each hook.
     app.before_request(resolved.before_request)
+    app.after_request(resolved.after_request)
     app.teardown_request(resolved.teardown_request)
     install_error_handlers(app, resolved)
     return resolved
@@ -300,7 +323,7 @@ def protect_blueprint(
 
     For an app where only part of the surface is governed — an ``/api`` blueprint in front of
     an unprotected marketing site, or two blueprints authenticating callers differently. The
-    hooks are blueprint-scoped (``Blueprint.before_request`` /
+    hooks are blueprint-scoped (``Blueprint.before_request`` / ``Blueprint.after_request`` /
     ``Blueprint.teardown_request``), so they run only for this blueprint's routes, and its
     error handlers likewise.
 
@@ -313,6 +336,7 @@ def protect_blueprint(
     """
     resolved = _effective_provider(provider)
     blueprint.before_request(resolved.before_request)
+    blueprint.after_request(resolved.after_request)
     blueprint.teardown_request(resolved.teardown_request)
     install_error_handlers(blueprint, resolved)
     return resolved

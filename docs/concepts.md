@@ -340,6 +340,60 @@ same as `rejected` being non-empty, and the difference runs both ways:
 
 `narrowed` is omitted from the rendered envelope when false, so an ordinary allow stays terse.
 
+### How the envelope reaches you, and why `_authz` is the second-best way
+
+There are two channels, and the one most people meet first is the narrower of the two.
+
+**`last_envelope()` is the mechanism.** Every decision — allow and refusal alike — leaves its
+envelope on the context, whatever the protected callable returned. That is the channel the
+framework providers read, and the only one that always works.
+
+**The `_authz` key is a convenience layered on top.** When a protected callable returns a
+*mapping*, sentrykit writes the envelope into it under `_authz`, so the report travels with the
+answer and an agent's model reads it without anyone wiring anything. That is genuinely useful
+and it is why the README leads with it. But it is conditional on your return type, and the
+condition is not a small one:
+
+```python
+@protect(action="orders.search")
+def as_dict(region: str = "eu") -> dict:       # -> {"region": "eu", "_authz": {...}}
+    ...
+
+@protect(action="orders.search")
+def as_list(region: str = "eu") -> list[dict]:  # -> [{"region": "eu"}]   no _authz, ever
+    ...
+```
+
+A `list`, a `str`, a pydantic model and `None` cannot carry a key, and rewrapping them would
+change your function's declared return type. A web route returning a JSON array is the most
+common shape there is, so **do not read `_authz` as the mechanism** — if you do, narrowing is
+invisible for most of your surface and you will not find out from a test that only exercises a
+dict-returning handler.
+
+What you get instead, without doing anything:
+
+| boundary | channel | carries |
+| --- | --- | --- |
+| any protected call | `last_envelope()` | the whole envelope |
+| FastAPI / Flask route | `x-sentrykit-narrowed`, `x-sentrykit-narrowed-arguments` response headers | that it happened, and to which arguments |
+| MCP tool | `_meta` keys `sentrykit/narrowed`, `sentrykit/narrowedArguments`, plus one appended text block carrying `guidance` | the facts, and the sentence the model reads |
+| Pydantic-AI tool | `ToolReturn` — `metadata` for your application, `content` as an extra prompt part | the facts, and the sentence the model reads |
+
+The headers appear **only when something was narrowed**, which is the same rule the `narrowed`
+field follows. `guidance` is deliberately not a header: it is prose, it runs past 300
+characters, and an HTTP field value cannot spell it. The agent adapters *append* rather than
+substitute, so the tool's own result reaches the model untouched and the note rides beside it.
+
+Behind the headers is an `EnvelopeRecorder`, installed per request by the provider, which
+accumulates every decision in the response rather than keeping only the last — a route may make
+several protected calls, and "was anything narrowed while serving this" is the question a
+response-level report has to answer. It also solves a problem `last_envelope()` cannot: a
+**sync** framework route runs in a worker thread holding a context *copy*, so nothing it sets
+survives its return. The recorder is a mutable object reached *through* the context variable, so
+the copy points at the same instance and the mutation reaches the boundary. A hand-written
+`ContextProvider` that does not inherit `BaseContextProvider` needs to call `record_decisions()`
+and close it to get any of this. See ADR-029.
+
 ## Two output channels, never conflated
 
 - **Operational logs** — ordinary `logging`, for developers. Ephemeral. Argument *names*,

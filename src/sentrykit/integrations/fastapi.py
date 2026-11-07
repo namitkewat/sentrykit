@@ -47,7 +47,7 @@ from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 from starlette.requests import Request
 from starlette.responses import Response
-from starlette.types import ASGIApp, Receive, Scope, Send
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from sentrykit.errors import ConfigurationError, SentrykitError
 from sentrykit.integrations.base import (
@@ -55,6 +55,7 @@ from sentrykit.integrations.base import (
     DEFAULT_REQUEST_ID_HEADER,
     STATUS_BY_ERROR,
     BaseContextProvider,
+    narrowing_headers,
 )
 from sentrykit.registry import DSN, register_context_provider
 
@@ -181,6 +182,44 @@ def _effective_provider(provider: FastAPIProvider | None) -> FastAPIProvider:
     return FastAPIProvider()
 
 
+def _narrowing_send(provider: FastAPIProvider, send: Send) -> Send:
+    """Wrap ``send`` so the response's start message carries the narrowing headers.
+
+    The headers have to be added at ``http.response.start``, because that is the one moment
+    the status and headers are still mutable and every decision the route made has already
+    been made. Reading them from the provider's
+    :class:`~sentrykit.envelope.EnvelopeRecorder` rather than from
+    :func:`~sentrykit.envelope.last_envelope` is what makes this work for a **sync** route:
+    that route runs in an AnyIO worker thread holding a context *copy*, so nothing it sets
+    survives its return, while a mutation to the recorder the middleware is still holding
+    does. See ADR-029.
+
+    Args:
+        provider: The provider whose recorder to read.
+        send: The ASGI send callable to wrap.
+
+    Returns:
+        A send callable that adds the headers to the start message and forwards everything
+        else untouched.
+    """
+
+    async def wrapped(message: Message) -> None:
+        if message["type"] == "http.response.start":
+            extra = narrowing_headers(*provider.narrowing())
+            if extra:
+                # ASGI headers are a list of raw byte pairs, and the list is the server's.
+                # Rebuilt rather than appended to, so a server that reuses or inspects the
+                # original list is unaffected.
+                added = [
+                    (name.encode("latin-1"), value.encode("latin-1"))
+                    for name, value in extra.items()
+                ]
+                message = {**message, "headers": [*(message.get("headers") or []), *added]}
+        await send(message)
+
+    return wrapped
+
+
 class SentrykitMiddleware:
     """Pure-ASGI middleware that establishes context for the request and releases it after.
 
@@ -218,7 +257,7 @@ class SentrykitMiddleware:
         # nothing and — crucially — does not consume the body the route is about to read.
         established = provider.establish(Request(scope, receive))
         try:
-            await self.app(scope, receive, send)
+            await self.app(scope, receive, _narrowing_send(provider, send))
         finally:
             provider.release(established)
 

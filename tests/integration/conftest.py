@@ -21,13 +21,17 @@ on a client somebody else built, so they need no import to do it.
 from __future__ import annotations
 
 from collections.abc import Callable, Iterator, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from importlib import import_module
 from typing import Any
 
 import pytest
 
 import sentrykit
+from sentrykit.integrations.base import (
+    NARROWED_ARGUMENTS_HEADER,
+    NARROWED_HEADER,
+)
 
 PRINCIPAL_HEADER = "x-user"
 """The header both example apps read a principal id from. Their auth stub, and the seam a
@@ -65,10 +69,24 @@ class Reply:
     Attributes:
         status: The HTTP status code.
         body: The decoded JSON body.
+        headers: The response headers, lower-cased. Part of the contract because narrowing
+            is reported out of band for a route whose return value cannot carry ``_authz``.
     """
 
     status: int
     body: Mapping[str, Any]
+    headers: Mapping[str, str] = field(default_factory=dict)
+
+    @property
+    def narrowed(self) -> bool:
+        """Whether the response announced narrowing in its headers."""
+        return self.headers.get(NARROWED_HEADER) == "true"
+
+    @property
+    def narrowed_arguments(self) -> tuple[str, ...]:
+        """The narrowed argument names the headers named, in the order they were sent."""
+        raw = self.headers.get(NARROWED_ARGUMENTS_HEADER)
+        return tuple(part.strip() for part in raw.split(",")) if raw else ()
 
     @property
     def authz(self) -> Mapping[str, Any]:
@@ -120,7 +138,11 @@ def _starlette_caller(client: Any) -> WebCaller:
         headers = {PRINCIPAL_HEADER: user} if user is not None else {}
         extra: dict[str, Any] = {"json": payload} if payload is not None else {}
         response = client.request(method, path, headers=headers, **extra)
-        return Reply(status=response.status_code, body=response.json())
+        return Reply(
+            status=response.status_code,
+            body=response.json(),
+            headers={k.lower(): v for k, v in response.headers.items()},
+        )
 
     return WebCaller("fastapi", send)
 
@@ -132,7 +154,11 @@ def _flask_caller(client: Any) -> WebCaller:
         headers = {PRINCIPAL_HEADER: user} if user is not None else {}
         extra: dict[str, Any] = {"json": payload} if payload is not None else {}
         response = client.open(method=method, path=path, headers=headers, **extra)
-        return Reply(status=response.status_code, body=response.get_json())
+        return Reply(
+            status=response.status_code,
+            body=response.get_json(),
+            headers={k.lower(): v for k, v in response.headers.items()},
+        )
 
     return WebCaller("flask", send)
 
@@ -764,5 +790,66 @@ def web_contract_case(request: pytest.FixtureRequest) -> Callable[[WebCaller], N
 @pytest.fixture(params=REFUSAL_VERBOSITY, ids=_case_id)
 def refusal_verbosity_case(request: pytest.FixtureRequest) -> Callable[[WebCaller], None]:
     """One row of :data:`REFUSAL_VERBOSITY`, to be run against a framework's caller."""
+    case: Callable[[WebCaller], None] = request.param
+    return case
+
+
+# --- narrowing reported out of band, identically on both frameworks ---------------------
+#
+# These are the B21 contract: the three narrowing fields only ever reached a callable that
+# returned a mapping, and a route returning a JSON array is the commonest shape there is.
+# The headers are the channel that does not depend on the return type, and the recorder
+# behind them is the only thing that survives a *sync* route's context copy.
+
+
+def check_a_narrowed_response_announces_it_in_its_headers(client: WebCaller) -> None:
+    """Flow 5 again, read from the headers rather than from the body.
+
+    The same call the body-level check asserts on, so the two channels are pinned to agree:
+    ``limit`` was proposed at 500, rejected, and refilled from alice's own default, while
+    ``region`` was never proposed and is therefore not an adjustment to anything she asked
+    for.
+    """
+    reply = client.get("/orders?limit=500&status=open", user="alice")
+
+    assert reply.status == 200
+    assert reply.narrowed is True
+    assert reply.narrowed_arguments == ("limit",)
+    # The two channels say the same thing, which is the point of deriving both from one
+    # decision rather than reporting them separately.
+    assert reply.authz["narrowed_arguments"] == list(reply.narrowed_arguments)
+
+
+def check_a_response_that_narrowed_nothing_sends_no_narrowing_headers(
+    client: WebCaller,
+) -> None:
+    """The exceptional outcome is the one worth a header. See ADR-029."""
+    reply = client.get("/orders?limit=10&status=open", user="alice")
+
+    assert reply.status == 200
+    assert reply.authz.get("narrowed") is None
+    assert NARROWED_HEADER not in reply.headers
+    assert NARROWED_ARGUMENTS_HEADER not in reply.headers
+
+
+def check_a_refusal_sends_no_narrowing_headers(client: WebCaller) -> None:
+    """Nothing ran, so nothing was narrowed -- a refusal is not a narrowed call."""
+    reply = client.get("/orders?limit=500&status=open", user="mallory")
+
+    assert reply.status == 403
+    assert NARROWED_HEADER not in reply.headers
+
+
+NARROWING_CONTRACT: tuple[Callable[[WebCaller], None], ...] = (
+    check_a_narrowed_response_announces_it_in_its_headers,
+    check_a_response_that_narrowed_nothing_sends_no_narrowing_headers,
+    check_a_refusal_sends_no_narrowing_headers,
+)
+"""The out-of-band narrowing report, which both web frameworks owe identically."""
+
+
+@pytest.fixture(params=NARROWING_CONTRACT, ids=_case_id)
+def narrowing_contract_case(request: pytest.FixtureRequest) -> Callable[[WebCaller], None]:
+    """One row of :data:`NARROWING_CONTRACT`, to be run against a framework's caller."""
     case: Callable[[WebCaller], None] = request.param
     return case
