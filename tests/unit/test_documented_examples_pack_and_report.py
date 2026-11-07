@@ -479,7 +479,7 @@ def test_the_documented_grant_and_revoke_invocations_run(
                 "--role",
                 "oncall",
                 "--expires",
-                "2026-09-01",
+                "2099-01-01",
                 "--reason",
                 "on-call rotation",
                 "--as",

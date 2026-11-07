@@ -475,7 +475,7 @@ is an ordinary Cedar action, it is **governed by the same engine it administers*
 into the same sink.
 
 ```bash
-sentrykit grant 'User::"ana"' --role oncall --expires 2026-09-01 \
+sentrykit grant 'User::"ana"' --role oncall --expires 2099-01-01 \
     --reason "on-call rotation" \
     --store jsonfile://./var/grants.json --policy file://./policies \
     --as 'User::"root"'

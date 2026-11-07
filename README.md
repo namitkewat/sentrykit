@@ -376,7 +376,7 @@ See [docs/policies.md](docs/policies.md).
 
 ```bash
 sentrykit policy validate ./policies
-sentrykit grant 'User::"ana"' --role oncall --expires 2026-09-01 \
+sentrykit grant 'User::"ana"' --role oncall --expires 2099-01-01 \
     --store jsonfile://./var/grants.json --policy file://./policies \
     --as 'User::"root"'
 sentrykit audit-report --from 2026-01-01 --to 2026-12-31 --out audit.md
