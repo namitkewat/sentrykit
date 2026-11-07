@@ -46,10 +46,19 @@ boundaries.
   has an output schema to validate against, so the envelope may be in the content text instead.
 
   Measured on the same seven-model harness, with a **list-returning** tool and the guidance
-  delivered out of band: 5 of 7 and then 7 of 7 runs served the user real data, against 3 of 7
-  for the old exceptions-only envelope — so the benefit no longer depends on the return shape,
-  and the separate message appears to be at least as strong a signal as the in-band field.
-  ADR-029 records the decisions and what is still not covered.
+  delivered out of band: pooled over four samples at 28 runs per arm, it served the user real
+  data in 23 of 28 runs, against 22 of 28 for the same narrowing reported in band and 14 of 28
+  for the old exceptions-only envelope. So the benefit no longer depends on the return shape.
+
+  An earlier draft of this entry put that as "5 of 7 and then 7 of 7 … against 3 of 7", and
+  concluded that the separate message "appears to be at least as strong a signal as the in-band
+  field." Both are withdrawn, and for the same reason: those were single samples read as
+  aggregates. Pairing every run by model and sample leaves the out-of-band channel and the
+  in-band field one run apart — 3 discordant pairs of 28, exact two-sided sign test
+  **p = 1.000** — so no direction is measured between them, and none should have been claimed.
+  `_authz` stays the channel wherever the return type allows it and the out-of-band annotation
+  covers every other shape, which is what shipped. ADR-029 records the decisions and what is
+  still not covered.
 
 - **The `_authz` envelope now reports the outcome of a narrowed call, not only its exceptions.**
   Three new fields: `narrowed` (the call ran with a value the caller did not propose),
@@ -57,9 +66,19 @@ boundaries.
   what to do with it). This closes a gap that only showed up under measurement. A narrowed call
   *succeeds* — real data is returned, on values the principal is entitled to — but an envelope
   whose only narrowing fields were `rejected` and `defaults_applied` described that success in
-  the vocabulary of a failure. Driven against seven language models on one over-broad request,
-  four of them read the envelope, concluded the call had failed, and withheld the data they were
-  already holding. Reporting the outcome alongside the exceptions is the fix.
+  the vocabulary of a failure. Driven against seven language models on one over-broad request
+  and pooled over four samples, roughly half the runs read that envelope, concluded the call had
+  failed, and withheld the data they were already holding. Adding the three outcome fields to
+  that same payload is the one contrast in the experiment that survives a paired test: of the
+  eight runs where the two reportings differ, all eight favour the outcome fields — exact
+  two-sided sign test **p = 0.0078**. Reporting the outcome alongside the exceptions is the fix.
+
+  Two claims from an earlier draft of this bullet are withdrawn. "Four of them" was the same
+  single sample read as an aggregate as above. And stripping the envelope altogether was said to
+  score *better* on serving than the exceptions-only envelope: unpaired it does, 64% against
+  50%, but paired it is 7 of 10 discordant runs at p = 0.344 — a direction worth holding onto,
+  not a measured result. Both are quoted rather than deleted because the asymmetry is the
+  lesson: the paired test had been applied only to the comparison expected to lose.
 
   `narrowed` is defined against the **proposal**, not against `rejected`, because the two differ
   in both directions: a rejection that left the argument with a surviving value of the caller's

@@ -165,8 +165,8 @@ def narrowing_guidance(narrowed_arguments: Sequence[str], *, unsupplied: Sequenc
     """Compose the sentence :attr:`AuthzEnvelope.guidance` carries.
 
     The wording has one job, and it is not decoration: a reader handed only ``rejected``
-    treats a narrowed call as a failed one and withholds the result. Measured across seven
-    language models, that happened in four of seven narrowed calls. So the sentence leads
+    treats a narrowed call as a failed one and withholds the result. Measured across language
+    models, that happened in roughly half of narrowed calls. So the sentence leads
     with the outcome rather than the exceptions, and it closes by saying not to retry the
     original values, because a reader that reads "rejected" as "try again" will loop.
 

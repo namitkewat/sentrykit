@@ -129,7 +129,7 @@ and refilled from her own defaults, the call proceeds, and the envelope says so.
 **succeeded**: real data was returned on values the principal is entitled to. An envelope that
 reports only the exceptions describes that success in the vocabulary of a failure, and a reader
 acting on it — most sharply a language model — concludes the call failed and withholds the answer
-it is already holding. Measured across seven models, that happened on four of seven narrowed
+it is already holding. Measured across language models, that happened on roughly half of narrowed
 calls. The three outcome fields carry no argument values and no policy ids, so they are present
 at every verbosity above `off`: a caller who may not be told *what* was narrowed is still told
 *that* the result is good.

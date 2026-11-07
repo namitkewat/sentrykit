@@ -644,6 +644,21 @@ the envelope may be in the content text instead — so `attach_envelope` records
 `EnvelopeRecorder.last_was_in_band` and the adapters read it. Per-decision rather than
 cumulative, because the question is about one return value.
 
+**Why out-of-band did not become the default channel.** The obvious follow-on to demoting
+`_authz` is to demote it the rest of the way and annotate every return shape out of band, and
+the first two samples of the harness pointed that way — the out-of-band arm served more often
+than the in-band one. It does not survive pairing. Across four samples of seven models, pairing
+each run by `(sample, model)`, the two differ in **3 of 28 runs, split 2 to 1, exact two-sided
+sign test p = 1.000**. There is no measured difference, so the decision above stands on its
+merits rather than on a benefit: `_authz` stays where the return type allows it because it costs
+nothing and is already where a reader looks, and the out-of-band channel exists because for most
+return shapes there is nowhere else to put the facts. The one contrast in that experiment that
+*does* reach significance is the one this change was made for — adding the outcome fields to the
+exceptions-only envelope, 8 discordant runs all favouring the outcome fields, p = 0.0078. The
+harness is `research/snippets/sentrykit/06_ab_narrow_vs_refuse.py`, pooled by `07`; that tree is
+deliberately not distributed, so treat the figures here as this project's record of what was
+measured rather than as something a reader of the package can re-derive.
+
 **What is still not covered.** A protected callable invoked outside any framework boundary has
 no recorder, so `narrowing()` reports nothing and `last_envelope()` remains the only channel —
 correct, since there is no response to annotate. And a host writing its own `ContextProvider`
