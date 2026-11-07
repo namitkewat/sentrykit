@@ -722,8 +722,8 @@ class SentrykitToolMiddleware:
         """Filter a ``tools/list`` result down to what this caller may invoke.
 
         The result arrives already serialized and carrying its own ``resultType``, so the
-        ``tools`` array is rewritten in place and everything else — cache scope, TTL, the
-        server's ``_meta`` — is left exactly as the server built it.
+        ``tools`` array is rewritten in place and the server's ``_meta`` is left exactly as it
+        built it. The **freshness hints are not**: see :func:`_keep_private`.
 
         An **unauthenticated** caller is shown nothing: with no principal there is no
         entitlement to reason about, and every one of those tools would refuse on dispatch.
@@ -750,6 +750,7 @@ class SentrykitToolMiddleware:
         # policy conditioning on ``context.channel == "agent"`` applies to the probe too.
         narrowed = provider.narrow(ctx)
         principal = provider.resolve_principal(narrowed)
+        _keep_private(result)
         if principal is None:
             result["tools"] = []
             return result
@@ -764,6 +765,28 @@ class SentrykitToolMiddleware:
             entry for entry in advertised if _advertise(entry, source=source, permitted=permitted)
         ]
         return result
+
+
+def _keep_private(result: dict[str, Any]) -> None:
+    """Downgrade a filtered ``tools/list`` result's cache hints to private, uncacheable.
+
+    mcp attaches ``cacheScope`` and ``ttlMs`` to every cacheable result, and they are a claim
+    about *the array the server built* — the full manifest, identical for everybody. Once this
+    middleware narrows that array per principal the claim is about a different object, and a
+    host that set ``cacheScope="public"`` to cut chatter would have one caller's entitlements
+    served to the next from a shared cache. Dispatch still refuses the call, so what leaks is
+    *which tools somebody else holds* rather than access to them — but the stated invariant is
+    "a tool is hidden iff invoking it would be refused", and a cache that answers for another
+    principal makes that sentence false.
+
+    A result whose content depends on the caller is private by construction, so the hints are
+    overwritten rather than respected. This is the one part of the envelope the filter owns,
+    precisely because it is the one part that describes what the filter changed.
+    """
+    if "cacheScope" in result:
+        result["cacheScope"] = "private"
+    if "ttlMs" in result:
+        result["ttlMs"] = 0
 
 
 def protect_server(
