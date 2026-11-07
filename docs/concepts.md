@@ -398,8 +398,9 @@ and close it to get any of this. See ADR-029.
 
 - **Operational logs** — ordinary `logging`, for developers. Ephemeral. Argument *names*,
   rules and policy ids; never values. A deny is normal operation and logs at `INFO`.
-- **The audit log** — not `logging`. A tamper-evident record stream, masked before the write,
-  written append-only. It is a data product, not a side effect.
+- **The audit log** — not `logging`. A hash-chained record stream, masked before the write,
+  written append-only. It is a data product, not a side effect. The chain is *detection, not
+  prevention* — [Audit & compliance](audit.md) states what it does and does not cover.
 
 ## What sentrykit is not
 

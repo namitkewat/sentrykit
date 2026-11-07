@@ -9,7 +9,7 @@ change profiles and three different guarantees:
 * :class:`GrantStore` — roles, group edges, per-argument constraints, expiries. **Mutable**;
   the only thing an admin surface ever writes. Multiple stores merge by precedence or route
   by namespace.
-* :class:`AuditSink` — the decision log. **Append-only and tamper-evident.** Multiple sinks
+* :class:`AuditSink` — the decision log. **Append-only and hash-chained.** Multiple sinks
   fan out.
 
 They are :class:`~typing.Protocol` s, not base classes, so a third-party backend satisfies
@@ -659,7 +659,9 @@ class AuditWindow(BaseModel):
 class AuditSink(Protocol):
     """Where audit records are written, and read back from.
 
-    Append-only and tamper-evident. A sink never updates or deletes a record, and never
+    Append-only and hash-chained: the chain makes an edited or deleted record *visible*,
+    which is detection rather than prevention — durable immutability comes from the storage
+    layer behind this protocol. A sink never updates or deletes a record, and never
     masks one: by the time a record reaches :meth:`write` its sensitive values are already
     masked, because masking runs upstream of the immutable write and
     :class:`~sentrykit.audit.AuditTrail` is the only thing that calls this method.

@@ -50,7 +50,7 @@ policy engine, that argument layer is the part you would otherwise assemble your
 > **Status: 0.2.0 — everything below works.** `@protect`, ambient context, the Cedar gate,
 > argument filtering, policy-declared **argument ceilings**, default injection, **constraint
 > validation at the write**, signature validation and the `_authz` envelope; the three
-> pluggable stores with entry-point discovery; masking and the tamper-evident audit log; the
+> pluggable stores with entry-point discovery; masking and the hash-chained audit log; the
 > **FastAPI, Flask, MCP and Pydantic-AI** providers with four runnable example apps; the
 > **shipped policy pack**; and the `sentrykit` command line. Not yet shipped: the durable WORM
 > audit backends (S3 Object Lock, Iceberg) — those are a `Protocol` away rather than built.
@@ -457,7 +457,7 @@ no site to host.
 
 [SECURITY.md](SECURITY.md) has the disclosure contact and, more usefully, an explicit account
 of **what sentrykit defends and what it does not**. The short version: it authorizes the
-action before the side effect and records a tamper-evident trail of every decision. It does
+action before the side effect and records a hash-chained trail of every decision. It does
 not sandbox a tool body — once a call is authorized, the function runs with your process's
 privileges — and without a durable write-once sink behind the `AuditSink` protocol it
 *detects* tampering rather than preventing it. It also does not authenticate: `Principal` is

@@ -1,6 +1,6 @@
 # Audit & compliance
 
-sentrykit emits one tamper-evident record per authorization decision — allow *and* refusal —
+sentrykit emits one hash-chained record per authorization decision — allow *and* refusal —
 and per admin grant mutation. The yearly audit report is meant to be a query over that
 stream, not an afternoon of reading logs.
 
