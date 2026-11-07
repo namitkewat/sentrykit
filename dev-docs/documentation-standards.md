@@ -108,26 +108,33 @@ tree — `maximum of 750` in an example payload, `two of them share a name` in a
 behaviour, not measurements of a model. What you are hunting is a figure whose only provenance
 is the gitignored harness.
 
-### Known outstanding instance
+### Normalise before you match, or the check is lying to you
 
-**The rule above does not describe a clean tree.** One instance is still in shipped text, and
-it is named here rather than only in a commit message so that it is found by whoever reads the
-rule rather than by whoever digs through the log:
+**Both greps run over markdown, so neutralise emphasis and collapse wrapping before any
+substring check — otherwise the check reports clean because it cannot see the text.** A phrase
+is invisible to a literal pattern the moment a `**` lands inside it or a line wrap splits it:
 
-> `docs/agents.md:479–482` — the paragraph beginning *"The `guidance` sentence is there for the
-> model"*. It carries **both** withdrawn claims. (1) *"Measured across seven models on this exact
-> scenario, an envelope carrying only `rejected` led four of them to tell the user the call had
-> failed"* — the single sample read as an aggregate; the pooled rate is near enough one in two.
-> (2) *"A tool server that strips the envelope does worse still"* — the comparison retracted in
-> ADR-030, which is `p = 0.344` paired and therefore a direction rather than a result. The
-> surrounding advice (*"Leave it in band"*) is unaffected and correct.
+| in the file | what a plain pattern sees |
+| --- | --- |
+| `the **EU** region` | not `eu ` |
+| `**1 time in 140 runs**` | not `1 time in 140 runs` |
+| `all 8 favour the\noutcome fields` | not `all 8 favour the outcome fields` |
 
-It also reaches `dist/docs/llms-full.txt`, which is built from the pages — and `pixi run check`
-runs `docs-html` only, never `docs-llms`, so fixing the page does not refresh the generated
-text. Run `pixi run docs-llms` after.
+This is not hypothetical and it is not rare. The same fault class has now bitten four separate
+checkers in this repo: the harness scorer in `06_ab_narrow_vs_refuse.py`, where `**EU**`
+defeating `"eu "` recorded two correct answers as `MISREPORTED` — the single most load-bearing
+cell in that table — and three ad-hoc verification greps written afterwards, each of which
+reported a correction missing when it was present. The scorer's fix is the pattern to copy:
+`normalise()` strips emphasis runs to spaces before collapsing whitespace, and `matches()`
+anchors a phrase on a word boundary; it is applied to **all** phrase lists so it cannot make
+one verdict more sensitive than another.
 
-Both greps above find it. **When they come back clean, delete this section** — a note that
-outlives the defect it describes is the same failure one level up.
+The greps above are written as single-line patterns and therefore inherit the defect. Treat a
+clean exit from them as *"nothing matched"*, never as *"nothing is there"*, and when a check
+decides whether a claim was corrected, write it in Python over the normalised text rather than
+as a one-line grep. **What your checker cannot see does not exist for you** — which is the
+denominator rule one level up: a number needs its denominator, and a check needs to be able to
+see what it is checking.
 
 ### What this rule does not guard
 

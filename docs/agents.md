@@ -476,10 +476,23 @@ print(result.structured_content["_authz"]["guidance"])
 `defaults_applied` is not an adjustment to anything the model asked for.
 
 The `guidance` sentence is there for the model, and it is the difference between a tool result
-a model relays and one it suppresses. Measured across seven models on this exact scenario, an
-envelope carrying only `rejected` led four of them to tell the user the call had failed — while
-holding valid data. A tool server that strips the envelope does worse still: with nothing to
-read, one model re-sent the identical over-broad call four times. Leave it in band. The contrast lives in the signature —
+a model relays and one it suppresses. Measured across seven language models on this exact
+scenario, over four samples, pairing every run by `(sample, model)`: an envelope carrying only
+`rejected` served the user real data in 50% of runs, and the same payload with the outcome
+fields added served it in 79% — the two differ in 8 of 28 paired runs, and **all 8 favour the
+outcome fields** (exact two-sided sign test, p = 0.0078). Twenty contrasts were computed over
+that one corpus, and against a Holm family-wise correction across them this does not clear:
+adjusted, it is 0.117. Quote both numbers wherever you quote either. The fields are worth
+keeping on what the comparison *is* — the same narrowing reported two ways, so the reporting is
+the only variable — rather than on the margin. Where the return type leaves no room for them the
+adapters carry them out of band instead, and the two channels measured the same.
+
+The result that needs no such caveat is the one about refusing: a tool that refuses an
+out-of-range argument and hands back the permitted range served the user real data in **0 of
+28 runs**, every model and every sample, and that is the only kind of contrast here that
+survives a family-wise correction. Narrowing and reporting it is the alternative to that.
+
+The contrast lives in the signature —
 `search_orders(region: str, limit: int, status: str = "open")` — and it is the design rule
 worth copying: a value **policy** decides carries no Python default, so it stays omittable and
 a policy default can reach it. A value that is the caller's own business keeps its Python
