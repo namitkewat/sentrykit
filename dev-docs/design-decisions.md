@@ -575,3 +575,77 @@ interpretation — and it should be treated as the maximum ad-hoc encoding this 
 ships. The design rule for the JSON is: **no string in the blob is ever re-interpreted as an
 expression.** `{"maximum": "principal.tier_cap"}`, a `$ref`, or a `"when"` key would cross that
 line.
+
+---
+
+## ADR-029 — Narrowing reaches the caller through the boundary's recorder; the `_authz` key is a mapping-return convenience
+**Decision.** `last_envelope()` and the boundary's `EnvelopeRecorder` are the reporting
+channel; the `_authz` key inside a mapping result is a convenience layered on top of it, not
+the mechanism. `BaseContextProvider.establish` installs a recorder and `release` closes it, so
+every shipped adapter has one. The web providers emit `x-sentrykit-narrowed: true` and
+`x-sentrykit-narrowed-arguments: a, b` **only when something was narrowed**. The agent
+adapters annotate a result that could not carry the envelope in band — MCP via prefixed `_meta`
+keys plus one appended text block, Pydantic-AI via `ToolReturn(return_value=…, content=…,
+metadata=…)`. `guidance` is **not** emitted as a response header.
+
+**Why a recorder and not `last_envelope()` alone.** Measured, and it is the whole reason this
+exists: a `ContextVar` write propagates *downward* into a copied context and never back *up*. A
+sync FastAPI route runs in an AnyIO worker thread holding a copy, so a decision made inside it
+leaves `last_envelope()` returning `None` to the middleware that has to write the headers —
+while the identical route declared `async` reports fine. ADR-016 already recorded that
+asymmetry and concluded "render refusals from the exception"; that answer does not extend to a
+*successful* narrowed call, which has no exception to render from. A recorder closes the gap by
+being a **mutable object reached through** the context variable rather than a value stored in
+it: the worker's copy points at the same instance, so the engine's mutation is visible to the
+boundary still holding it. Nothing else in the library needed this, which is why it had not
+been noticed.
+
+**Why the recorder accumulates rather than holding the last envelope.** A boundary's question
+is not "what was the last decision" but "was anything narrowed while serving this response",
+and one request may make several protected calls. `narrowed_arguments` is therefore the union
+across the scope in first-seen order. `envelope` still holds the most recent, so the two
+readings are both available and neither is inferred from the other.
+
+**Why `_authz` is demoted rather than extended.** It only ever worked for a `MutableMapping`
+return, and a web route returning a JSON array is the single most common shape there is. The
+three narrowing fields shipped before this change therefore reached no list-returning,
+str-returning or model-returning callable at all, which made the measured benefit of adding
+them conditional on a detail of the application's return type — an indefensible place for an
+authorization report to live. Reversing the hierarchy costs nothing in compatibility (`_authz`
+is unchanged where it applied) and makes the documented mechanism the one that always works.
+
+**Why `guidance` is not a header.** It is a sentence of prose, over 300 characters, and its
+unsupplied-argument form contains an em dash, which is not spellable in an HTTP field value
+without encoding. Headers also cost every byte on every response and are commonly capped
+around 4–8 KB in total by servers and proxies. A header should carry a fact a machine acts on;
+`narrowed` and `narrowed-arguments` are that, and the prose is available in the body for a
+mapping return and from `last_envelope()` for everything else. The cost is accepted and real: a
+web caller receiving a list gets the facts and not the sentence, and a host that wants the
+sentence in the response has to put it there.
+
+**Why headers only on narrowing.** The same discipline `AuthzEnvelope.as_dict` applies to
+`narrowed`: the exceptional outcome is the one worth a line. The cost is that an absent header
+cannot be distinguished from "sentrykit is not wired", which is a question nobody asks of a
+response they are already parsing — and the alternative is two headers on every ordinary
+response forever, paid by every caller, to say that nothing happened.
+
+**Why the agent adapters append rather than substitute.** The failure this change exists to fix
+is a reader being told about the exceptions instead of the result. Replacing a tool's content
+with a note about it would be that same failure inverted and worse. `ToolReturn`'s additivity
+was verified rather than assumed: `return_value` still reaches the model as the
+`ToolReturnPart`, and `content` arrives as a separate prompt part. MCP's `_meta` is the spec's
+open map and the appended text block is model-visible, because `_meta` is protocol metadata a
+client is under no obligation to show anyone.
+
+**Why in-band-ness is a recorded fact, not an inspected shape.** The adapters must not annotate
+a result that already carries `_authz`. Inferring that from the serialized result does not work
+— mcp populates `structuredContent` only when it has an output schema to validate against, so
+the envelope may be in the content text instead — so `attach_envelope` records
+`EnvelopeRecorder.last_was_in_band` and the adapters read it. Per-decision rather than
+cumulative, because the question is about one return value.
+
+**What is still not covered.** A protected callable invoked outside any framework boundary has
+no recorder, so `narrowing()` reports nothing and `last_envelope()` remains the only channel —
+correct, since there is no response to annotate. And a host writing its own `ContextProvider`
+without inheriting `BaseContextProvider` must call `record_decisions()` and `close()` itself;
+the docs say so, and nothing enforces it.

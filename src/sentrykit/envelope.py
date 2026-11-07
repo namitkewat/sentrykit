@@ -50,10 +50,13 @@ from sentrykit.constraints import RejectedArgument
 
 __all__ = [
     "AuthzEnvelope",
+    "EnvelopeRecorder",
     "attach_envelope",
     "build_envelope",
+    "current_recorder",
     "last_envelope",
     "narrowing_guidance",
+    "record_decisions",
     "set_last_envelope",
 ]
 
@@ -65,6 +68,16 @@ ENVELOPE_KEY: str = "_authz"
 _LAST_ENVELOPE: ContextVar[AuthzEnvelope | None] = ContextVar(
     "sentrykit_last_envelope", default=None
 )
+
+_RECORDER: ContextVar[EnvelopeRecorder | None] = ContextVar(
+    "sentrykit_envelope_recorder", default=None
+)
+"""The boundary's recorder, reached through the context rather than stored in it.
+
+A ``ContextVar`` holding a *value* is write-down-only: a sync route's write is discarded when
+its worker thread's context copy is dropped. A ``ContextVar`` holding a *mutable object* is
+not, because the copy points at the same instance. That distinction is the whole mechanism;
+see :class:`EnvelopeRecorder`."""
 
 
 class AuthzEnvelope(BaseModel):
@@ -330,6 +343,11 @@ def attach_envelope(result: T, envelope: AuthzEnvelope | None) -> T:
         # ``T`` is preserved: the same object comes back, only with one key added. The cast
         # is needed because a narrowing on ``T`` does not tell mypy the keys are strings.
         cast("MutableMapping[str, object]", result)[ENVELOPE_KEY] = envelope.as_dict()
+        recorder = _RECORDER.get()
+        if recorder is not None:
+            # The boundary now knows this result speaks for itself, so an adapter does not
+            # have to annotate it a second time out of band.
+            recorder.last_was_in_band = True
     return result
 
 
@@ -350,6 +368,128 @@ def set_last_envelope(envelope: AuthzEnvelope | None) -> None:
     """Record ``envelope`` as this context's most recent decision.
 
     Called by the engine on both allow and deny, so a provider rendering an error response
-    has the same detail available as one rendering a success.
+    has the same detail available as one rendering a success. It also feeds the boundary's
+    :class:`EnvelopeRecorder` when one is installed, which is the only path that survives a
+    decision made inside a copied context.
     """
     _LAST_ENVELOPE.set(envelope)
+    recorder = _RECORDER.get()
+    if recorder is not None and envelope is not None:
+        recorder.record(envelope)
+
+
+class EnvelopeRecorder:
+    """A boundary's running account of the decisions made while serving one request.
+
+    This exists because :func:`last_envelope` cannot answer the boundary's question. A
+    ``ContextVar`` write propagates *downward* into a copied context and never back *up*: a
+    sync framework route runs in a worker thread holding a copy, so nothing the engine sets
+    while that route executes is visible to the middleware that has to write the response
+    headers. Measured, not assumed — see ADR-029.
+
+    A recorder closes that gap by being a **mutable object reached through** the context
+    variable rather than a value stored in it. The copy a worker thread receives points at
+    the same instance, so :meth:`record` mutates what the boundary is still holding.
+
+    It is also the right shape for the question a boundary actually asks. A request may make
+    several protected calls, and "was anything narrowed while serving this response" is not
+    answerable from the most recent envelope alone, so :attr:`narrowed_arguments` accumulates
+    the union across every decision in the scope, in first-seen order.
+
+    A boundary installs one with :func:`record_decisions` and drops it with :meth:`close`;
+    :class:`~sentrykit.integrations.base.BaseContextProvider` does both, so every shipped
+    framework adapter has one without asking.
+
+    Attributes:
+        decisions: How many decisions have been recorded.
+        envelope: The most recent one, matching what :func:`last_envelope` would return had
+            the decision been made in this context.
+        narrowed_arguments: Every argument narrowed anywhere in the scope, first-seen order.
+        last_was_in_band: Whether the **most recent** decision's envelope was written into
+            the result itself under ``_authz``. Per-decision rather than cumulative on
+            purpose: it answers "does this result already say so?", which is a question about
+            one return value, and a boundary asks it immediately after the call it describes.
+            A non-mapping return leaves it ``False``, and that is the signal the agent
+            adapters act on.
+    """
+
+    __slots__ = (
+        "_closed",
+        "_seen",
+        "decisions",
+        "envelope",
+        "last_was_in_band",
+        "narrowed_arguments",
+    )
+
+    def __init__(self) -> None:
+        self.decisions = 0
+        self.envelope: AuthzEnvelope | None = None
+        self.narrowed_arguments: tuple[str, ...] = ()
+        self.last_was_in_band = False
+        self._seen: set[str] = set()
+        self._closed = False
+
+    @property
+    def narrowed(self) -> bool:
+        """Whether any decision in this scope ran with a value its caller did not propose."""
+        return bool(self.narrowed_arguments)
+
+    def record(self, envelope: AuthzEnvelope) -> None:
+        """Fold one decision into the account.
+
+        Args:
+            envelope: The decision's envelope. A ``None`` envelope — verbosity ``off`` — is
+                filtered out by :func:`set_last_envelope` before it reaches here, so a host
+                that turned reporting off gets no headers rather than empty ones.
+        """
+        self.decisions += 1
+        self.envelope = envelope
+        # Cleared per decision, and set again only if ``attach_envelope`` manages to write
+        # into the result. The engine records the envelope before it invokes, so this is the
+        # earliest point at which the flag can be made to describe *this* call.
+        self.last_was_in_band = False
+        fresh = [name for name in envelope.narrowed_arguments if name not in self._seen]
+        if fresh:
+            self._seen.update(fresh)
+            self.narrowed_arguments = (*self.narrowed_arguments, *fresh)
+
+    def close(self) -> None:
+        """Uninstall this recorder. Idempotent, and safe to call on an already-closed one.
+
+        Shaped like :meth:`~sentrykit.context.ContextScope.reset` on purpose: a boundary
+        tears down what it set up, in a ``finally``, and a pooled worker must not start the
+        next request holding the previous caller's account.
+        """
+        if self._closed:
+            return
+        self._closed = True
+        _RECORDER.set(None)
+
+
+def record_decisions() -> EnvelopeRecorder:
+    """Install an :class:`EnvelopeRecorder` for the current context and return it.
+
+    Call at a request boundary, before anything protected runs, and
+    :meth:`EnvelopeRecorder.close` it at teardown. The shipped providers do this inside
+    :meth:`~sentrykit.integrations.base.BaseContextProvider.establish` and
+    :meth:`~sentrykit.integrations.base.BaseContextProvider.release`; a hand-written provider
+    that wants narrowing to reach its response needs the same pair.
+
+    Returns:
+        The recorder. Also reachable from the same context with :func:`current_recorder`,
+        which is what lets a boundary read it without threading it through the call stack.
+    """
+    recorder = EnvelopeRecorder()
+    _RECORDER.set(recorder)
+    return recorder
+
+
+def current_recorder() -> EnvelopeRecorder | None:
+    """Return the recorder installed for this context, if any.
+
+    Returns:
+        The recorder, or ``None`` outside a boundary that installed one — which is the normal
+        case for a plain ``with establish(...)`` block in application code.
+    """
+    return _RECORDER.get()

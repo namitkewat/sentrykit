@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextvars import copy_context
 from typing import Any
 
 import pytest
@@ -14,8 +15,10 @@ from sentrykit.envelope import (
     AuthzEnvelope,
     attach_envelope,
     build_envelope,
+    current_recorder,
     last_envelope,
     narrowing_guidance,
+    record_decisions,
     set_last_envelope,
 )
 
@@ -308,3 +311,132 @@ def test_a_mixed_narrowing_separates_what_policy_supplied_from_what_it_did_not()
 
     assert "unverified" in guidance
     assert "region did come from this principal's own entitlement." in guidance
+
+
+# --- the recorder: the channel that survives a copied context -------------------------
+
+
+@pytest.mark.unit
+def test_no_recorder_outside_a_boundary() -> None:
+    """A plain `with establish(...)` block installs none, and nothing requires one."""
+    assert current_recorder() is None
+
+
+@pytest.mark.unit
+def test_a_recorder_accumulates_the_union_across_decisions() -> None:
+    """A response-level report asks about the whole request, not the last decision."""
+    recorder = record_decisions()
+    try:
+        recorder.record(_envelope("summary", narrowed_arguments=("region",)))  # type: ignore[arg-type]
+        recorder.record(_envelope("summary", narrowed_arguments=("limit", "region")))  # type: ignore[arg-type]
+
+        assert recorder.decisions == 2
+        # First-seen order, de-duplicated: ``region`` is not repeated.
+        assert recorder.narrowed_arguments == ("region", "limit")
+        assert recorder.narrowed is True
+    finally:
+        recorder.close()
+
+
+@pytest.mark.unit
+def test_a_recorder_stays_quiet_when_nothing_narrowed() -> None:
+    recorder = record_decisions()
+    try:
+        recorder.record(_envelope("summary"))  # type: ignore[arg-type]
+
+        assert recorder.decisions == 1
+        assert recorder.narrowed is False
+        assert recorder.narrowed_arguments == ()
+    finally:
+        recorder.close()
+
+
+@pytest.mark.unit
+def test_set_last_envelope_feeds_the_installed_recorder() -> None:
+    """The engine calls `set_last_envelope`; it must not also have to know about recorders."""
+    recorder = record_decisions()
+    try:
+        set_last_envelope(_envelope("summary", narrowed_arguments=("region",)))
+
+        assert recorder.narrowed_arguments == ("region",)
+    finally:
+        recorder.close()
+
+
+@pytest.mark.unit
+def test_a_none_envelope_records_nothing() -> None:
+    """Verbosity ``off`` must produce no headers rather than empty ones."""
+    recorder = record_decisions()
+    try:
+        set_last_envelope(None)
+
+        assert recorder.decisions == 0
+        assert recorder.narrowed is False
+    finally:
+        recorder.close()
+
+
+@pytest.mark.unit
+def test_closing_a_recorder_is_idempotent_and_uninstalls_it() -> None:
+    recorder = record_decisions()
+    recorder.close()
+    recorder.close()
+
+    assert current_recorder() is None
+
+
+@pytest.mark.unit
+def test_a_recorder_mutation_survives_a_copied_context() -> None:
+    """The whole reason the recorder exists, asserted directly.
+
+    A ``ContextVar`` write inside a copied context is discarded when the copy is dropped --
+    which is what happens to every sync framework route, since it runs in a worker thread.
+    A mutation to an object *reached through* the variable is not. See ADR-029.
+    """
+    recorder = record_decisions()
+    try:
+        narrowed = _envelope("summary", narrowed_arguments=("region",))
+
+        def inside_a_copy() -> None:
+            set_last_envelope(narrowed)
+            # Visible here, because this context has its own copy of the value.
+            assert last_envelope() is narrowed
+
+        copy_context().run(inside_a_copy)
+
+        # The value written to the ContextVar did NOT come back...
+        assert last_envelope() is None
+        # ...and the mutation to the recorder did.
+        assert recorder.narrowed_arguments == ("region",)
+    finally:
+        recorder.close()
+
+
+@pytest.mark.unit
+def test_attaching_to_a_mapping_records_that_it_went_in_band() -> None:
+    """What the agent adapters read to avoid saying the same thing twice."""
+    recorder = record_decisions()
+    try:
+        envelope = _envelope("summary", narrowed_arguments=("region",))
+        set_last_envelope(envelope)
+        assert recorder.last_was_in_band is False
+
+        attach_envelope({"region": "eu"}, envelope)
+
+        assert recorder.last_was_in_band is True
+    finally:
+        recorder.close()
+
+
+@pytest.mark.unit
+def test_attaching_to_a_non_mapping_records_that_it_did_not() -> None:
+    recorder = record_decisions()
+    try:
+        envelope = _envelope("summary", narrowed_arguments=("region",))
+        set_last_envelope(envelope)
+
+        attach_envelope([{"region": "eu"}], envelope)
+
+        assert recorder.last_was_in_band is False
+    finally:
+        recorder.close()
