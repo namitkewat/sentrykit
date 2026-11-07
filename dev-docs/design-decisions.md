@@ -664,3 +664,49 @@ no recorder, so `narrowing()` reports nothing and `last_envelope()` remains the 
 correct, since there is no response to annotate. And a host writing its own `ContextProvider`
 without inheriting `BaseContextProvider` must call `record_decisions()` and `close()` itself;
 the docs say so, and nothing enforces it.
+
+## ADR-030 — The envelope reports the outcome of a narrowed call, justified by the one contrast that survives pairing
+**Decision.** `AuthzEnvelope` carries `narrowed`, `narrowed_arguments` and `guidance` alongside
+`rejected` and `defaults_applied`. The exceptions say what policy would not accept; the outcome
+says what happened. `narrowed` is defined against the caller's *proposal* rather than against
+`rejected`, and `Plan.narrowing()` is the seam. This ADR exists because the fields shipped
+without one: ADR-029 records the *channel* that carries them, and the justification for the
+fields themselves lived only in `CHANGELOG.md`.
+
+**Why — the stated justification, and the only one.** A narrowed call succeeded: real data was
+returned, on values the principal is entitled to. An envelope naming only what was refused
+describes that success in the vocabulary of a failure, and a reader acting on it withholds the
+answer it already holds. Adding the three fields to that same payload is **the one contrast in
+the harness that survives a paired test**: pairing every run by `(sample, model)` across four
+samples of seven models, the exceptions-only envelope and the outcome-carrying envelope differ
+in **8 of 28 runs, and all 8 favour the outcome fields — exact two-sided sign test p = 0.0078**.
+The same contrast against the out-of-band variant is p = 0.0039. Nothing else about this change
+is load-bearing on a measurement.
+
+**Retracted: "the old envelope was worse than no envelope at all."** This is recorded rather
+than deleted, because the fault was in the method and the method is the thing worth keeping.
+The claim was that stripping the envelope entirely served data more often than the
+exceptions-only envelope did — that the field being fixed was not merely incomplete but *net
+negative*. Unpaired it looks that way, 64% against 50%. Paired, it is **7 of 10 discordant runs
+at p = 0.344**: the right direction, and not a result. It was asserted causally in the same
+document that ran a paired test on a neighbouring comparison and declared *that* one refuted at
+p = 1.000 — so the test was applied to the hypothesis its author was willing to lose and
+withheld from the one that flattered the change. A justification built on it would have rested
+on the contrast that did not survive.
+
+**Also retracted: the single-sample figure.** "Four of seven narrowed calls" was one sample of
+seven models read as an aggregate. Pooled it is near enough one in two. It had reached the
+README, `narrowing_guidance`'s docstring, `CHANGELOG.md` twice and the generated
+`llms-full.txt`; `dev-docs/documentation-standards.md` now carries the rule that keeps
+unverifiable figures out of shipped text, and names the instance still outstanding.
+
+**What stops it recurring is structural, not anybody's discipline.** The pooling script
+`research/snippets/sentrykit/07_rescore_saved_runs.py` now computes and prints **all ten**
+pairwise contrasts with their sign tests, every time it runs. Selecting which comparison to
+test is no longer possible, because they are all already there — and the four that reach
+significance (B→D, B→E, and C against everything) are visible beside the six that do not.
+
+**What this does not establish.** That narrowing is better than refusing *in general* — the
+harness is one over-broad request against one tool. That the wording is optimal; `guidance`'s
+prose is explicitly not stable API (`dev-docs/api-surface.md`). And nothing about how a human
+reader, as opposed to a model, reads an envelope: every run in the corpus is a model.

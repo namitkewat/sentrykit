@@ -108,7 +108,26 @@ tree — `maximum of 750` in an example payload, `two of them share a name` in a
 behaviour, not measurements of a model. What you are hunting is a figure whose only provenance
 is the gitignored harness.
 
----
+### Known outstanding instance
+
+**The rule above does not describe a clean tree.** One instance is still in shipped text, and
+it is named here rather than only in a commit message so that it is found by whoever reads the
+rule rather than by whoever digs through the log:
+
+> `docs/agents.md:479–482` — the paragraph beginning *"The `guidance` sentence is there for the
+> model"*. It carries **both** withdrawn claims. (1) *"Measured across seven models on this exact
+> scenario, an envelope carrying only `rejected` led four of them to tell the user the call had
+> failed"* — the single sample read as an aggregate; the pooled rate is near enough one in two.
+> (2) *"A tool server that strips the envelope does worse still"* — the comparison retracted in
+> ADR-030, which is `p = 0.344` paired and therefore a direction rather than a result. The
+> surrounding advice (*"Leave it in band"*) is unaffected and correct.
+
+It also reaches `dist/docs/llms-full.txt`, which is built from the pages — and `pixi run check`
+runs `docs-html` only, never `docs-llms`, so fixing the page does not refresh the generated
+text. Run `pixi run docs-llms` after.
+
+Both greps above find it. **When they come back clean, delete this section** — a note that
+outlives the defect it describes is the same failure one level up.
 
 ## 2. Comments and docstrings explain *why*
 
