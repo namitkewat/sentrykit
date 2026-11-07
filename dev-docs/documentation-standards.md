@@ -58,6 +58,56 @@ Tests count as shipped text for this rule even though they are not installed: th
 first thing a contributor reads to learn what a behaviour is supposed to be, and a test whose
 docstring explains which phase wrote it explains nothing about the behaviour.
 
+## Measured figures in shipped text
+
+A number is a citation too, and it fails the same way. `research/` is gitignored and is not in
+the distribution, so a precise experimental figure in `src/`, `docs/`, `examples/`, `tests/` or
+`README.md` points a reader at a harness they do not have. They cannot check it, cannot re-run
+it, and cannot tell when it has gone stale.
+
+**In shipped text, state the magnitude in words and keep the direction. Put the figure in
+`CHANGELOG.md`, `dev-docs/` or `research/out/`, where the harness is named.**
+
+| Instead of | Write |
+| --- | --- |
+| `that happened in four of seven narrowed calls` | `that happened in roughly half of narrowed calls` |
+| `served data in 22 of 28 runs against 14 of 28` | `served the result markedly more often than the exceptions-only envelope did` |
+| `0 of 28 models retried in bounds` | `no model in the panel relayed the data it retrieved` |
+
+Two failures this rule exists to prevent, both of which happened:
+
+1. **A single sample read as an aggregate.** `four of seven` was one run of seven models. The
+   pooled figure over four samples is near enough one in two, so the shipped sentence was both
+   unverifiable and wrong, in three shipped files and the generated `llms-full.txt`.
+2. **A direction asserted without the test that was applied elsewhere.** Prose carries a claim
+   with no digits in it — *"does worse still"*, *"at least as strong a signal"* — and such a
+   sentence survives a grep for numbers. If a comparison is worth stating, it is worth testing;
+   if it has not been tested, say *appears to* and nothing stronger.
+
+### The check
+
+```bash
+# 1. a measurement is being announced -- read the whole paragraph it opens
+grep -rniE 'measured (across|on|against)|in (live|real) runs|does worse|at least as strong|\
+strongest signal|net negative' src/ tests/ docs/ examples/ README.md
+# 2. a ratio of model runs, including spelled-out ones
+grep -rniE '[0-9]+ ?/ ?[0-9]+ (runs|calls|models|samples)|[0-9]+ of [0-9]+ (runs|calls|models|samples)|\
+(two|three|four|five|six|seven|eight) (language )?models' src/ tests/ docs/ examples/ README.md
+```
+
+**Grep 1 is the one that works, and it has no numbers in it.** Both real escapes —
+*"does worse still"* and *"at least as strong a signal"* — carried a withdrawn comparison with
+no digit anywhere in the sentence, so any number-shaped pattern runs clean over them.
+`measured across` is the tell: it is how a sentence announces a measurement and then declines to
+let you check it. Read the paragraph each hit opens, not the line.
+
+Grep 2 is the backstop and needs judgement, not a zero exit. It must stay anchored to run/model
+nouns: unanchored, `[0-9]+ of [0-9]+` and `four of them` match ordinary prose across the source
+tree — `maximum of 750` in an example payload, `two of them share a name` in a store docstring,
+`7 of 7` in the audit docs (a hash-chain result the library computes itself). Those are data and
+behaviour, not measurements of a model. What you are hunting is a figure whose only provenance
+is the gitignored harness.
+
 ---
 
 ## 2. Comments and docstrings explain *why*
