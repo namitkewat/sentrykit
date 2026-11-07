@@ -129,6 +129,16 @@ text. Run `pixi run docs-llms` after.
 Both greps above find it. **When they come back clean, delete this section** — a note that
 outlives the defect it describes is the same failure one level up.
 
+### What this rule does not guard
+
+The greps cover shipped text only: `src/`, `docs/`, `examples/`, `tests/`, `README.md`.
+**`research/report/` has no equivalent and no guard is proposed here** — it is the one place
+where precise figures belong, so the rule above cannot apply to it, and it is also where the
+next write-up will be drafted and where every retracted figure in this project was first
+stated. The exposure is recorded rather than closed: printing all twenty contrasts makes
+selective quoting *visible*, not impossible, and nothing stops a draft there from quoting the
+one row that reads best. Whoever writes in `research/report/` is the guard.
+
 ## 2. Comments and docstrings explain *why*
 
 Unchanged from `coding-standards.md`, restated because it is half of what makes rule 1 work:

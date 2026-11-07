@@ -710,3 +710,35 @@ significance (B→D, B→E, and C against everything) are visible beside the six
 harness is one over-broad request against one tool. That the wording is optimal; `guidance`'s
 prose is explicitly not stable API (`dev-docs/api-surface.md`). And nothing about how a human
 reader, as opposed to a model, reads an envelope: every run in the corpus is a model.
+
+**Amended 2026-11-07 — the family-wise correction, and the claim against silence.** The
+pooling script now computes all ten pairwise contrasts on *both* measures, served and
+disclosed, which makes twenty tests over one corpus. Three corrections follow, and the
+decision above survives all three on a narrower base than it was first given.
+
+*"The one contrast that survives a paired test" was too strong.* Holm-adjusted across the
+twenty, the only survivors are the four arm-vs-**C** contrasts on served data, none of them
+near the threshold. **B→D does not clear the correction: raw p = 0.0078, Holm-adjusted 0.117.**
+It stands as a *pre-specified primary endpoint* — `06`'s module docstring names "D vs B is the
+acceptance test for the envelope change", written before any sample existed — and a
+pre-registered primary is read at its raw value rather than corrected for contrasts computed
+afterwards. That argument is sound and it is also the whole of what the raw value rests on. It
+is not a licence to quote 0.0078 beside the other nineteen rows; quoted there it is an
+exploratory result and the adjusted figure is the honest one.
+
+*The case against silent narrowing does not resolve in this corpus, on either measure.* On
+served data silence is not measurably worse than the new envelope — A vs D is p = 0.289, A vs
+E is p = 0.125. On disclosure the direction is unanimous (across A vs B, A vs D and A vs E,
+every one of the 18 discordant pairs favours the arm carrying an envelope, none favours
+silence) and still short of significance: A vs D is 5 discordant pairs at p = 0.0625, which is
+the *floor* at five pairs, so it could not have reached 0.05; A vs E is p = 0.0156 raw and
+0.219 adjusted. Disclosure sits near ceiling in every arm, so only five to seven discordant
+pairs exist per contrast and the test cannot resolve below six. Underpowered by construction.
+More samples would settle it; more analysis of these will not.
+
+*So the justification for reporting narrowing at all is narrower than a throughput claim.* It
+is the pre-registered B→D result against the *exceptions-only* envelope — fixing a report that
+was actively misleading — plus first principles, that a caller cannot act on what it is not
+told, plus the single run in the corpus that fabricated a table of invented orders rather than
+relay a narrowed result. **It is not that the envelope out-performs silence**, on throughput or
+on disclosure. Any positioning text that argues otherwise is arguing past the data.
