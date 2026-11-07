@@ -88,6 +88,21 @@ _GOVERNOR: Governor | None = None
 process-lifetime concern, and :func:`use_governor` covers the scoped case."""
 
 
+def _same_value(left: object, right: object) -> bool:
+    """Compare two argument values without letting ``True`` equal ``1``.
+
+    The same rule :func:`sentrykit.constraints._same_value` applies to set membership, and
+    for the same reason: Python's ``bool`` is an ``int``, so a plain ``==`` would report
+    "unchanged" for a proposed ``True`` that reached the callable as ``1``. Restated here
+    rather than imported because ``constraints`` is a pure function from constraints to a
+    verdict and owes the engine nothing — and because a *report* that quietly disagrees with
+    the *filter* about whether a value changed is worse than three duplicated lines.
+    """
+    if isinstance(left, bool) is not isinstance(right, bool):
+        return False
+    return bool(left == right)
+
+
 _REFUSAL_OUTCOMES: Final[dict[type[BaseException], AuditOutcome]] = {
     AuthzDenied: "denied",
     ArgumentRejected: "arguments-rejected",
@@ -384,8 +399,33 @@ class Plan:
             return True
         return self.decision.failed and self.settings.fail_mode == "open"
 
+    def narrowing(self) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        """Name the arguments whose proposed value did not survive, and which lost it entirely.
+
+        Narrowing is defined against the *proposal*, not against ``rejected``, because the
+        two differ in both directions. A rejection whose argument kept a surviving value of
+        the caller's own is not narrowing; a withheld default — a rejection for an argument
+        the caller never mentioned — is not narrowing either; and an argument dropped with no
+        replacement *is* narrowing even though nothing was injected to mark it.
+
+        Returns:
+            The narrowed parameter names, and the subset of them that reached the callable
+            with no sentrykit-supplied value — so the callable's own signature default
+            applied, which no constraint ever checked.
+        """
+        narrowed: list[str] = []
+        unsupplied: list[str] = []
+        for name, proposed in self.invocation.proposed.items():
+            if name not in self.processed:
+                narrowed.append(name)
+                unsupplied.append(name)
+            elif not _same_value(self.processed[name], proposed):
+                narrowed.append(name)
+        return tuple(narrowed), tuple(unsupplied)
+
     def envelope(self) -> AuthzEnvelope | None:
         """Build the caller-facing envelope for this plan, honoring its verbosity."""
+        narrowed, unsupplied = self.narrowing()
         return build_envelope(
             decision="allow" if self.allowed else "deny",
             action=str(self.invocation.action),
@@ -394,6 +434,8 @@ class Plan:
             processed=self.processed,
             rejected=self.rejected,
             defaults_applied=self.defaults_applied,
+            narrowed_arguments=narrowed,
+            narrowed_without_replacement=unsupplied,
             obligations=self.obligations,
             determining_policies=self.decision.determining_policies,
             trace=self.trace or None,

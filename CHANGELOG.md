@@ -11,6 +11,36 @@ boundaries.
 
 ### Added
 
+- **The `_authz` envelope now reports the outcome of a narrowed call, not only its exceptions.**
+  Three new fields: `narrowed` (the call ran with a value the caller did not propose),
+  `narrowed_arguments` (which ones) and `guidance` (one sentence on what the result means and
+  what to do with it). This closes a gap that only showed up under measurement. A narrowed call
+  *succeeds* — real data is returned, on values the principal is entitled to — but an envelope
+  whose only narrowing fields were `rejected` and `defaults_applied` described that success in
+  the vocabulary of a failure. Driven against seven language models on one over-broad request,
+  four of them read the envelope, concluded the call had failed, and withheld the data they were
+  already holding. Reporting the outcome alongside the exceptions is the fix.
+
+  `narrowed` is defined against the **proposal**, not against `rejected`, because the two differ
+  in both directions: a rejection that left the argument with a surviving value of the caller's
+  own is not narrowing, and a default injected for an argument the caller never mentioned is not
+  either — nothing was taken away. It is omitted from the rendered envelope when false, so an
+  ordinary allow stays exactly as terse as before.
+
+  None of the three carries an argument value or a policy id, so all three are present at every
+  verbosity above `off`. That is the point: a caller who may not be told *which* value was
+  refused can still be told *that* the result is good.
+
+  `guidance`'s opening sentence is conditional, and the distinction is worth knowing. When every
+  narrowed argument was refilled from the principal's own entitlement it says the result is
+  **valid**. When one was not — the argument was dropped and the callable's own signature default
+  filled the slot — it says the result was **served** and marks that part **unverified**, because
+  no constraint ever saw the value that landed there. That is the first time anything in
+  sentrykit tells an operator a governed parameter took its value from outside the policy layer.
+
+  `sentrykit.envelope.narrowing_guidance` composes the sentence and is reachable for a host that
+  wants to re-render it. `Plan.narrowing()` is the seam that computes the two sets.
+
 - **One orders-and-refunds desk, modelled identically in all four examples.** Three principals
   — `alice` (support), `bob` (auditor), `dana` (admin, reaching support through a single
   `Role::"admin" -> Role::"support"` edge rather than through a second grant on every admin) —

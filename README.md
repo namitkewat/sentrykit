@@ -116,10 +116,23 @@ and refilled from her own defaults, the call proceeds, and the envelope says so.
       {"name": "region", "rule": "allow-set", "reason": "Value is not one of the permitted values"},
       {"name": "limit",  "rule": "maximum",   "reason": "Value is above the maximum of 50"}
     ],
-    "defaults_applied": {"region": null, "limit": null}
+    "defaults_applied": {"region": null, "limit": null},
+    "narrowed": true,
+    "narrowed_arguments": ["region", "limit"],
+    "guidance": "This result is valid and was served. The authorization policy adjusted region, limit before the call ran, because the proposed value is not one this principal may use. Report the result as delivered and say which parameters were adjusted; do not retry with the original values."
   }
 }
 ```
+
+`rejected` says what the policy would not accept. `narrowed`, `narrowed_arguments` and
+`guidance` say what the *outcome* was — and that pairing is deliberate. A narrowed call
+**succeeded**: real data was returned on values the principal is entitled to. An envelope that
+reports only the exceptions describes that success in the vocabulary of a failure, and a reader
+acting on it — most sharply a language model — concludes the call failed and withholds the answer
+it is already holding. Measured across seven models, that happened on four of seven narrowed
+calls. The three outcome fields carry no argument values and no policy ids, so they are present
+at every verbosity above `off`: a caller who may not be told *what* was narrowed is still told
+*that* the result is good.
 
 Narrowing *refines* a proposal; it does not invent one. If **every** argument the caller
 supplied is rejected, the call is refused with `NoValidArguments` rather than completed from

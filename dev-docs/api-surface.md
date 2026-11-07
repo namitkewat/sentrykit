@@ -96,8 +96,9 @@ already says.
 
 | name | verdict | why |
 | --- | --- | --- |
-| `AuthzEnvelope` | public | The caller-facing `_authz` report attached to a result. |
+| `AuthzEnvelope` | public | The caller-facing `_authz` report attached to a result. Carries the *exceptions* (`rejected`, `defaults_applied`) and, since the narrowing-outcome change, the *outcome* (`narrowed`, `narrowed_arguments`, `guidance`). |
 | `last_envelope` | public | Read the envelope for the most recent decision in this context. |
+| `narrowing_guidance` — in `sentrykit.envelope`, not re-exported | public in effect, **wording not stable** | Composes `AuthzEnvelope.guidance`. Named and exported rather than underscored because a host rendering its own response may want the same sentence, and because the behaviour it encodes is measured rather than assumed — `research/snippets/sentrykit/06_ab_narrow_vs_refuse.py` is its acceptance test. Deliberately **not** lifted into the package namespace: the function is contract, the exact prose is not, and tuning the prose against that harness must not be a breaking change. |
 | `AuditTrail` | public | The only object that writes to a sink, and the one that masks on the way in. |
 | `AuthzAuditRecord` | public | One record. Anyone writing a sink deserializes these. |
 | `verify_chain` / `ChainVerdict` | public | Tamper detection, and its result. `SECURITY.md` names `verify_chain` as the integrity check. |

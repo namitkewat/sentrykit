@@ -958,3 +958,98 @@ def test_the_decision_environment_reaches_the_invocation(
     assert plan.invocation.channel == "agent"
     assert plan.invocation.environment["request_id"] == "r-1"
     assert plan.invocation.proposed == {"customer_id": "c-1"}
+
+
+# --- narrowing: the outcome half of the envelope ---------------------------------------
+#
+# ``Plan.narrowing`` is defined against the *proposal*, not against ``rejected``, and the
+# two differ in both directions. These pin that definition, because the envelope's
+# ``narrowed``/``guidance`` fields are only trustworthy if it holds.
+
+
+@pytest.mark.unit
+def test_a_rejected_argument_refilled_from_a_default_is_narrowed(
+    governor: Governor,
+    search_spec: ArgumentSpec,
+    constrained_principal: Principal,
+) -> None:
+    plan = governor.plan(
+        search_spec,
+        principal=constrained_principal,
+        action=SEARCH_ACTION,
+        resource=ORDERS_TOOL,
+        proposed={"customer_id": "c-1", "region": "nowhere"},
+    )
+
+    assert plan.processed["region"] == "eu-west"
+    assert plan.narrowing() == (("region",), ())
+
+
+@pytest.mark.unit
+def test_a_rejected_argument_with_no_default_is_narrowed_and_unsupplied(
+    governor: Governor,
+    search_spec: ArgumentSpec,
+    constrained_principal: Principal,
+) -> None:
+    """``limit`` carries a range and no default, so nothing refills the slot.
+
+    The callable's own signature default lands there instead, which no constraint ever
+    checked — so the envelope must be able to say this part of the result is unverified.
+    """
+    plan = governor.plan(
+        search_spec,
+        principal=constrained_principal,
+        action=SEARCH_ACTION,
+        resource=ORDERS_TOOL,
+        proposed={"customer_id": "c-1", "limit": 9999},
+    )
+
+    assert "limit" not in plan.processed
+    assert plan.narrowing() == (("limit",), ("limit",))
+    envelope = plan.envelope()
+    assert envelope is not None
+    assert "unverified" in str(envelope.guidance)
+
+
+@pytest.mark.unit
+def test_an_argument_that_survives_is_not_narrowed(
+    governor: Governor,
+    search_spec: ArgumentSpec,
+    constrained_principal: Principal,
+) -> None:
+    plan = governor.plan(
+        search_spec,
+        principal=constrained_principal,
+        action=SEARCH_ACTION,
+        resource=ORDERS_TOOL,
+        proposed={"customer_id": "c-1", "region": "eu-west", "limit": 5},
+    )
+
+    assert plan.narrowing() == ((), ())
+    envelope = plan.envelope()
+    assert envelope is not None
+    assert envelope.narrowed is False
+    assert envelope.guidance is None
+
+
+@pytest.mark.unit
+def test_a_default_injected_for_an_argument_nobody_proposed_is_not_narrowing(
+    governor: Governor,
+    search_spec: ArgumentSpec,
+    constrained_principal: Principal,
+) -> None:
+    """Nothing was taken away, so there is nothing to disclose as an adjustment.
+
+    This is the case that makes ``narrowed`` worth having as a separate field:
+    ``defaults_applied`` is non-empty here and the caller got exactly what they asked for.
+    """
+    plan = governor.plan(
+        search_spec,
+        principal=constrained_principal,
+        action=SEARCH_ACTION,
+        resource=ORDERS_TOOL,
+        proposed={"customer_id": "c-1"},
+    )
+
+    assert plan.defaults_applied
+    assert plan.narrowing() == ((), ())

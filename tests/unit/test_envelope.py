@@ -15,6 +15,7 @@ from sentrykit.envelope import (
     attach_envelope,
     build_envelope,
     last_envelope,
+    narrowing_guidance,
     set_last_envelope,
 )
 
@@ -216,3 +217,94 @@ def test_the_last_envelope_can_be_recorded_directly() -> None:
     set_last_envelope(envelope)
 
     assert last_envelope() == envelope
+
+
+# --- the outcome half: narrowed / narrowed_arguments / guidance ------------------------
+#
+# These three say what the decision *did*, where `rejected` says only what it would not
+# accept. They exist because an envelope reporting only the exceptions reads as a failure
+# report, and a reader acting on it withholds a result it is already holding.
+
+
+@pytest.mark.unit
+def test_a_clean_allow_says_nothing_about_narrowing() -> None:
+    envelope = build_envelope(
+        decision="allow",
+        action='Action::"tool.ping"',
+        resource=None,
+        principal=None,
+        processed={},
+        rejected=(),
+        defaults_applied={},
+        verbosity="summary",
+    )
+
+    assert envelope is not None
+    assert envelope.narrowed is False
+    assert envelope.guidance is None
+    # Dropped rather than rendered as ``false``: emitting the key on every ordinary
+    # response would train a reader to skip it.
+    assert "narrowed" not in envelope.as_dict()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("verbosity", ["summary", "verbose", "debug"])
+def test_the_outcome_fields_survive_every_verbosity_that_reports_at_all(
+    verbosity: Verbosity,
+) -> None:
+    """They carry no values and no policy ids, so verbosity has nothing to trim."""
+    envelope = _envelope(verbosity, narrowed_arguments=("region",))
+
+    assert envelope is not None
+    rendered = envelope.as_dict()
+    assert rendered["narrowed"] is True
+    assert rendered["narrowed_arguments"] == ["region"]
+    assert "This result is valid and was served." in str(rendered["guidance"])
+
+
+@pytest.mark.unit
+def test_verbosity_off_still_reports_nothing_at_all() -> None:
+    assert _envelope("off", narrowed_arguments=("region",)) is None
+
+
+@pytest.mark.unit
+def test_guidance_leaks_no_value_and_no_policy_id() -> None:
+    """The reason it is safe below ``verbose``: there is nothing in it to withhold."""
+    envelope = _envelope("summary", narrowed_arguments=("region",))
+
+    assert envelope is not None
+    guidance = str(envelope.guidance)
+    assert REJECTION.value is not None
+    assert str(REJECTION.value) not in guidance
+    assert str(REJECTION.policy) not in guidance
+    assert "eu-west" not in guidance
+
+
+@pytest.mark.unit
+def test_a_refilled_narrowing_vouches_for_the_result() -> None:
+    assert narrowing_guidance(["region", "limit"]).startswith(
+        "This result is valid and was served."
+    )
+
+
+@pytest.mark.unit
+def test_a_narrowing_with_no_replacement_refuses_to_vouch_for_it() -> None:
+    """The callable's own signature default landed in the slot and no constraint saw it.
+
+    Claiming the result is "valid" there would be exactly the overclaim the envelope exists
+    to prevent, so the wording says "served" and marks that part unverified.
+    """
+    guidance = narrowing_guidance(["limit"], unsupplied=["limit"])
+
+    assert "This result was served" in guidance
+    assert "valid" not in guidance
+    assert "unverified" in guidance
+    assert "no replacement" in guidance
+
+
+@pytest.mark.unit
+def test_a_mixed_narrowing_separates_what_policy_supplied_from_what_it_did_not() -> None:
+    guidance = narrowing_guidance(["region", "limit"], unsupplied=["limit"])
+
+    assert "unverified" in guidance
+    assert "region did come from this principal's own entitlement." in guidance

@@ -383,6 +383,13 @@ def check_several_arguments_are_decided_in_one_call(client: WebCaller) -> None:
         }
     ]
     assert reply.authz["defaults_applied"] == {"region": "eu", "limit": 10}
+    # The outcome half, printed in ``docs/agents.md`` under "Several arguments decided in one
+    # call". Only ``limit`` is narrowed: ``region`` was never proposed, so injecting its
+    # default adjusted nothing the caller asked for, and ``status`` passed through untouched.
+    assert reply.authz["narrowed"] is True
+    assert reply.authz["narrowed_arguments"] == ["limit"]
+    assert reply.authz["guidance"].startswith("This result is valid and was served.")
+    assert "adjusted limit before the call ran" in reply.authz["guidance"]
 
 
 def check_a_denied_format_is_rejected_and_refilled_beside_a_surviving_argument(

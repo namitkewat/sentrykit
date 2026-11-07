@@ -155,7 +155,10 @@ nearest one she may. The call still ran, and says so:
         "policy": "grant-page-size"
       }
     ],
-    "defaults_applied": { "region": null, "limit": null }
+    "defaults_applied": { "region": null, "limit": null },
+    "narrowed": true,
+    "narrowed_arguments": ["region", "limit"],
+    "guidance": "This result is valid and was served. The authorization policy adjusted region, limit before the call ran, because the proposed value is not one this principal may use. Report the result as delivered and say which parameters were adjusted; do not retry with the original values."
   }
 }
 ```
@@ -163,6 +166,30 @@ nearest one she may. The call still ran, and says so:
 That is `summary` verbosity, the default: it names what happened without disclosing values.
 At `verbose` the envelope also carries the principal, the processed arguments, the offending
 values (`"us"`, `500`) and the real defaults. See [verbosity](concepts.md#verbosity).
+
+### The outcome fields, and why they are separate from `rejected`
+
+`rejected` and `defaults_applied` are the *exceptions*. `narrowed`, `narrowed_arguments` and
+`guidance` are the *outcome*, and they exist because reporting only the exceptions turned out to
+be actively misleading. A narrowed call succeeded — the callable ran, on values this principal
+may use, and returned real data. An envelope that names only what was refused reads as a failure
+report, and a reader acting on it withholds the answer it already has.
+
+`narrowed` is true when the call ran with a value the caller did **not** propose. That is
+narrower than "`rejected` is non-empty": a rejection that left the argument with a surviving
+value of the caller's own is not narrowing, and a default injected for an argument the caller
+never mentioned is not either — nothing was taken away. `narrowed` is omitted entirely when
+false, so an ordinary allow stays terse.
+
+`guidance` is one sentence, and its opening is conditional. When every narrowed argument was
+refilled from this principal's own entitlement it says the result is **valid**. When one was
+not — the argument was dropped and your callable's own signature default filled the slot — it
+says the result was **served** and marks that part **unverified**, because no constraint ever saw
+the value that landed there. The distinction is worth reading: it is the only place sentrykit
+tells you that a parameter escaped the layer that was supposed to govern it.
+
+None of the three carries an argument value or a policy id, so all three are present at every
+verbosity above `off`.
 
 The envelope is attached under `_authz` when the result is a mapping. For any other return
 type the result is handed back untouched — rewrapping it would change your function's type —

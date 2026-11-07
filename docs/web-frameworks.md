@@ -414,7 +414,9 @@ curl -s 'localhost:8000/orders?limit=500&status=open' -H 'x-user: alice'
 #            "rejected":[{"name":"limit","rule":"maximum",
 #                         "reason":"Value is above the maximum of 50",
 #                         "policy":"alice-limit","value":500}],
-#            "defaults_applied":{"region":"eu","limit":10}}}
+#            "defaults_applied":{"region":"eu","limit":10},
+#            "narrowed":true,"narrowed_arguments":["limit"],
+#            "guidance":"This result is valid and was served. ..."}}
 ```
 
 Dana's grant sets no maximum at all — only a default — so the reviewed ceiling is her only
@@ -427,7 +429,9 @@ curl -s 'localhost:8000/orders?limit=500&status=open' -H 'x-user: dana'
 #            "rejected":[{"name":"limit","rule":"maximum",
 #                         "reason":"Value is above the maximum of 100",
 #                         "policy":"support-may-search","value":500}],
-#            "defaults_applied":{"limit":25,"region":"eu"}}}
+#            "defaults_applied":{"limit":25,"region":"eu"},
+#            "narrowed":true,"narrowed_arguments":["limit"],
+#            "guidance":"This result is valid and was served. ..."}}
 ```
 
 **She asked for 500, the ceiling is 100, and she ran with 25.** That is the whole of
@@ -521,7 +525,9 @@ curl -s -X POST localhost:8000/orders/export -H 'x-user: bob' \
 #            "rejected":[{"name":"fmt","rule":"deny-set",
 #                         "reason":"Value is explicitly denied","policy":"bob-fmt",
 #                         "value":"xml"}],
-#            "defaults_applied":{"fmt":"csv"}}}
+#            "defaults_applied":{"fmt":"csv"},
+#            "narrowed":true,"narrowed_arguments":["fmt"],
+#            "guidance":"This result is valid and was served. ..."}}
 ```
 
 Flow 12 proposes the same value **alone**, and is refused. Narrowing refines a proposal; it

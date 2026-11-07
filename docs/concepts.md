@@ -308,6 +308,7 @@ carried on the object at all.
 | --- | --- | --- | --- | --- |
 | Envelope at all | — | yes | yes | yes |
 | Decision, action, resource, reason | — | yes | yes | yes |
+| `narrowed`, `narrowed_arguments`, `guidance` | — | yes | yes | yes |
 | Rejected argument names and reasons | — | yes | yes | yes |
 | Rejected argument **values** | — | — | yes | yes |
 | Principal, processed arguments | — | — | yes | yes |
@@ -316,6 +317,28 @@ carried on the object at all.
 
 At `summary`, `defaults_applied` keeps the argument names as keys with `null` values, so the
 field has one shape at every verbosity and `defaults_applied.keys()` always works.
+
+The three outcome fields have nothing for verbosity to trim: `narrowed` is a boolean,
+`narrowed_arguments` repeats names that `rejected` already carries at `summary`, and `guidance`
+is a sentence built from those names alone — no values, no policy ids. That is deliberate. A
+caller who may not be told *which* value was refused can still be told *that* the result is good,
+and withholding the outcome from them is how a successful narrowed call gets reported as a
+failure.
+
+### Narrowing is defined against the proposal
+
+`narrowed` is true when the call ran with a value the caller did **not** propose. That is not the
+same as `rejected` being non-empty, and the difference runs both ways:
+
+| situation | `rejected` | `narrowed` |
+| --- | --- | --- |
+| a proposed value was refused and refilled from the principal's default | non-empty | **true** |
+| a proposed value was refused and nothing refilled it | non-empty | **true**, and `guidance` marks it unverified |
+| a value was refused but the argument kept a surviving value of the caller's own | non-empty | false |
+| a default was injected for an argument the caller never mentioned | empty | **false** — nothing was taken away |
+| a configured default was withheld for failing its own constraint | non-empty | false, unless the caller proposed that argument |
+
+`narrowed` is omitted from the rendered envelope when false, so an ordinary allow stays terse.
 
 ## Two output channels, never conflated
 

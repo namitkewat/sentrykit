@@ -461,10 +461,25 @@ print(result.structured_content["_authz"]["rejected"][0]["reason"])
 # -> Value is above the maximum of 50
 print(result.structured_content["_authz"]["defaults_applied"])
 # -> {'region': 'eu', 'limit': 10}
+print(result.structured_content["_authz"]["narrowed_arguments"])
+# -> ['limit']
+print(result.structured_content["_authz"]["guidance"])
+# -> This result is valid and was served. The authorization policy adjusted limit before
+#    the call ran, because the proposed value is not one this principal may use. Report the
+#    result as delivered and say which parameters were adjusted; do not retry with the
+#    original values.
 ```
 
 `limit` was proposed, rejected and refilled; `region` was never proposed and was injected;
-`status` was left alone because no constraint governs it. The contrast lives in the signature —
+`status` was left alone because no constraint governs it. Only `limit` is in
+`narrowed_arguments`, and that is the field a model should act on: `region` appearing in
+`defaults_applied` is not an adjustment to anything the model asked for.
+
+The `guidance` sentence is there for the model, and it is the difference between a tool result
+a model relays and one it suppresses. Measured across seven models on this exact scenario, an
+envelope carrying only `rejected` led four of them to tell the user the call had failed — while
+holding valid data. A tool server that strips the envelope does worse still: with nothing to
+read, one model re-sent the identical over-broad call four times. Leave it in band. The contrast lives in the signature —
 `search_orders(region: str, limit: int, status: str = "open")` — and it is the design rule
 worth copying: a value **policy** decides carries no Python default, so it stays omittable and
 a policy default can reach it. A value that is the caller's own business keeps its Python

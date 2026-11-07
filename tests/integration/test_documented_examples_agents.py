@@ -76,6 +76,7 @@ from pydantic_ai.usage import RunUsage
 import sentrykit
 from sentrykit.context import principal_context
 from sentrykit.decorator import protect
+from sentrykit.envelope import narrowing_guidance
 from sentrykit.integrations.base import DEFAULT_PRINCIPAL_HEADER
 from sentrykit.integrations.fastmcp import FastMCPProvider, protect_server, registered_tools
 from sentrykit.integrations.fastmcp import governed_tool as mcp_governed_tool
@@ -293,6 +294,14 @@ def test_the_narrowed_search_returns_exactly_what_the_readme_prints(
                 }
             ],
             "defaults_applied": {"region": "eu"},
+            # The outcome half of the envelope. ``region`` was proposed as "cn", rejected,
+            # and refilled from alice's own default, so the call ran on a value she may use
+            # and the guidance leads with "valid". ``limit=5`` survived untouched and is
+            # therefore absent from ``narrowed_arguments``: narrowing is defined against the
+            # proposal, not against ``rejected``.
+            "narrowed": True,
+            "narrowed_arguments": ["region"],
+            "guidance": narrowing_guidance(["region"]),
         },
     }
 
