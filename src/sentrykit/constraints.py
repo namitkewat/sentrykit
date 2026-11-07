@@ -426,6 +426,17 @@ class ArgumentConstraint(BaseModel):
                 f"minimum {self.minimum} is above maximum {self.maximum}, "
                 "so no value can satisfy both"
             )
+        if self.allow is not None and not self.allow:
+            # The one rule that can never be satisfied, and the quietest: ``allow: []``
+            # constructs and stores without complaint, then rejects every value. It is
+            # reported here rather than left to :meth:`check` for the same reason inverted
+            # bounds are -- the fault is in the written constraint, not in whoever calls next.
+            #
+            # Only a *written* constraint reaches this method (a grant write and
+            # :func:`parse_ceiling`); an allow-set emptied by
+            # :meth:`intersected_with` is never re-checked, so narrowing two disjoint
+            # allow-sets to none stays the fail-closed outcome it is meant to be.
+            structural.append("an empty allow-set permits no value, so no value can satisfy it")
         if structural:
             return tuple(structural)
 
