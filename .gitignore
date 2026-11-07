@@ -30,3 +30,6 @@ venv/
 # sentrykit local artifacts (never commit real audit logs or secrets)
 *.audit.jsonl
 secrets.local.*
+
+# Local research workspace (not shipped, not committed)
+/research/
