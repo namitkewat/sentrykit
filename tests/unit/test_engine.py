@@ -7,8 +7,10 @@ from datetime import UTC, datetime
 import pytest
 from freezegun import freeze_time
 
+from sentrykit.audit import AuditTrail, AuthzAuditRecord
 from sentrykit.cedar import Entity, EntityRef, PolicyEngine
 from sentrykit.config import Settings, configure, override_action
+from sentrykit.constraints import ArgumentConstraint, ConstraintSet
 from sentrykit.context import Principal
 from sentrykit.engine import (
     ArgumentSpec,
@@ -23,12 +25,16 @@ from sentrykit.engine import (
 )
 from sentrykit.errors import (
     ArgumentRejected,
+    AuditUnavailable,
     AuthzDenied,
     ConfigurationError,
     DefaultUnavailable,
     NoValidArguments,
     ValidationFailed,
 )
+from sentrykit.masking import Masker
+from sentrykit.stores.base import NullAuditSink
+from sentrykit.stores.memory import InMemoryAuditSink
 
 SEARCH_ACTION = EntityRef("Action", "tool.search_orders")
 EXPORT_ACTION = EntityRef("Action", "tool.export_orders")
@@ -512,6 +518,88 @@ def test_validation_runs_on_the_final_argument_set(
     assert _CALLED == []
 
 
+# --- defaults for a name the signature does not list ----------------------------------
+#
+# ``ArgumentSpec.parameters`` excludes ``**kwargs``, which is what stops a stale grant making
+# an ordinary call fail with an unexpected keyword argument. For a callable that *declares*
+# ``**kwargs`` that exclusion was the whole story, so a constraint on a kwargs-only name was a
+# reject-everything rule: the proposal was filtered and the default was then skipped for not
+# being a parameter. ``accepts_var_keyword`` was computed for exactly this and read nowhere.
+
+
+def _flexible_grant() -> Principal:
+    """Entitled to search, with a bound-and-default on a name no signature below lists."""
+    return Principal(
+        id="dana",
+        roles=("support",),
+        constraints={
+            'Action::"tool.search_orders"': ConstraintSet(
+                arguments={
+                    "page": ArgumentConstraint(maximum=10, default=3, policy="grant-page"),
+                }
+            )
+        },
+    )
+
+
+@pytest.mark.unit
+def test_a_default_reaches_a_name_only_var_keyword_accepts(governor: Governor) -> None:
+    def flexible_search(customer_id: str, **extra: object) -> dict[str, object]:
+        return {"customer_id": customer_id, **extra}
+
+    plan = governor.plan(
+        ArgumentSpec.from_callable(flexible_search),
+        principal=_flexible_grant(),
+        action=SEARCH_ACTION,
+        resource=ORDERS_TOOL,
+        proposed={"customer_id": "c-1"},
+    )
+
+    assert plan.processed["page"] == 3
+    assert plan.defaults_applied["page"] == 3
+    assert governor.invoke(flexible_search, plan)["page"] == 3
+
+
+@pytest.mark.unit
+def test_a_rejected_var_keyword_argument_is_refilled_rather_than_dropped(
+    governor: Governor,
+) -> None:
+    """The narrowing half: the caller proposed 99, the grant allows 10, they get their own 3."""
+
+    def flexible_search(customer_id: str, **extra: object) -> dict[str, object]:
+        return {"customer_id": customer_id, **extra}
+
+    plan = governor.plan(
+        ArgumentSpec.from_callable(flexible_search),
+        principal=_flexible_grant(),
+        action=SEARCH_ACTION,
+        resource=ORDERS_TOOL,
+        proposed={"customer_id": "c-1", "page": 99},
+    )
+
+    assert [(item.name, item.rule) for item in plan.rejected] == [("page", "maximum")]
+    assert plan.processed["page"] == 3
+    assert plan.narrowing() == (("page",), ())
+
+
+@pytest.mark.unit
+def test_a_signature_without_var_keyword_still_skips_an_unlisted_default(
+    governor: Governor,
+    search_spec: ArgumentSpec,
+) -> None:
+    """The guard the exclusion exists for: ``search_orders`` has no ``**kwargs`` and no page."""
+    plan = governor.plan(
+        search_spec,
+        principal=_flexible_grant(),
+        action=SEARCH_ACTION,
+        resource=ORDERS_TOOL,
+        proposed={"customer_id": "c-1"},
+    )
+
+    assert "page" not in plan.processed
+    assert "page" not in plan.defaults_applied
+
+
 # --- arg_handling ---------------------------------------------------------------------
 
 
@@ -686,6 +774,72 @@ def test_a_named_forbid_still_denies_under_fail_mode_open(
         )
 
     assert list(caught.value.determining_policies) == ["suspended-principals-are-forbidden"]
+
+
+# --- a refusal that could not be recorded ---------------------------------------------
+#
+# ``_audit_refusal`` swallows an ``AuditUnavailable`` deliberately: the call is already being
+# refused, and raising would replace the precise ``AuthzDenied`` the caller needs with an
+# operational error. What was wrong is that the *fact of the loss* then went nowhere an
+# auditor could reach — the only trace was an ERROR line on the channel ``audit.py`` says
+# must not be mistaken for the trail. So with the sink down, a caller can probe which actions
+# exist and which argument values are accepted, and the log reads clean across the hole.
+
+
+@pytest.mark.unit
+def test_a_refusal_the_sink_could_not_record_says_so_on_the_error(
+    policy_engine: PolicyEngine,
+    unentitled_principal: Principal,
+    search_spec: ArgumentSpec,
+) -> None:
+    class Refusing(NullAuditSink):
+        name = "refusing"
+
+        def write(self, record: AuthzAuditRecord) -> None:
+            raise AuditUnavailable("refusing", "no space left on device")
+
+    configure(fail_mode="closed")
+    governor = Governor(
+        policy_engine, audit=AuditTrail(Refusing(), masker=Masker(key=b"k"), strict=True)
+    )
+
+    with pytest.raises(AuthzDenied) as caught:
+        governor.plan(
+            search_spec,
+            principal=unentitled_principal,
+            action=SEARCH_ACTION,
+            resource=ORDERS_TOOL,
+            proposed={"customer_id": "c-1"},
+        )
+
+    # The denial still arrives as a denial, and now carries its own missing receipt.
+    assert isinstance(caught.value.audit_failure, AuditUnavailable)
+    assert caught.value.audit_failure is not None
+    assert "refusing" in str(caught.value.audit_failure)
+
+
+@pytest.mark.unit
+def test_a_refusal_a_reachable_sink_recorded_carries_no_failure(
+    policy_engine: PolicyEngine,
+    unentitled_principal: Principal,
+    search_spec: ArgumentSpec,
+) -> None:
+    """The overwhelmingly common path: the record landed, so there is nothing to report."""
+    governor = Governor(
+        policy_engine,
+        audit=AuditTrail(InMemoryAuditSink(), masker=Masker(key=b"k"), strict=True),
+    )
+
+    with pytest.raises(AuthzDenied) as caught:
+        governor.plan(
+            search_spec,
+            principal=unentitled_principal,
+            action=SEARCH_ACTION,
+            resource=ORDERS_TOOL,
+            proposed={"customer_id": "c-1"},
+        )
+
+    assert caught.value.audit_failure is None
 
 
 # --- invoking -------------------------------------------------------------------------

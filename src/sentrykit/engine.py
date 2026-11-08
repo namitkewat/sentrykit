@@ -656,8 +656,14 @@ class Governor:
                     rejected=[item.as_detail() for item in rejected],
                 )
 
+            # ``accept_unlisted`` is what makes ``accepts_var_keyword`` mean something. A
+            # callable declaring ``**kwargs`` accepts names its signature does not list, so a
+            # default for one of them is deliverable -- and without this the constraint on
+            # such a name was a pure reject-everything rule: the proposal was filtered, the
+            # default was skipped for not being a parameter, and the call died with nothing
+            # left to run on.
             arguments, defaults_applied, withheld = constraints.inject_defaults(
-                kept, spec.parameters
+                kept, spec.parameters, accept_unlisted=spec.accepts_var_keyword
             )
             if withheld:
                 # Reported alongside the caller's own rejections so the envelope and the
@@ -1049,7 +1055,13 @@ class Governor:
                     declared_sensitive=self._declared_sensitive(spec),
                 )
             )
-        except AuditUnavailable:
+        except AuditUnavailable as audit_failure:
+            # Attached to the error as well as logged, because the operational channel is
+            # deliberately not the audit trail: a refusal whose only trace is an ERROR line
+            # is a refusal nobody can prove happened. Carrying it on the exception puts the
+            # fact where the refusal is rendered, so whoever answers the caller can say the
+            # boundary was tested and the test went unrecorded.
+            error.audit_failure = audit_failure
             _LOGGER.error(
                 "Audit sink rejected a refusal record; the refusal itself still stands",
                 extra={
