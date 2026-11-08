@@ -18,6 +18,7 @@ a constraint set can also be built in code without a store ever seeing it.
 from __future__ import annotations
 
 import json
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
@@ -268,6 +269,82 @@ def test_a_deny_set_that_swallows_the_allow_set_is_reported() -> None:
 
     assert len(problems) == 1
     assert "explicitly denied" in problems[0]
+
+
+@pytest.mark.unit
+def test_a_default_the_deny_set_reaches_inside_is_reported() -> None:
+    """The write-time half of element-wise denial, and the reason it has to be the same check.
+
+    A default is injected for an argument nobody proposed, so a deny-set the filter reads
+    element-wise and the write-time check does not would store clean and then hand the
+    forbidden value back through the default.
+    """
+    (problem,) = ArgumentConstraint(deny=("prod",), default=["dev", "prod"]).inconsistencies()
+
+    assert "the configured default does not satisfy" in problem
+    assert "denied" in problem
+
+
+@pytest.mark.unit
+def test_a_permitted_container_the_deny_set_reaches_inside_is_dead_configuration() -> None:
+    (problem,) = ArgumentConstraint(
+        allow=(("dev",), ("dev", "prod")), deny=("prod",)
+    ).inconsistencies()
+
+    assert "'prod'" in problem
+    assert "denied" in problem
+
+
+@pytest.mark.unit
+def test_a_grant_store_refuses_a_default_the_deny_set_reaches_inside() -> None:
+    store = InMemoryGrantStore()
+
+    with pytest.raises(ConfigurationError) as caught:
+        store.grant(
+            GrantSpec(
+                principal=ALICE,
+                kind="constraint",
+                subject="targets",
+                constraint=ArgumentConstraint(deny=("prod",), default=["prod"]),
+            )
+        )
+
+    assert "cannot be satisfied" in str(caught.value)
+    assert store.grants_for(ALICE) == ()
+
+
+@pytest.mark.unit
+def test_a_decimal_default_inside_its_bounds_is_not_a_fault() -> None:
+    """A desk limit on money: the grant is coherent, so the write must not refuse it."""
+    assert (
+        ArgumentConstraint(minimum=1, maximum=1000, default=Decimal("500.00")).inconsistencies()
+        == ()
+    )
+
+
+@pytest.mark.unit
+def test_a_decimal_default_outside_its_bounds_is_reported_as_out_of_bounds() -> None:
+    (problem,) = ArgumentConstraint(
+        minimum=1, maximum=1000, default=Decimal("1500.00")
+    ).inconsistencies()
+
+    assert "above the maximum" in problem
+
+
+@pytest.mark.unit
+def test_a_grant_store_accepts_a_decimal_desk_limit() -> None:
+    store = InMemoryGrantStore()
+
+    record = store.grant(
+        GrantSpec(
+            principal=ALICE,
+            kind="constraint",
+            subject="amount",
+            constraint=ArgumentConstraint(minimum=1, maximum=1000, default=Decimal("500.00")),
+        )
+    )
+
+    assert record.spec.subject == "amount"
 
 
 @pytest.mark.unit

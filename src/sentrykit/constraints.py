@@ -25,9 +25,12 @@ from __future__ import annotations
 
 import json
 import logging
+import numbers
 import re
-from collections.abc import Callable, Collection, Mapping
-from typing import Final, Literal, NamedTuple
+from collections.abc import Callable, Collection, Iterator, Mapping
+from decimal import Decimal
+from itertools import chain
+from typing import Final, Literal, NamedTuple, TypeAlias
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
@@ -90,16 +93,128 @@ def _same_value(candidate: object, member: object) -> bool:
     return bool(candidate == member)
 
 
-def _as_number(value: object) -> int | float | None:
+_Number: TypeAlias = int | float | Decimal | numbers.Real
+"""A value a numeric bound can be tested against.
+
+Wider than the ``int | float`` a bound is *written* as, because ``Decimal`` is the type money
+is held in and a bound on a refund amount is this library's own canonical example. ``Decimal``
+compares exactly against both ``int`` and ``float``, so the bound stays ``int | float`` and
+only the value side widens -- a ``Decimal`` bound would reach
+:meth:`ArgumentConstraint.describe` and from there a JSON error body, which ``Decimal`` cannot
+be serialized into.
+"""
+
+
+def _is_nan(value: _Number) -> bool:
+    """Whether ``value`` is a NaN, whichever numeric type spells it.
+
+    It matters that a NaN never reaches the bound, and the two spellings of one have to be
+    stopped for opposite reasons. A ``Decimal`` NaN *raises* ``InvalidOperation`` from an
+    ordering comparison -- and a *signalling* one raises from ``!=`` as well, which is why this
+    asks it rather than comparing it -- while :meth:`ConstraintSet.filter` promises not to
+    raise. A ``float`` NaN answers ``False`` to every ordering comparison instead, which would
+    quietly satisfy a lone ``maximum``. Neither is a value a bound has anything to say about,
+    so both are refused as not comparable.
+
+    Everything else is tested by self-inequality, the one property a NaN has whatever type
+    holds it, and the only one that needs no conversion -- ``math.isnan`` would overflow on a
+    large ``int``.
+    """
+    if isinstance(value, Decimal):
+        return value.is_nan()
+    return bool(value != value)
+
+
+def _as_number(value: object) -> _Number | None:
     """Return ``value`` as a number for range comparison, or ``None`` if it is not one.
 
     ``bool`` is deliberately not a number: comparing ``True >= 1`` would make a boolean
-    satisfy a numeric bound by accident.
+    satisfy a numeric bound by accident. The value is returned as it arrived rather than
+    coerced to ``float``, so an exact type keeps its precision in the comparison that follows.
     """
     if isinstance(value, bool):
         return None
-    if isinstance(value, int | float):
-        return value
+    if not isinstance(value, int | float | Decimal | numbers.Real):
+        # ``complex`` lands here: it is a number and it is not ordered, so a bound cannot be
+        # tested against it -- and asking would raise rather than answer.
+        return None
+    return None if _is_nan(value) else value
+
+
+def _exceeds(number: _Number, maximum: int | float) -> bool:
+    """Whether ``number`` is above ``maximum``.
+
+    Written as a negated ``<=`` rather than a ``>`` because the value side of a bound is wider
+    than the bound itself, and ``numbers.Real`` guarantees its ordering in the ``<`` direction
+    only. The two spellings agree for everything that reaches here: a NaN is the one value
+    they would differ over, and :func:`_as_number` has already refused it.
+    """
+    return not number <= maximum
+
+
+_DENY_DEPTH_LIMIT: Final = 16
+"""How far into a proposed container a deny-set is read.
+
+A proposal is untrusted input -- a request body, or a model's tool call -- so it can be
+self-referential or nested past any plausible depth. The walk stops here and the value is
+rejected *unsearched*, which is the fail-closed direction and the reason this is a limit
+rather than a recursion error: :meth:`ConstraintSet.filter` promises not to raise.
+"""
+
+_DenyHit = Literal["value", "element", "depth"]
+"""Where a deny-set matched, or why the walk could not finish looking."""
+
+
+def _elements(value: object) -> Iterator[object] | None:
+    """Return the sub-values a deny-set should be read against, or ``None`` for a leaf.
+
+    A mapping contributes its keys as well as its values, because a denied name used as a key
+    is as much a reference to it as one used as a value. ``str`` and ``bytes`` are leaves:
+    reading a string element-wise would turn a deny-set of whole values into a substring rule.
+    So is anything that is not a sized, iterable container -- a generator among them, which
+    also keeps the walk from consuming an iterator the callable is about to receive.
+
+    Lazily, because the container is the caller's: copying it to walk it would double the cost
+    of a large proposal before deciding anything about it.
+    """
+    if isinstance(value, str | bytes):
+        return None
+    if isinstance(value, Mapping):
+        return chain(value.values(), value.keys())
+    if isinstance(value, Collection):
+        return iter(value)
+    return None
+
+
+def _deny_hit(value: object, deny: Collection[object], *, depth: int = 0) -> _DenyHit | None:
+    """Find a denied value in ``value`` itself or anywhere inside it.
+
+    Denial is the one rule read element-wise, because it is the fail-closed direction. A
+    scalar never equals a container, so a deny-set that compared whole values only would be
+    defeated by wrapping the forbidden value in a one-element list -- which is the shape a
+    language model proposing ``targets=["dev", "prod"]`` sends. Permission is deliberately not
+    read this way; :meth:`ArgumentConstraint.check` says why.
+
+    Args:
+        value: The proposed value, or a sub-value of one.
+        deny: The members no value may be.
+        depth: How far inside the original proposal ``value`` sits.
+
+    Returns:
+        Where the match was, ``"depth"`` if a container was left unsearched at
+        :data:`_DENY_DEPTH_LIMIT`, or ``None`` if nothing in ``value`` is denied.
+    """
+    if any(_same_value(value, member) for member in deny):
+        return "value" if depth == 0 else "element"
+    elements = _elements(value)
+    if elements is None:
+        return None
+    if depth >= _DENY_DEPTH_LIMIT:
+        return "depth"
+    for element in elements:
+        hit = _deny_hit(element, deny, depth=depth + 1)
+        if hit is not None:
+            return hit
     return None
 
 
@@ -224,12 +339,21 @@ class ArgumentConstraint(BaseModel):
     already decided the call itself is permitted.
 
     Attributes:
-        allow: If set, the value must be one of these.
-        deny: If set, the value must not be one of these.
+        allow: If set, the value must be one of these. The value is compared as a whole, so a
+            container is rejected outright rather than read element-wise: admitting a list
+            because each of its elements is permitted would *widen* a rule written about one
+            value.
+        deny: If set, neither the value nor anything inside it may be one of these. This is
+            the one rule read element-wise, because denial is the fail-closed direction — a
+            scalar never equals a container, so comparing whole values only would let a caller
+            defeat the rule by wrapping the forbidden value in a one-element list.
         pattern: If set, a regular expression the value must match in full. Non-string
             values are rejected as not comparable rather than coerced.
-        minimum: If set, the lower bound (inclusive) for a numeric value.
-        maximum: If set, the upper bound (inclusive) for a numeric value.
+        minimum: If set, the lower bound (inclusive) for a numeric value. Written as an
+            ``int`` or a ``float``; a ``Decimal`` or any other real number is compared against
+            it at its own precision.
+        maximum: If set, the upper bound (inclusive) for a numeric value, on the same terms as
+            :attr:`minimum`.
         default: Value to inject when the caller supplies none, or when theirs was dropped.
             Distinguished from "no default configured" by :attr:`has_default`, so a default
             of ``None`` is expressible.
@@ -269,21 +393,46 @@ class ArgumentConstraint(BaseModel):
         violation is returned: reporting one concrete reason is more actionable than a list,
         and the order runs from the coarsest rule to the finest.
 
+        The vocabulary is scalar-only but for one asymmetry: ``deny`` is read element-wise and
+        nothing else is. It walks a proposed container — a mapping's values and its keys, any
+        other collection that is not a ``str`` or ``bytes``, and on through nesting as far as
+        :data:`_DENY_DEPTH_LIMIT` — and rejects the value if anything inside it is denied, or
+        if the container was too deep to finish reading. Every other rule compares the value
+        as a whole and so rejects a container outright, ``allow`` as ``allow-set`` and the
+        pattern and the bounds as ``not-comparable``. That is deliberate and not an oversight
+        to tidy up: reading denial element-wise only ever *narrows* what a principal may pass,
+        while reading permission the same way would widen it.
+
         Args:
             name: The parameter name, used to label a rejection.
             value: The proposed value.
 
         Returns:
             ``None`` if the value is acceptable, otherwise the rejection describing the first
-            rule it violated.
+            rule it violated. Never raises, whatever the proposal holds.
         """
         if self.allow is not None and not any(_same_value(value, m) for m in self.allow):
             return self._reject(
                 name, "allow-set", "Value is not one of the permitted values", value
             )
 
-        if self.deny is not None and any(_same_value(value, m) for m in self.deny):
-            return self._reject(name, "deny-set", "Value is explicitly denied", value)
+        if self.deny is not None:
+            match _deny_hit(value, self.deny):
+                case "value":
+                    return self._reject(name, "deny-set", "Value is explicitly denied", value)
+                case "element":
+                    return self._reject(
+                        name, "deny-set", "Value contains an explicitly denied value", value
+                    )
+                case "depth":
+                    # Fail closed: part of the proposal was never read, so nothing in it can
+                    # be shown to be permitted.
+                    return self._reject(
+                        name,
+                        "deny-set",
+                        "Value is nested too deeply to be read against the denied values",
+                        value,
+                    )
 
         if self.pattern is not None:
             if not isinstance(value, str):
@@ -333,7 +482,7 @@ class ArgumentConstraint(BaseModel):
                     "Value is not a number and cannot be compared against a maximum",
                     value,
                 )
-            if number > self.maximum:
+            if _exceeds(number, self.maximum):
                 return self._reject(
                     name, "maximum", f"Value is above the maximum of {self.maximum}", value
                 )
@@ -563,6 +712,8 @@ class ConstraintSet(BaseModel):
         self,
         kept: Mapping[str, object],
         parameters: Collection[str],
+        *,
+        accept_unlisted: bool = False,
     ) -> DefaultsResult:
         """Fill in per-principal defaults for arguments the caller did not supply.
 
@@ -586,6 +737,14 @@ class ConstraintSet(BaseModel):
             parameters: Parameter names the target callable actually accepts. Defaults for
                 anything else are skipped, so a stale grant cannot make a call fail with an
                 unexpected keyword argument.
+            accept_unlisted: Whether a default may be injected for a name ``parameters`` does
+                not list. A callable declaring ``**kwargs`` accepts names its signature never
+                spells, so a default for one of them is deliverable and withholding it would
+                turn every constraint on a kwargs-only argument into a rule that rejects and
+                refills nothing. It defaults to ``False`` because the caller is the only side
+                that knows: for an ordinary signature the name filter above is what keeps a
+                stale grant from making a call fail with an unexpected keyword argument, and
+                that protection has to stay on unless it is explicitly stood down.
 
         Returns:
             The completed argument mapping, the subset that was injected, and the defaults
@@ -595,7 +754,9 @@ class ConstraintSet(BaseModel):
         applied: dict[str, object] = {}
         withheld: list[RejectedArgument] = []
         for name, constraint in self.arguments.items():
-            if name in arguments or name not in parameters or not constraint.has_default:
+            if name in arguments or not constraint.has_default:
+                continue
+            if name not in parameters and not accept_unlisted:
                 continue
             rejection = constraint.check(name, constraint.default)
             if rejection is not None:
