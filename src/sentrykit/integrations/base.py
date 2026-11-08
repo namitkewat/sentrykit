@@ -430,12 +430,24 @@ class BaseContextProvider(Generic[RequestT]):
     :meth:`render_error`, and a :attr:`name` — and inherits identity resolution, environment
     construction, the establish/release lifecycle, and the shared refusal rendering.
 
+    ### Omitting identify is logged, once, at construction
+
+    A provider built without ``identify`` resolves identity with its own fallback, and every
+    shipped fallback ends at something the request supplies — :attr:`principal_header` here,
+    an ``_meta`` key or a ``deps`` attribute in the agent providers. So whoever can set that
+    chooses who they are. That is the right wiring for an example app and for a service whose
+    gateway has already authenticated the caller, and the wrong one everywhere else — a
+    distinction only the deploying engineer can draw, and one they cannot draw from a default
+    that says nothing. So construction emits a ``WARNING`` on the ``sentrykit.integrations``
+    logger naming the provider class and the key it will read. It fires once per provider, not
+    once per request, and not at all when ``identify`` is given.
+
     Args:
         identify: The app's auth → identity callback. Given the framework request, it returns
             a principal id, an :class:`~sentrykit.cedar.EntityRef`, a ready-made
             :class:`~sentrykit.context.Principal`, or ``None`` for an unauthenticated caller.
             Defaults to reading :attr:`principal_header`, which is enough for an example app
-            and not enough for anything else.
+            and not enough for anything else, and is warned about when it is what you get.
         grants: Where a principal id is materialized. Defaults to the installed governor's
             grant store, resolved lazily at request time so ``install()`` and the provider can
             be wired in either order.
@@ -472,6 +484,22 @@ class BaseContextProvider(Generic[RequestT]):
         self._principal_header = principal_header
         self._request_id_header = request_id_header
         self._channel = channel
+        if identify is None:
+            # Once, here, rather than once per request: wiring is a one-off and serving is the
+            # hot path, so a line per decision would bury this one in its own volume. Both
+            # names are interpolated into the sentence as well as carried in ``extra``,
+            # because a library configures no handlers -- so what a developer actually sees
+            # is ``logging``'s last-resort stderr line, which renders the message alone.
+            _LOGGER.warning(
+                "%s was built without identify=, so its own fallback decides who the caller "
+                "is, and that fallback ends at the request-supplied %r: whoever can set that "
+                "is authorized as the principal they name, with that principal's roles and "
+                "grants. Pass identify= to resolve identity from the application's own "
+                "authentication",
+                type(self).__name__,
+                principal_header,
+                extra={"provider": type(self).__name__, "principal_header": principal_header},
+            )
 
     @property
     def name(self) -> str:

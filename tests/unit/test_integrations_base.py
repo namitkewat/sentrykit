@@ -17,6 +17,7 @@ is invisible until it is expensive:
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 
 import pytest
@@ -656,3 +657,125 @@ def test_the_shared_error_response_is_the_status_and_the_body_together(
 
     assert status == 403
     assert body == error_payload(AuthzDenied(SEARCH, ORDERS, []))
+
+
+# --- the header fallback announces itself ----------------------------------------------------
+
+WARNING_MESSAGE = "was built without identify="
+"""The opening of the construction-time warning, matched on rather than quoted whole.
+
+The sentence names the provider class and the key it reads, both of which vary by provider, so
+a test that pinned the whole string would be asserting the wording of the remedy rather than
+that the warning fires at all.
+"""
+
+
+def header_fallback_warnings(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
+    """Return the captured records announcing the caller-supplied-principal fallback.
+
+    Args:
+        caplog: The capture fixture.
+
+    Returns:
+        The matching records, in the order they were emitted.
+    """
+    return [record for record in caplog.records if WARNING_MESSAGE in record.getMessage()]
+
+
+@pytest.mark.unit
+def test_a_provider_with_no_identify_says_so_at_construction(
+    store: InMemoryGrantStore, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The insecure-but-documented default must be reached by choice, not by omission.
+
+    A provider built with no ``identify`` resolves whoever the request *claims* to be, so a
+    caller who sets the principal header is materialized with that principal's roles. That is
+    correct for an example app and wrong everywhere else, and the difference between the two
+    is a judgement only the deploying engineer can make — which they cannot make if the
+    library never mentions it.
+    """
+    with caplog.at_level(logging.WARNING, logger="sentrykit"):
+        FakeProvider(grants=store)
+
+    warnings = header_fallback_warnings(caplog)
+    assert len(warnings) == 1
+    assert warnings[0].levelno == logging.WARNING
+    assert warnings[0].name == "sentrykit.integrations"
+    message = warnings[0].getMessage()
+    assert "FakeProvider" in message
+    assert DEFAULT_PRINCIPAL_HEADER in message
+    assert "identify=" in message
+
+
+@pytest.mark.unit
+def test_only_the_provider_that_falls_back_to_the_request_is_warned_about(
+    store: InMemoryGrantStore, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The warning marks one wiring as risky, and must stay silent for the safe one.
+
+    Two providers are built here so the discrimination is the assertion rather than two
+    separate counts: a warning that also fires on the correct wiring is a warning operators
+    filter out, which costs the insecure case the only notice it gets. The two are told apart
+    by the key each names, which is also how a server reading a non-default key — the MCP
+    provider reads the same name out of an ``_meta`` object — is told about *that* key.
+    """
+    with caplog.at_level(logging.WARNING, logger="sentrykit"):
+        FakeProvider(grants=store, identify=lambda request: "alice", principal_header="x-resolved")
+        FakeProvider(grants=store, principal_header="x-asserted")
+
+    named = [record.getMessage() for record in header_fallback_warnings(caplog)]
+    assert len(named) == 1
+    assert "x-asserted" in named[0]
+    assert "x-resolved" not in named[0]
+
+
+@pytest.mark.unit
+def test_the_warning_is_once_per_provider_and_not_once_per_request(
+    store: InMemoryGrantStore, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Wiring is a one-off; serving is the hot path, and a line per request is a flood.
+
+    The count is the assertion: three requests through a provider that keeps warning would
+    emit four records, and the one that matters would be the one nobody reads.
+    """
+    with caplog.at_level(logging.WARNING, logger="sentrykit"):
+        provider = FakeProvider(grants=store)
+        for _ in range(3):
+            scope = provider.establish(FakeRequest({DEFAULT_PRINCIPAL_HEADER: "alice"}))
+            provider.release(scope)
+
+    assert len(header_fallback_warnings(caplog)) == 1
+
+
+@pytest.mark.unit
+def test_the_warning_carries_the_names_as_structured_fields_too(
+    store: InMemoryGrantStore, caplog: pytest.LogCaptureFixture
+) -> None:
+    """An aggregator must be able to find every such provider without parsing prose.
+
+    Both names are on the record as fields as well as in the sentence, because the sentence is
+    what a developer reads on stderr and the fields are what a fleet-wide query reads.
+    """
+    with caplog.at_level(logging.WARNING, logger="sentrykit"):
+        FakeProvider(grants=store)
+
+    record = header_fallback_warnings(caplog)[0]
+    assert record.provider == "FakeProvider"  # type: ignore[attr-defined]
+    assert record.principal_header == DEFAULT_PRINCIPAL_HEADER  # type: ignore[attr-defined]
+
+
+@pytest.mark.unit
+def test_the_warning_carries_no_principal_name_from_any_request(
+    store: InMemoryGrantStore, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Construction happens before any request, so there is no identity to leak into it.
+
+    The operational channel never carries values, and this warning is about a key rather than
+    whatever a caller later puts in it — asserted here because the obvious way to make the
+    message more helpful is to quote the principal it just trusted.
+    """
+    with caplog.at_level(logging.WARNING, logger="sentrykit"):
+        provider = FakeProvider(grants=store)
+        provider.release(provider.establish(FakeRequest({DEFAULT_PRINCIPAL_HEADER: "alice"})))
+
+    assert "alice" not in header_fallback_warnings(caplog)[0].getMessage()
