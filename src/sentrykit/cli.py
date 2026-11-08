@@ -167,6 +167,11 @@ class AuditReport:
             of the chain rather than a run of it.
         verified: How many records' own ``record_hash`` recomputed correctly. Always
             meaningful, filtered window or not.
+        records_lost: How many records the window's own records admit were built, masked and
+            then refused by the sink — the sum of their ``dropped_since_last_write``. An
+            intact chain says nothing about these: the chain advances only on a successful
+            write, so the records that survived an outage link perfectly across it. This is
+            the only number in the report that can say the log is incomplete.
     """
 
     window: AuditWindow
@@ -185,6 +190,7 @@ class AuditReport:
     refusals: tuple[AuthzAuditRecord, ...] = ()
     chain: ChainVerdict | None = None
     verified: int = 0
+    records_lost: int = 0
 
 
 def build_report(
@@ -220,10 +226,12 @@ def build_report(
     obligations: Counter[str] = Counter()
 
     decisions = mutations = allowed = denied = verified = 0
+    records_lost = 0
     refusals: list[AuthzAuditRecord] = []
 
     for record in matched:
         outcomes[record.outcome] += 1
+        records_lost += record.dropped_since_last_write
         if record.action:
             actions[record.action] += 1
         principals[record.principal.uid] += 1
@@ -262,6 +270,7 @@ def build_report(
         refusals=tuple(reversed(refusals))[: max(top, 0)],
         chain=verify_chain(matched) if _spans_the_chain(window) else None,
         verified=verified,
+        records_lost=records_lost,
     )
 
 
@@ -453,6 +462,11 @@ def _tamper_evidence(report: AuditReport) -> list[str]:
     The per-record check is always meaningful. The chain check is only meaningful over a
     contiguous run, so a filtered window says why it was skipped rather than reporting an
     intact chain it did not verify.
+
+    An intact chain and a complete log are different claims, and this section must not let
+    the first be read as the second. The chain advances only on a write that landed, so
+    records written either side of a sink outage link to each other perfectly — which is why
+    a window whose records admit losses says so beside the verdict rather than under it.
     """
     lines = [
         "## Tamper evidence",
@@ -465,10 +479,21 @@ def _tamper_evidence(report: AuditReport) -> list[str]:
             "- Chain: not verified. This window filters by identity, so its records are a "
             "non-contiguous slice of the log rather than a run of it."
         )
+    elif verdict.ok and report.records_lost:
+        lines.append(
+            "- Chain: intact across the records that were written — but this window is "
+            "**incomplete**, and the chain cannot show that."
+        )
     elif verdict.ok:
         lines.append("- Chain: intact across the window.")
     else:
         lines.append(f"- Chain: BROKEN at record {verdict.broken_at}. {verdict.reason}.")
+    if report.records_lost:
+        lines.append(
+            f"- Records lost: {report.records_lost}. The sink refused that many records, "
+            "which were built and masked and never stored. The decisions they described still "
+            "happened, and nothing here says what they were."
+        )
     lines.append("")
     return lines
 

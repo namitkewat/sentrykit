@@ -27,7 +27,7 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
-from sentrykit.audit import AuthzAuditRecord, PrincipalSnapshot
+from sentrykit.audit import GENESIS_HASH, AuthzAuditRecord, PrincipalSnapshot
 from sentrykit.cli import EXIT_FAILED, EXIT_OK, build_report, main, render_markdown
 from sentrykit.stores.base import AuditWindow
 from sentrykit.stores.jsonl import JsonlAuditSink
@@ -350,6 +350,44 @@ def test_a_broken_chain_is_reported_loudly(seeded: tuple[AuthzAuditRecord, ...])
     document = render_markdown(build_report(tampered, window=JANUARY))
 
     assert "- Chain: BROKEN at record 2." in document
+
+
+def test_a_window_that_lost_records_is_not_reported_as_an_intact_log(
+    make_record: Callable[..., AuthzAuditRecord],
+) -> None:
+    """An intact chain and a complete log are different claims, and this is where they part.
+
+    The chain advances only on a write that landed, so the records either side of a sink
+    outage link to each other perfectly. Only the count the surviving record carries can say
+    the window is missing decisions that really happened.
+    """
+    previous = GENESIS_HASH
+    records: list[AuthzAuditRecord] = []
+    for sequence, dropped in enumerate((0, 3, 0)):
+        entry = make_record(timestamp=datetime(2026, 1, 2, tzinfo=UTC)).chained(
+            prev_hash=previous, sequence=sequence, dropped_since_last_write=dropped
+        )
+        records.append(entry)
+        previous = entry.record_hash
+
+    report = build_report(records, window=JANUARY)
+    document = render_markdown(report)
+
+    assert report.records_lost == 3
+    assert report.chain is not None
+    assert report.chain.ok is True
+    # The unqualified sentence is the one an auditor would read as "nothing is missing".
+    assert "- Chain: intact across the window." not in document
+    assert "incomplete" in document
+    assert "- Records lost: 3." in document
+
+
+def test_a_window_that_lost_nothing_says_nothing_about_losses(
+    seeded: tuple[AuthzAuditRecord, ...],
+) -> None:
+    document = render_markdown(build_report(seeded, window=JANUARY))
+
+    assert "Records lost" not in document
 
 
 def test_an_empty_window_still_renders_every_section() -> None:
