@@ -96,6 +96,15 @@ def clean_process_state(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     # because the reach is an *import* away from any test: anything that calls `default_model()`
     # or `create_server()` probes, and nobody should have to remember which of those it touched.
     monkeypatch.setenv("SENTRYKIT_OLLAMA_URL", "")
+    # The same switch for the frontier tier, and it needs its own line because the sweep above
+    # cannot reach what guards it. `OPENROUTER_API_KEY` carries no `SENTRYKIT_` prefix, so it
+    # survives the loop -- and `examples.models` reads it from `.env` at the repo root when the
+    # environment does not carry it, which is exactly where a developer keeps one. Deleting
+    # `SENTRYKIT_OPENROUTER_URL` along with every other prefixed variable therefore restores
+    # its *default*, which means the tier is on. The consequence is worse than a daemon on a
+    # laptop: the suite would send real, billable requests to a third party, and assert against
+    # a different model on every machine and every week.
+    monkeypatch.setenv("SENTRYKIT_OPENROUTER_URL", "")
     _reset()
     yield
     _reset()
