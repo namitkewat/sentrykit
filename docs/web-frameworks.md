@@ -463,7 +463,7 @@ one envelope:
 - `rejected` names `limit=500`, the rule that refused it and the policy that carried the rule;
 - `defaults_applied` names both the refill for `limit` and the injection for `region`, which
   the caller never proposed at all;
-- `processed` is what the function actually received — `status` passed through untouched,
+- `processed` is what policy decided and passed — `status` passed through untouched,
   because no constraint governs it.
 
 The contrast between those three arguments is the design rule worth copying, and it lives in
@@ -471,6 +471,23 @@ the signature: `search_orders(region: str, limit: int, status: str = "open")`. `
 `limit` are values policy decides, so they carry no Python default and stay omittable; a Python
 default would fill the hole before a policy default could reach it. `status` is the caller's
 own business, so Python answers for it and the policy layer never sees it.
+
+That is a rule about which default you want to win, not a rule you have to get right for the
+bound to hold. **A governed parameter's Python default answers to the same constraint as a
+policy default.** Write `search_orders(region: str = "us", limit: int = 1000)` under a ceiling
+of `limit: {maximum: 100}` and the call is refused — `SignatureDefaultRejected`, naming `limit`
+and saying the refusing rule came from reviewed policy text:
+
+```json
+{"detail": "argument 'limit' has no value that may be used: nothing the caller supplied survived, no policy default applies, and the callable's own default is refused by a reviewed argument ceiling (Value is above the maximum of 100)",
+ "error": "SignatureDefaultRejected"}
+```
+
+Had that default been `10` instead, the call would run on it, and the envelope would name the
+parameter in `signature_defaults` so the value's provenance is not a guess. The reason this
+matters more than it looks: the alternative is a bound exceeded *upward*. Alice asks for 500,
+the ceiling says 100, her value is thrown away — and a signature default of 1000 would hand her
+*more* than she asked for, behind an envelope reporting a clean narrow.
 
 ### Two rules that read more than the principal
 

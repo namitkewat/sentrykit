@@ -37,8 +37,14 @@ that is the layer sentrykit adds to the engine underneath it.
   **narrowed** rather than refused: it is rejected, and the defaults the principal's grants
   hold fill the gap — as they do for arguments the caller omitted. A value is never trimmed to
   the nearest one the principal may have, and where a grant holds no default the argument is
-  simply dropped. A default is itself checked against the constraint that governs it
-  and withheld if it fails, so omitting an argument is not a way around the rule on it. And a
+  dropped from what sentrykit passes. A default is itself checked against the constraint that
+  governs it and withheld if it fails, so omitting an argument is not a way around the rule on
+  it — **and that includes the callable's own default.** Dropping a governed argument leaves a
+  slot Python would fill from the signature, so that value answers to the same constraint as
+  any other default: if it satisfies the rule the call proceeds on it and says so, and if it
+  does not the call is refused with `SignatureDefaultRejected`. Otherwise a bound could be
+  exceeded *upward* — a caller refused a value above a ceiling would get the signature's
+  number instead, which can be larger than the one they asked for. And a
   constraint no value could satisfy is refused when a grant store writes it — hand-editing a
   store's file bypasses that check — rather than discovered at the next call, where it would
   refuse everything. Two limits are worth stating plainly. The first is `arg_handling`:

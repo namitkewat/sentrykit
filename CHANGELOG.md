@@ -158,6 +158,13 @@ boundaries.
   a single argument that is then rejected, and at an agent boundary only from a tool whose every
   parameter is omittable.
 - **`README.md`** corrects the same two claims about the example apps.
+- **New public names:** `SignatureDefaultRejected` (exported from `sentrykit`), the
+  `signature-default-rejected` audit outcome, and `signature_defaults` on `Plan`,
+  `AuthzEnvelope` and `AuthzAuditRecord`. `AuthzAuditRecord.payload()` omits
+  `signature_defaults` when it is empty, for the same reason it omits
+  `dropped_since_last_write` at zero: that method is the canonical pre-image of `record_hash`,
+  so a key that always appeared would change the digest of every record ever written. Verified
+  against the previous version — an existing log's records re-verify byte-identically.
 - **`SentrykitError` carries an optional `audit_failure`.** A refusal whose record the sink
   would not accept is still raised as the refusal it is — replacing a precise `AuthzDenied`
   with an operational error would answer the wrong question — but the sink failure now travels
@@ -169,6 +176,17 @@ boundaries.
 
 ### Fixed
 
+- **`processed` was documented in several places as "what the callable actually ran with", and
+  is not.** It is the final argument set the policy decided and sentrykit passed; a parameter
+  left to the callable's own default was never in it. The wording now says that, and
+  `signature_defaults` carries the parameters the signature filled, so the two sources stay
+  distinguishable rather than being merged into one field that answers neither question.
+- **A `required` constraint naming an argument the callable does not accept now says so.** It
+  still refuses the call — a rule that can never be satisfied is a fail-closed condition, and
+  dropping it would mean a rule the operator wrote silently did not apply. What was missing was
+  the diagnosis: one transposed character in a reviewed ceiling, `limti` for `limit`, refused
+  every call to the action with an error naming an argument that cannot exist. The refusal is
+  unchanged and an error is now logged naming the parameter and the callable.
 - **A refusal the sink could not record left no trace anywhere an auditor could reach, and the
   chain read clean across the gap.** A failed write on a *refusal* is swallowed deliberately —
   the call is already being refused, and raising would replace the precise `AuthzDenied` the
@@ -234,6 +252,48 @@ boundaries.
 
 ### Security
 
+- **A governed argument that lost its value fell through to the callable's own signature
+  default, which no constraint had ever checked.** The pipeline filters, injects policy
+  defaults, validates and then calls — and both validation and the final split emit only the
+  keys they were given, so a parameter with no surviving value was simply absent and Python
+  filled the slot from the signature.
+
+  Two shapes, and the second is the one that made this serious. A ceiling of
+  `limit: {maximum: 10}` over `def search(q, limit=1000)`: a caller proposing `limit=500` had
+  that value rejected and the body ran at **1000** — strictly *more* than they had asked for,
+  so reject-and-refill inverted into widen-and-continue. And a caller who *omitted* `limit`
+  got a clean allow with no rejections, in the envelope and in the audit record, while the body
+  ran at 1000 against a declared maximum of 10. A reviewed `.cedar` file is the artifact a
+  change-control process signs off on, and it was stating a bound the system did not enforce,
+  with nothing anywhere saying so. Spelled as `target: {deny: ["prod"]}` over
+  `def wipe(target="prod")`, it wiped prod — proposed or omitted. Not ceiling-specific: a plain
+  grant behaved identically, and so did a correctly *withheld* policy default.
+
+  The rule that already governed a policy default now governs this one: a default is checked
+  against the constraint that governs it. A signature default that satisfies its constraint is
+  left to Python exactly as before and the parameter is named in the new `signature_defaults`
+  field on the envelope and the record — because the omitted case was *invisible*, and a value
+  no policy chose should not be reported as a clean allow. One that does not satisfy it refuses
+  the call with the new `SignatureDefaultRejected`, audit outcome `signature-default-rejected`.
+
+  `SignatureDefaultRejected.declared` says whose mistake it is. True means the refusing rule
+  came from an argument ceiling, so an operator's reviewed policy file and their own code
+  disagree about the same parameter and every caller is affected equally; false means the
+  principal's own grant data, which is ordinary authorization. Ceilings are checked first and
+  separately so that distinction survives.
+
+  **What it breaks is what was already broken.** A deployment whose governed parameters carry
+  Python defaults their own constraints refuse was running outside its policy; it now gets a
+  refusal instead of silence. Deployments whose defaults satisfy their constraints are
+  unaffected — of 1494 tests, the only two that changed behaviour were fixtures that had been
+  relying on this hole. Nothing is added to the argument mapping, so what sentrykit passes is
+  unchanged. The check runs after the required-argument check, so a call another rule already
+  refused keeps the error it always raised.
+
+  Still not closed, and still documented as a limit: a ceiling naming a parameter the callable
+  does not have bounds nothing, because `sentrykit policy validate` never imports the
+  application. And this check cannot run before the first call, because nothing enumerates
+  protected callables for a policy load to read.
 - **A principal's argument allow-set, deny-set and pattern were written into every decision
   record in the clear, bypassing masking entirely.** `ConstraintSet.describe()` withholds the
   default *value* — deliberately, because a per-principal default can itself be sensitive — and

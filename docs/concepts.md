@@ -120,6 +120,15 @@ A few deliberate sharp edges:
   fails is withheld rather than applied. Otherwise the way to defeat a constraint would be to
   stop proposing a value: a supplied value is filtered, an omitted one is filled in, and only
   the first path would have run a check.
+- **The callable's own default is a default too, and answers to the same rule.** When a
+  governed argument ends up with no value — the caller proposed none that survived, and the
+  grant holds none — sentrykit passes nothing for it, and Python fills the slot from the
+  signature. That value is checked against the constraint like any other default: if it
+  satisfies the rule the call proceeds on it and the envelope names the parameter in
+  `signature_defaults`; if it does not, the call is refused with `SignatureDefaultRejected`.
+  Without that check a bound could be exceeded *upward* — a caller refused a value above a
+  ceiling would run on the signature's value instead, which may be larger than the one they
+  asked for.
 - `True` does not match an allow-set of `(1,)`, and a `bool` is not a number for range
   purposes — Python would say otherwise, and authorization is the wrong place for that
   surprise.

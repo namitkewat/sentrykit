@@ -287,6 +287,14 @@ agent, every parameter of the tool has to be one policy could supply — which i
 them may carry a Python default. Both agent examples reach it through `issue_refund`, whose
 three parameters are all omittable, by proposing two arguments that are both rejected.
 
+The same property makes `SignatureDefaultRejected` rare here and common at a web boundary. That
+refusal fires when a governed parameter ends up with *no* value and the callable's own default
+is one the constraint refuses — but at an agent boundary a Python default has already arrived
+as a proposed argument, so it is filtered on the way in and reported as an ordinary rejection
+rather than discovered in the gap afterwards. A tool whose governed parameters are all
+omittable never meets it. One that mixes the two can: give a parameter both a constraint and a
+Python default the constraint refuses, and the refusal is the same one a route would get.
+
 ## Relationships are resolved by the policy, not by the model
 
 Underneath the argument layer is Cedar's entity hierarchy, and the two compose. Nested

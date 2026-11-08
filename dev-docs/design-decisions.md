@@ -510,6 +510,13 @@ the constraint's own other rules reject, a `default` it would reject. `GrantStor
 runs it and raises `ConfigurationError`. Independently, `ConstraintSet.inject_defaults` runs
 `check()` on every default before injecting it and **withholds** one that fails, returning it
 as a third `DefaultsResult` field rather than raising.
+
+**Extended by ADR-035.** The second half of this decision — a default answers to the constraint
+that governs it, so omitting an argument is not a way around the rule on it — held for *policy*
+defaults only. A withheld default, or a rejected proposal with no default behind it, left the
+parameter absent from what sentrykit passes, and Python then filled the slot from the
+callable's signature: a default from another source, which no constraint had seen. ADR-035
+applies this rule to that one too.
 **Why two places.** The write is where the fault is introduced and where an operator is
 present to fix it, so it is the primary defense. But a `ConstraintSet` can also be built in
 code and handed to a `Principal` without a store ever seeing it — the `Principal` constructor
@@ -590,6 +597,13 @@ no signature to cross-check — that would need a different command. And narrowi
 proposal rather than replacing one: `NoValidArguments` still fires when *every* supplied
 argument was rejected, so a single-argument proposal above the ceiling is refused rather than
 narrowed. Both are documented on the policies page.
+
+**A third limit was missing from that list, and was not a limit but a defect.** A ceiling over a
+parameter carrying a Python default did not bound the call at all: the rejected or omitted
+value left the slot empty and Python filled it from the signature, so `maximum: 10` over
+`def search(q, limit=1000)` ran at 1000 — and reported a clean allow when the caller omitted
+the argument. The paragraph above claimed the limits were stated rather than engineered away;
+this one was neither. ADR-035 closes it.
 **Alternatives.** An ad-hoc mini-syntax (`"limit<=100,region in eu|us"`) is already a language:
 comparison, membership and alternation operators, and no escaping story. One annotation per
 rule (`@sk_arg_limit_maximum("100")`) dies on Cedar's duplicate-annotation-key error the moment
@@ -968,3 +982,103 @@ count with it; nothing on the sink side can be probed for a record that never re
 invisible; it does not eliminate it. A spool — writing the already-masked, already-chained record
 to a local file when the primary refuses, and replaying on recovery — is what would, and it is
 cheap precisely because the record is already masked and chained. That is separate work.
+
+## ADR-035 — The callable's own default answers to the constraint that governs its parameter
+**Decision.** When the resolved constraint set governs a parameter that has no value in the
+final argument mapping — nothing the caller proposed survived, and no policy default applied —
+the callable's **signature default** is checked against that constraint. A default that
+satisfies it is left to Python exactly as before and the parameter is named in a new
+`signature_defaults` tuple, carried on `Plan`, on `AuthzEnvelope` and on `AuthzAuditRecord`.
+One that does not satisfy it refuses the call with `SignatureDefaultRejected`, audit outcome
+`signature-default-rejected`. Nothing is added to the argument mapping, so what sentrykit
+*passes* is unchanged and `processed` still means what it meant.
+
+**Why this is ADR-027's rule and not a new one.** ADR-027 already decided that a default is
+checked against the constraint that governs it, so that *omitting* an argument is not a way
+around the rule on it. That held for policy defaults only. The pipeline is
+filter → inject_defaults → validate → split → `fn(*positional, **keyword)`, and both
+`validate` and `split` emit only the keys they were given — so a governed parameter with no
+value is simply absent, and Python fills the slot from the signature. A signature default is a
+default from the other source. It now answers to the same check.
+
+**The failure it closes, in the two shapes that make it serious.** A ceiling of
+`limit: {maximum: 10}` over `def search(q, limit=1000)`: a caller proposing `limit=500` had
+their value rejected and the body ran at **1000** — strictly *more* than they asked for, so
+narrow-and-continue inverted into widen-and-continue. And a caller who *omitted* `limit` got a
+**clean allow with no rejections** in both the envelope and the record, while the body ran at
+1000 against a declared maximum of 10. The second is the one that matters most: the reviewed
+`.cedar` file is the artifact a change-control process signs off on, and it was stating a bound
+the system did not enforce, silently. The sharper spelling is
+`target: {deny: ["prod"]}` over `def wipe(target="prod")`, which wiped prod both when proposed
+and when omitted. Not ceiling-specific — a plain grant behaved identically — and a correctly
+*withheld* policy default, ADR-027's own backstop firing, landed in the same hole.
+
+**Why a refusal rather than a warning, and why the behaviour break is acceptable.** The
+population it breaks is exactly the population at risk: a deployment where a governed
+parameter carries a Python default its own constraint refuses was already running outside its
+policy, and the alternative to refusing is continuing to do so quietly. A deployment whose
+signature defaults satisfy their constraints is unaffected — measured, not assumed: of 1494
+tests, the only ones that changed behaviour were two fixtures that had been relying on the
+hole, and they now exercise reject-and-refill instead.
+
+**Why ceilings are checked separately from grants.** `SignatureDefaultRejected` carries
+`declared`. True means the refusing rule came from an argument ceiling: reviewed,
+version-controlled policy text, so the fault is a disagreement between an operator's policy
+file and their own code, it affects every caller of the action equally, and the message says
+so. False means a per-principal grant, which is mutable data and ordinary authorization. The
+engine already filters layer by layer so a rejection keeps the id of whatever produced it; this
+reuses that, checking the ceilings first and on their own.
+
+**Why it is not a `ConfigurationError` even when declared.** Two reasons, and the second is the
+binding one. It refuses one call rather than failing the wiring — and there is no moment at
+which it *could* fail the wiring instead, because nothing enumerates protected callables for a
+policy load to check against. `@protect` caches its spec on the wrapper it returns and no
+registry collects them, so `install()` has no set of signatures to read. A load-time check is
+the better shape and it needs a registry first, which is its own design with its own
+import-order hazards. Classifying this with configuration faults would also make it
+unqueryable in the trail, where it has an outcome of its own.
+
+**Why the check runs last.** After `missing_required`, so a call that some other rule already
+refuses keeps the error it has always raised. A policy-`required` argument with no usable value
+is still `DefaultUnavailable`. The new error fires only where nothing else would have refused
+at all, which is what makes the change additive rather than a reclassification.
+
+**Why `signature_defaults` is names-only and separate from `processed`.** The value is the
+application's own literal, so the name is the part an auditor needs and carrying the value
+would raise a masking question for no gain. Keeping it out of `processed` preserves the
+distinction `defaults_applied` exists to make: policy-supplied and application-supplied values
+are different facts, and a field that blurred them would answer neither question. It is present
+at every verbosity, because the defect being fixed is that this case was *invisible*.
+
+**Rejected: the documentation-only option.** `docs/web-frameworks.md` already carried the
+design rule — a policy-decided parameter should carry no Python default — as a style tip inside
+a worked example, and `SECURITY.md` asserted the opposite property three times in "what
+sentrykit defends". Writing the hazard down more loudly was available and is not sufficient,
+because the claim a ceiling makes is the product: a reviewed file that says what anybody may
+pass has to mean it. The documentation is corrected as well, and those three claims are now
+true rather than aspirational.
+
+**Corrected in the same pass, from the same finding's neighbourhood.** `processed` was
+documented in several places as "what the callable actually ran with", which was never quite
+true for a parameter the signature filled and is now precisely wrong. It is the set the policy
+decided and passed; the wording says that, and `signature_defaults` carries the rest.
+
+**What this does not establish.** That a ceiling is checkable before the first call — see
+above. That a misspelled ceiling argument is detected: a ceiling naming a parameter the
+callable does not have still parses, loads and bounds nothing, which `SECURITY.md` names as a
+limit and which `policy validate` cannot see, because it never imports the application. And
+nothing here changes the arity rule: a single proposed argument that is rejected still refuses
+with `NoValidArguments` before this check is reached.
+
+**Reconsidered and deliberately not changed: `ConstraintSet.missing_required` still ignores the
+signature.** The research pass recommended filtering it by the callable's parameters, as
+`inject_defaults` does, on the grounds that the protection was "half-applied" — one transposed
+character in a reviewed ceiling, `limti` for `limit`, refuses every call to the action and
+names an argument that cannot exist. The two filters guard different things. `inject_defaults`
+filters so that a stale grant cannot make a call fail with an unexpected keyword argument; a
+`required` rule naming a parameter that does not exist can never be satisfied, and refusing is
+the fail-closed answer. Dropping it would mean a rule the operator wrote silently did not
+apply, which is the same class of fault as this ADR closes. The repo already had a reasoned
+test pinning the refusal, which the finding recorded as absent. What was genuinely missing was
+the *diagnosis*: the refusal now logs an error naming the parameter the callable does not
+accept, so the operator reads their actual mistake rather than inferring it.

@@ -155,6 +155,40 @@ every argument the caller supplied is rejected, the call is refused with `NoVali
 rather than completed from defaults — see [Errors](concepts.md#errors) for why. A ceiling does
 not change that rule; it narrows the part of a proposal that stands.
 
+### A ceiling bounds the callable's own default too
+
+If the principal's grant holds no default, there is nothing for sentrykit to put in the gap, so
+it passes nothing for that parameter — and Python fills the slot from the signature. A ceiling
+governs that value as well:
+
+```python
+@protect(action='Action::"orders.search"', resource='Tool::"orders"')
+def search(q: str = "", limit: int = 1000) -> dict[str, object]: ...
+```
+
+Under a ceiling of `limit: {maximum: 10}` this is refused, with `SignatureDefaultRejected`
+naming `limit` and reporting that the rule came from reviewed policy text rather than from
+grant data. It is refused whether the caller proposed `limit=500` or omitted `limit` entirely,
+because in both cases the only value available for a bounded parameter is one the bound
+refuses.
+
+That is what makes a ceiling the maximum it claims to be. Without the check the first case
+would have run at **1000** — more than the 500 the caller was refused — and the second would
+have reported a clean allow, with nothing in the envelope or the record to say a declared bound
+had been passed over. A reviewed file is the artifact a change-control process signs off on,
+and it has to mean what it says against the code it governs.
+
+When the signature default *does* satisfy the ceiling, the call runs on it and the envelope
+names the parameter:
+
+```python
+plan.signature_defaults      # ('limit',) -- the value came from the code, and policy agreed
+```
+
+`processed` deliberately does not carry it: that field is the set sentrykit decided and passed,
+and this is a slot it declined to fill. Keeping them apart is what lets you tell a
+policy-supplied value from an application-supplied one.
+
 ### A ceiling narrows; it never widens
 
 Policy-declared ceilings and grant-held constraints **intersect**. Allow-sets intersect,
