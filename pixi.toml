@@ -147,6 +147,9 @@ run-fastapi = "uvicorn examples.fastapi_app.main:serve --factory --reload"
 run-flask = "flask --app examples.flask_app.main:serve run --debug"
 run-mcp = "python -m examples.fastmcp_server.server"
 run-agent = "python -m examples.pydantic_ai_agent.agent"
+# The attack/defence suite. Needs no framework and no agent SDK, so it runs in `default`:
+# the decision path is the core, and the core imports neither.
+run-scenarios = "python -m examples.scenarios"
 # governance / ops
 # `policy validate` with no directory validates the *shipped* pack; point it at your own
 # with `pixi run policy-validate ./policies`.

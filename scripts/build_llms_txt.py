@@ -79,6 +79,7 @@ PAGES: Final[tuple[Page, ...]] = (
     Page("concepts.md", "Guide"),
     Page("web-frameworks.md", "Guide"),
     Page("agents.md", "Guide"),
+    Page("scenarios.md", "Guide"),
     Page("policies.md", "Guide"),
     Page("audit.md", "Guide"),
     Page("plugins.md", "Guide"),
@@ -162,14 +163,32 @@ def read_pages() -> dict[str, str]:
 
     Raises:
         SystemExit: If a page is absent, empty, carries a signature that lost a `*` or `/`
-            separator, or does not contain the marker that proves the markdown builder
-            expanded its directives.
+            separator, does not contain the marker that proves the markdown builder expanded
+            its directives, or was rendered and is not in :data:`PAGES` at all.
     """
     if not MARKDOWN_DIR.is_dir():
         sys.exit(f"build_llms_txt: {MARKDOWN_DIR} is missing; run `sphinx-build -b markdown` first")
 
     contents: dict[str, str] = {}
     problems: list[str] = []
+
+    # Both directions, and the second one is the one that bites. `PAGES` decides the reading
+    # order, so it has to be written by hand -- and a page added to `docs/` and to the toctree
+    # but not to this tuple builds cleanly and is silently absent from both outputs. That is
+    # the whole failure mode `llms-full.txt` exists to not have: a corpus that reads as
+    # complete while a documented capability is missing from it. Nothing warns, because nothing
+    # was broken; a page simply never arrived.
+    rendered = {
+        str(path.relative_to(MARKDOWN_DIR)).replace("\\", "/")
+        for path in MARKDOWN_DIR.rglob("*.md")
+    }
+    for unlisted in sorted(rendered - {page.name for page in PAGES}):
+        problems.append(
+            f"{unlisted}: rendered by the markdown builder and not in PAGES, so it would be "
+            f"left out of llms.txt and llms-full.txt -- add it in the order a reader should "
+            f"meet it"
+        )
+
     for page in PAGES:
         path = MARKDOWN_DIR / page.name
         if not path.is_file():

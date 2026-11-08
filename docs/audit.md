@@ -8,6 +8,11 @@ The audit log is **not** the operational log. `logging` output is ephemeral, may
 and never contains sensitive values. The audit stream is a data product: masked before it is
 written, hash-chained, and pinned to the exact policy logic that produced it.
 
+It is also a consequence of there having been a gate rather than a property of the database
+underneath: an application without one leaves no trail at all, which is not an empty log.
+[Attack scenarios](scenarios.md) runs both arms and prints the difference, including a
+two-call sequence whose evidence is only legible in the trail.
+
 ## Turning it on
 
 Nothing is written unless a sink is configured — a library must not start writing files

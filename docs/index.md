@@ -19,7 +19,8 @@ entity hierarchy.
 | | |
 | --- | --- |
 | **An argument layer** | Constraints resolved per `(principal, action)` — allow-set, deny-set, pattern, numeric bounds — decide which proposed arguments survive and which defaults fill the rest. A value above what the principal may have is rejected and their own default fills the gap, so the call proceeds; a proposal in which nothing the caller supplied survives is refused. A reviewed `.cedar` file can declare the [ceiling](policies.md#argument-ceilings) everybody is held to, and a constraint no value could satisfy is refused when it is written rather than found at the call. See [concepts](concepts.md#argument-constraints). |
-| **One decorator, two worlds** | `@protect` gates the call, filters the arguments the caller proposed, injects the defaults policy supplies, and validates the result — for sync and async callables alike — on [FastAPI and Flask](web-frameworks.md) routes and on [MCP tool servers and Pydantic-AI](agents.md) tools, where a tool is also *hidden* from a principal who could not invoke it. Four runnable example apps. |
+| **One decorator, two worlds** | `@protect` gates the call, filters the arguments the caller proposed, injects the defaults policy supplies, and validates the result — for sync and async callables alike — on [FastAPI and Flask](web-frameworks.md) routes and on [MCP tool servers and Pydantic-AI](agents.md) tools, where a tool is also *hidden* from a principal who could not invoke it. Four runnable example apps, one per boundary. |
+| **A measured difference** | Nine named attacks — prompt injection planted in data, a cross-tenant probe, a laundered state handle, a destructive call whose damage is in its Python default — each run [twice](scenarios.md), once past the policy and once around it, over one function body and one seeded database. Three of the nine the gate does not win, and they are in the suite on purpose. |
 | **A policy pack** | Eight domain-neutral [patterns](policies.md#the-shipped-policy-pack) — RBAC, groups, ownership, delegation, expiry, break-the-glass, separation-of-duties, JIT elevation — shipped as data and composed through the same union as your own policy directory. |
 | **An audit trail** | One masked, hash-chained [record per decision](audit.md) and per admin mutation, pinned to the exact policy logic that produced it. The yearly report is a query, not an afternoon of reading logs. |
 | **A command line** | `sentrykit policy validate`, `grant` / `revoke`, and `audit-report` — with the admin surface governed by the very policy it administers. |
@@ -41,6 +42,7 @@ quickstart
 concepts
 web-frameworks
 agents
+scenarios
 policies
 audit
 plugins

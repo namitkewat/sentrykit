@@ -7,9 +7,59 @@ All notable changes to this project are documented here. Format follows
 
 The four example apps rebuilt around one shared domain, so that each of them demonstrates the
 whole library rather than a slice of it, and the same story can be read at four different
-boundaries.
+boundaries — and then a fifth example that runs nine attacks against that domain twice over,
+once past the policy and once around it, so that what the gate is worth is measured rather
+than asserted.
 
 ### Added
+
+- **An attack/defence suite that runs every scenario twice, with and without the gate.**
+  `examples/scenarios/` proposes nine named attacks — exfiltration by `limit`, an instruction
+  planted in a ticket thread, a cross-tenant probe, a state handle presented by somebody else
+  three different ways, a destructive call whose damage sits in its Python default, the same
+  call proposed desk-wide, and a correctly narrowed argument whose answer leaks anyway — and
+  prints each one's proposal beside what happened with no authorization layer and what happened
+  with one.
+
+  Nothing in it needs a web framework or an agent SDK: the decision path is the core and the
+  core imports neither, so the most security-relevant example here runs in the smallest
+  environment there is, via `pixi run run-scenarios`. The principal is materialized straight
+  out of the grant store and established with `principal_context`, which is the whole wiring a
+  program that already knows whose behalf it acts on needs.
+
+  The comparison is kept fair mechanically rather than by promise. `desk_tools.py` holds eight
+  plain functions that import nothing from sentrykit; `governed.py` applies `protect(...)` to
+  those same function objects, so neither arm has a body of its own and there is no second
+  implementation to drift. One proposal is decided per scenario and handed to both arms, and
+  the desk is reset before each arm — several of these write, and one cancels most of the order
+  book.
+
+  Three of the nine the gate does not win, and they are in the suite on purpose. An
+  authorization layer that only ships the cases it wins is describing a feature rather than a
+  boundary, and a reader deciding whether to adopt one needs the boundary more.
+- **A documented answer to the multi-call state handle, and three scenarios that hold it.** A
+  call narrowed to `region="eu"` hands back an export id; the next call presents it. sentrykit
+  does not track, sign or scope that string, so the second call is decided on its own principal
+  and its own arguments — and a caller who could never have asked for the EU book directly is
+  served it. The narrowing lives on the row, not in the request, and nothing that only sees the
+  request can enforce it.
+
+  The obligation is now named rather than left to be discovered: resolve the handle before the
+  gate and pass what you found as an ordinary argument, at which point the principal's own
+  constraints decide it, the envelope reports it and the record pins it. Then check in the body
+  that the handle and the argument agree, because policy allowing a region the caller *is*
+  entitled to says nothing about whether this job is theirs. `docs/scenarios.md` and
+  `SECURITY.md` say so in prose; the suite runs all three shapes, including the one that goes
+  badly; ADR-036 records why a handle-tracking feature is the wrong answer.
+- **The frontier model tier is reachable from the agent examples.** `examples/models.py` landed
+  with three tiers and was wired into neither of the two examples that use a model, so an
+  `OPENROUTER_API_KEY` in `.env` did nothing. Both now choose through it: a frontier model over
+  OpenRouter, then a local Ollama daemon, then a deterministic stand-in, with the tier and the
+  model id in the banner and the key nowhere in any output. Every authorization outcome is
+  identical whichever answers, which is the property the examples exist to display.
+- **Two desk queries the scenarios needed**: `tenant_orders`, which selects by the tenant whose
+  customer placed the order, and `cancel_open_orders`, a genuinely destructive bulk write whose
+  `all` form is what the reviewed `forbid` refuses.
 
 - **The four example apps now query a seeded database, so a narrowed argument changes the
   answer and not only the envelope.** Every protected callable returned a literal, which made
@@ -221,6 +271,24 @@ boundaries.
 
 ### Fixed
 
+- **A documentation page could be added and silently left out of `llms.txt` and
+  `llms-full.txt`.** `scripts/build_llms_txt.py` holds the corpus as a hand-written tuple,
+  because that tuple is the only place the reading order is decided — and it checked one
+  direction only: every listed page must exist. A page added to `docs/` and to the toctree but
+  not to the tuple built cleanly, rendered into the HTML and the PDF, and was absent from both
+  text outputs with nothing warning, because nothing was broken; a page simply never arrived.
+  That is precisely the failure `llms-full.txt` exists not to have, since it is meant to be
+  sufficient to implement against on its own. The check now runs both ways and names the file.
+- **The test suite's own environment now empties `OPENROUTER_API_KEY`, not only the tier's
+  URL.** Emptying the URL is what turns the frontier tier off and that half was already there.
+  What was not reproducible is the *sentence* the examples print when no model answered: with a
+  key present it names the switch that declined the tier, and with no key it says there is no
+  key — so a documented banner, and the test that pinned it, passed or failed depending on
+  whether whoever ran the suite happened to keep a key in `.env`. The key is emptied rather
+  than deleted, because an absent value sends the examples to `.env` to look. It also stands as
+  a second, independent guard on the same hazard: the URL is what switches the tier off, and an
+  empty key means a bug in that switch still cannot bill anybody. The test that asserts a key
+  is not enough now sets a fake one, which is the honest way to assert it.
 - **`processed` was documented in several places as "what the callable actually ran with", and
   is not.** It is the final argument set the policy decided and sentrykit passed; a parameter
   left to the callable's own default was never in it. The wording now says that, and

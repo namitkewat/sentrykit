@@ -147,6 +147,19 @@ not a missing feature — and each one names the layer that does cover it.
   nothing raises. Every other property of a ceiling is checked at load, which makes this the one
   way a declared bound can be silently absent. Read a ceiling against the signature it names,
   and cover it with a test that proposes a value the ceiling should reject.
+- **It does not remember what an earlier call was narrowed to.** A call narrowed to
+  `region="eu"` may hand back an export id, a job handle or a cursor, and sentrykit does not
+  track, sign or scope that string. The next call presenting it is decided on its own
+  principal and its own arguments, so a caller who could never have asked for the EU book
+  directly can be served it by presenting a handle somebody else was given. The handle is
+  not the hole — the narrowing lives on your row and not in the request, and nothing that
+  only sees the request can enforce it. Resolve the handle before the gate and pass what you
+  found as an ordinary argument (`fetch(job_id, region=lookup(job_id).region)`); the
+  principal's own constraints then decide it, the envelope reports it and the record pins it.
+  Then check in the body that the handle and the argument agree, because policy allowing a
+  region the caller *is* entitled to says nothing about whether this job is theirs. Both
+  halves are yours, and only the first is authorization. `examples/scenarios/` runs the
+  sequence all three ways, including the one it does not win.
 - **It does not defend against denial of service.** Every call runs a Cedar evaluation and
   writes an audit record. A caller who can trigger protected calls at will can make you do both
   at their chosen rate. Rate limiting belongs at the edge.

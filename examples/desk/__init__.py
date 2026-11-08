@@ -57,8 +57,10 @@ from examples.desk.models import (
     UserTeam,
 )
 from examples.desk.queries import (
+    ALL_REGIONS,
     UnknownOrder,
     approve_refund,
+    cancel_open_orders,
     desk_counts,
     export_job,
     find_orders,
@@ -67,11 +69,13 @@ from examples.desk.queries import (
     order_summary,
     record_refund,
     start_export,
+    tenant_orders,
     ticket_thread,
 )
 from examples.desk.seed import DESK_TENANT, RANDOM_SEED, REGIONS, seed_desk
 
 __all__ = [
+    "ALL_REGIONS",
     "DB_URL_ENV",
     "DESK_TENANT",
     "IN_MEMORY_URL",
@@ -96,6 +100,7 @@ __all__ = [
     "User",
     "UserTeam",
     "approve_refund",
+    "cancel_open_orders",
     "close_desk",
     "database_url",
     "desk_counts",
@@ -111,5 +116,6 @@ __all__ = [
     "seed_desk",
     "session_scope",
     "start_export",
+    "tenant_orders",
     "ticket_thread",
 ]

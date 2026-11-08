@@ -48,11 +48,20 @@ cannot perform and gives them nothing. Inline the claim.
 ### The check
 
 ```bash
-grep -rniE 'phase [0-9]|ADR-[0-9]|SA-[A-D]\b|frozen contract|the brief|the plan' \
-  src/ tests/ docs/ examples/ README.md
+grep -rniE 'phase [0-9]|ADR-[0-9]|SA-[A-D]\b|frozen contract|the brief\b|the plan\b' \
+  src/ tests/ docs/ examples/ README.md SECURITY.md
 ```
 
-Nothing. `dev-docs/` and `CHANGELOG.md` are excluded on purpose.
+Nothing new. `dev-docs/` and `CHANGELOG.md` are excluded on purpose, and the standing hits are
+`sentrykit.Plan` being referred to by name and a handful of ADR citations inside `src/`
+docstrings that predate this rule — read the line, do not assume.
+
+Two details of the pattern earn their keep. The `\b` on the last two alternatives: without it
+`the plan` matches `the planted`, and the attack/defence suite says *planted* a dozen times
+about text an attacker writes into a ticket thread, so the unanchored pattern returns a
+screenful of false positives and the check stops being run. And `SECURITY.md` is in the file
+list because it is shipped prose making claims about behaviour, which is the text a stale
+citation damages most.
 
 Tests count as shipped text for this rule even though they are not installed: they are the
 first thing a contributor reads to learn what a behaviour is supposed to be, and a test whose

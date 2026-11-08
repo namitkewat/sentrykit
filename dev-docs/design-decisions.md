@@ -1082,3 +1082,60 @@ apply, which is the same class of fault as this ADR closes. The repo already had
 test pinning the refusal, which the finding recorded as absent. What was genuinely missing was
 the *diagnosis*: the refusal now logs an error naming the parameter the callable does not
 accept, so the operator reads their actual mistake rather than inferring it.
+
+## ADR-036 — A state handle carries no authority; the host re-expresses its narrowing as arguments
+**Decision.** sentrykit does not track, sign or scope the identifiers a protected callable
+hands back. A call that was narrowed to `region="eu"` may return an export id, a job handle, a
+cursor or a row key, and a later call presenting that identifier is decided **only** on the
+principal and the arguments of *that* call. Where the narrowing of the first call has to bind
+the second, the host resolves the handle before the gate and passes what it resolved to as an
+ordinary argument, which the principal's own constraints then decide. The obligation is named
+rather than discharged, and the audit trail is what makes it checkable: both calls carry the
+same action and principal vocabulary, so a report can ask whether the second call's arguments
+agree with the first call's decision.
+
+**Why this is not a gap we are deferring.** It is the consequence of what a pre-action
+authorization decision *is*. The decision is a function of the principal, the action, the
+resource and the proposed arguments. A handle is a string the application minted; sentrykit
+cannot know whether `exp-0004` names an export, a tenant, a file or nothing, cannot know which
+of a host's identifier spaces is capability-bearing, and has no session in which to remember
+what the call that minted it was narrowed to. Making it know any of that means owning a store
+of issued handles keyed by decision, which is a different product: a capability service.
+
+**What the alternative would cost, concretely.** Three things we are not taking on. A durable
+map from handle to decision, which has to outlive the process and be replicated wherever the
+next call might land — so the "no infrastructure, one decorator" claim stops being true. A
+vocabulary for the host to declare *which* return values are handles and which of their fields
+are scoping, which is a schema for every application's identifier space. And a failure mode
+worse than the one it closes: a handle the map has forgotten is either refused, breaking calls
+that were legitimate, or allowed, which is the behaviour we started with plus a store.
+
+**Why the host's half is one line and not a workaround.** `fetch(job_id)` becomes
+`fetch(job_id, region=lookup(job_id).region)`. The narrowing moves from a row the policy cannot
+read into an argument it decides, and from there everything already built applies unchanged:
+the allow-set refuses it, a ceiling can bound it, a default can refill it, the envelope reports
+it and the record pins it. Nothing new is needed because the problem was never that the
+mechanism was missing — it was that the fact had not been put where the mechanism could see
+it. A narrowing that is not in the request cannot be enforced by anything that only sees the
+request, and that is a property of gates rather than of this one.
+
+**What we still owe the reader, and where it is paid.** An unanswered hazard that the
+documentation does not name is worse than one it does, because the shape of the API invites the
+mistake: a function that returns a handle looks like it is handing out something safe.
+`examples/scenarios/` runs the sequence as three scenarios — the handle presented bare, the
+handle re-expressed, and the handle re-expressed *wrongly* — and the first of those is a
+scenario the governed arm does not win. `docs/scenarios.md` and `SECURITY.md` say it in prose.
+
+**The third scenario is the one that generalises.** A caller who presents a valid handle
+together with a region they *are* entitled to is allowed by policy and must still be served
+nothing, because the handle and the argument disagree. sentrykit answered the question it was
+asked, and whether this job is that caller's job was never put to it. So the host's obligation
+is two-part: put the narrowing in the request, and check in the body that the request and the
+row agree. Only the first part is authorization.
+
+**Rejected: a `handle=` constraint rule.** A rule shape that said "this argument is a handle,
+resolve it with this callable" was considered and is the worst of the options: it puts I/O
+inside the argument filter, which is a pure function today and is on the path of every call; it
+makes a decision depend on a database the audit record cannot pin a hash of; and it hands the
+grant store a callable reference, which is data an admin surface would then be mutating into
+executable behaviour. Policies-as-code, grants-as-data draws the line the other way round.

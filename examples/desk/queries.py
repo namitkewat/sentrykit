@@ -23,6 +23,7 @@ waiting to fail inside a template or a JSON encoder. Anyone who wants the ORM ca
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from typing import Final
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import InstrumentedAttribute, Session
@@ -51,6 +52,17 @@ ALL_SCOPE = "all"
 
 OPEN_STATUS = "open"
 """The status the examples' policies supply as a default, so the one the summaries report."""
+
+ALL_REGIONS: Final = "all"
+"""The ``region`` value that means "every region at once", as opposed to naming one.
+
+It exists as a *value* rather than as a second function, because the desk-wide form of a
+destructive call is the one that most needs saying in a grant: a principal who may cancel in
+their own region and nowhere else is a different principal from one who may cancel everywhere,
+and the difference is only expressible to the authorization layer if it is an argument. That it
+happens to be spelled the same as :data:`ALL_SCOPE` is a coincidence of English -- the two
+govern different arguments, so narrowing one says nothing about the other.
+"""
 
 
 class UnknownOrder(LookupError):
@@ -212,6 +224,64 @@ def find_orders(*, region: str, status: str, limit: int) -> list[dict[str, objec
             "items": int(items or 0),
         }
         for order_id, order_region, order_status, customer, total, items in rows
+    ]
+
+
+def tenant_orders(*, tenant_id: str, status: str, limit: int) -> list[dict[str, object]]:
+    """Find the orders belonging to one tenant's customers.
+
+    The read that makes a *cross-tenant* narrowing legible in a way ``region`` cannot. Every
+    region is still the same desk's book, so a caller served the wrong one has merely seen
+    further than intended; ``tenant_id`` selects somebody else's book entirely, and the two
+    have no order in common. An answer that mixes them is therefore recognisable as wrong by
+    anyone who can read the ``tenant_id`` column, without knowing anything about the data.
+
+    The filter rides on ``customers`` rather than on ``orders``, because an order is a
+    tenant's by virtue of whose customer placed it -- and because that join is one
+    :func:`find_orders` already makes to put a name in the result, so the extra selectivity
+    costs nothing.
+
+    Args:
+        tenant_id: The tenant whose customers' orders to return.
+        status: The status to look for. One of ``open``, ``closed``, ``cancelled``.
+        limit: The most rows to return. Zero and below return none.
+
+    Returns:
+        One dict per order, lowest id first so that two runs agree: ``order_id``,
+        ``tenant_id``, ``region``, ``status``, ``customer``, ``total`` in minor units, and
+        ``items``, the number of lines.
+    """
+    ensure_desk()
+    with session_scope() as session:
+        rows = session.execute(
+            select(
+                Order.id,
+                Customer.tenant_id,
+                Order.region,
+                Order.status,
+                Customer.name,
+                func.sum(OrderItem.quantity * Product.price),
+                func.count(OrderItem.id),
+            )
+            .join(Customer, Customer.id == Order.customer_id)
+            .join(OrderItem, OrderItem.order_id == Order.id)
+            .join(Product, Product.sku == OrderItem.sku)
+            .where(Customer.tenant_id == tenant_id, Order.status == status)
+            .group_by(Order.id, Customer.tenant_id, Order.region, Order.status, Customer.name)
+            .order_by(Order.id)
+            .limit(_row_limit(limit))
+        ).all()
+    return [
+        {
+            "order_id": order_id,
+            "tenant_id": tenant,
+            "region": order_region,
+            "status": order_status,
+            "customer": customer,
+            "total": int(total or 0),
+            "items": int(items or 0),
+        }
+        for order_id, tenant, order_region, order_status, customer, total, items in rows
     ]
 
 
@@ -439,6 +509,51 @@ def ticket_thread(ticket_id: str) -> dict[str, object] | None:
             "messages": [
                 {"author": author, "role": role, "body": body} for author, role, body in rows
             ],
+        }
+
+
+def cancel_open_orders(*, region: str) -> dict[str, object]:
+    """Cancel every open order in one region.
+
+    The desk's one genuinely destructive call, and it is here so that the examples have a side
+    effect worth refusing. Everything else on this surface either reads, or writes a row that
+    can be read back and argued with afterwards; this rewrites rows that were somebody's live
+    orders, in bulk, with no record of what they used to be. A wrong ``region`` here is not a
+    caller seeing too much -- it is a caller having already done too much.
+
+    Destructive, and not idempotent in what it reports: the orders it closed stay closed, so a
+    second call finds nothing left open in that region and says ``cancelled: 0``. That is a
+    different answer to the same question rather than a repeat of the first one, and nothing
+    short of :func:`~examples.desk.reset_desk` puts the open book back.
+
+    Args:
+        region: The region to cancel in. :data:`ALL_REGIONS` is the desk-wide form and takes
+            every region's open orders at once; any other value names one region.
+
+    Returns:
+        ``region``, as it arrived; ``cancelled``, how many orders this call rewrote; and
+        ``remaining_open``, how many are still open across the whole book afterwards -- the
+        whole book rather than the named region, because that is the number that says whether
+        a narrowed call left the rest of the desk alone.
+    """
+    ensure_desk()
+    with session_scope() as session:
+        standing = select(Order).where(Order.status == OPEN_STATUS)
+        if region != ALL_REGIONS:
+            standing = standing.where(Order.region == region)
+        affected = list(session.scalars(standing.order_by(Order.id)))
+        for order in affected:
+            order.status = "cancelled"
+        # Flushed before the count below, so `remaining_open` describes the book this call
+        # leaves behind rather than the one it walked in on.
+        session.flush()
+        remaining = session.scalar(
+            select(func.count()).select_from(Order).where(Order.status == OPEN_STATUS)
+        )
+        return {
+            "region": region,
+            "cancelled": len(affected),
+            "remaining_open": int(remaining or 0),
         }
 
 

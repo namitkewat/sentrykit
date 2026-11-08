@@ -186,8 +186,10 @@ own; and the example apps for in-scope frameworks run.
 
 The project is done when all phases are done, the four example apps (FastAPI, Flask, FastMCP
 server, Pydantic-AI) each demonstrate gate + argument filtering + default injection + a
-denial + the audit envelope, the shipped Cedar policy pack's patterns each have a passing
-scenario test, and `pixi run build` produces installable artifacts with working extras.
+denial + the audit envelope, the attack/defence suite under `examples/scenarios/` runs every
+scenario through both arms with the three it does not win still in it, the shipped Cedar policy
+pack's patterns each have a passing scenario test, and `pixi run build` produces installable
+artifacts with working extras.
 
 ---
 
@@ -209,7 +211,9 @@ src/sentrykit/                ← the library (core has NO framework imports)
   policy/pack/                ← shipped Cedar policy pack + schema (data)
   integrations/               ← fastapi, flask, fastmcp, pydantic_ai (behind extras)
 tests/{unit,integration,scenarios}/
+examples/desk/                ← the seeded SQLite orders desk the examples query
 examples/{fastapi_app,flask_app,fastmcp_server,pydantic_ai_agent}/
+examples/scenarios/           ← nine attacks, each run governed and ungoverned
 ```
 
 When in doubt, prefer the smaller, more deletable change; prefer clarity over cleverness;
