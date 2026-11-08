@@ -40,6 +40,10 @@ The bounds themselves come from two places that intersect: a grant says what *th
 may pass, and a `@constraints` annotation on a reviewed `permit` says what *anybody* may pass
 for that action. See [argument ceilings](policies.md#argument-ceilings).
 
+What that is worth against a model reading hostile text is measured rather than asserted:
+[attack scenarios](scenarios.md) plants an instruction in a ticket thread, lets a model propose
+what it likes, and runs the proposal both with the policy and without it.
+
 ## What an agent boundary needs that a web boundary does not
 
 A web provider has one job: establish the ambient principal at the boundary. An HTTP client
@@ -630,14 +634,21 @@ The MCP example also severs one entity edge and reruns: detach `Team::"eu-suppor
 dispatch is refused, while `search_orders` — gated by her role, not by that chain — keeps
 working. The relationship *was* the authorization.
 
-## The optional local model
+## The optional live model
 
 Both agent examples run on a real model when one is within reach, and on a deterministic
-stand-in otherwise. Each prints which it is using.
+stand-in otherwise. Each prints which it is using. Three tiers are tried in order, and the
+authorization outcome is the same whichever of them answers.
 
-The live path is [Ollama](https://ollama.com), because it needs no API key and no account:
+**A frontier model, over OpenRouter.** Put an `OPENROUTER_API_KEY` in a `.env` file at the
+repository root. That file is read directly, so nothing has to be exported into a shell
+profile, and it is the one place a key belongs. `SENTRYKIT_OPENROUTER_MODEL` pins which model
+to ask for; `SENTRYKIT_OPENROUTER_URL` names the endpoint, or turns the tier off when set to
+an **empty** value.
 
-1. install Ollama;
+**A local daemon**, which needs no key and no account:
+
+1. install [Ollama](https://ollama.com);
 2. pull a model whose template supports tools, for example `ollama pull qwen2.5:3b`;
 3. optionally pin one with `SENTRYKIT_OLLAMA_MODEL`, or point at a daemon that is not on
    `http://localhost:11434` with `SENTRYKIT_OLLAMA_URL`.
@@ -647,25 +658,28 @@ the daemon which installed models advertise it and fall back cleanly when none d
 name the daemon does not have is treated as *no pin* rather than as an error, because a typo in
 an environment variable should not stop an example running.
 
-With no daemon reachable, the Pydantic-AI example runs the free-form section on
-`pydantic_ai.models.test.TestModel`, which calls every visible tool with generated arguments,
-and the MCP example says there is no model and stops there. Both say why:
+**A deterministic stand-in.** With neither live tier reachable, the Pydantic-AI example runs
+the free-form section on `pydantic_ai.models.test.TestModel`, which calls every visible tool
+with generated arguments, and the MCP example says there is no model and stops there. Both say
+why, and both halves of the answer appear because "no model" has two independent causes:
 
 ```
 model: TestModel
-  -- the search for one is turned off (SENTRYKIT_OLLAMA_URL is set to an empty value)
+  -- no OPENROUTER_API_KEY is set, and locally the search for one is turned off (SENTRYKIT_OLLAMA_URL is set to an empty value)
 ```
 
-**Every authorization outcome is identical either way**, because a decision is made from the
-principal and the proposed arguments and never from which model proposed them. The fallback is
-not a lesser mode; what a live model adds is that the proposal is genuinely the model's — it
-picks the tool and drafts the arguments itself.
+**Every authorization outcome is identical whichever tier answers**, because a decision is made
+from the principal and the proposed arguments and never from which model proposed them. The
+fallback is not a lesser mode; what a live model adds is that the proposal is genuinely the
+model's — it picks the tool and drafts the arguments itself.
 
-Setting `SENTRYKIT_OLLAMA_URL` to an **empty** value turns the search off outright: no socket
-is opened and no model is found, so the deterministic path is taken. That is how the test suite
-stays hermetic — an example's behaviour must not depend on what happens to be listening on the
-machine running it — and it is also the switch to reach for when you have a daemon and want the
-reproducible run anyway.
+Setting either URL to an **empty** value turns that tier off outright: no socket is opened and
+no model is found, so the deterministic path is taken. That is how the test suite stays
+hermetic — an example's behaviour must not depend on what happens to be listening on the
+machine running it, still less on whether whoever ran it keeps a key in `.env` — and it is also
+the switch to reach for when you have a daemon and want the reproducible run anyway. The key
+is emptied there too, because an absent `OPENROUTER_API_KEY` sends the examples to `.env`,
+where a developer's real one lives.
 
 A small local model will sometimes propose a malformed call, a tool it was never offered, or
 nothing at all. The examples print that and carry on: sentrykit refusing a call the model

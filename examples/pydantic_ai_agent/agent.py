@@ -1,13 +1,17 @@
 """A Pydantic-AI agent that acts *for* a human, and a policy that knows which human.
 
 Run it with `pixi run -e agent run-agent`. It needs nothing installed beyond the `agent`
-environment, and it will use a real model when one is within reach: if an
-[Ollama](https://ollama.com) daemon is running locally with a tool-capable model, the free-form
-section at the end runs on it, and otherwise on `pydantic_ai.models.test.TestModel`. Every
-authorization outcome is identical either way — the decision is made from the principal and
-the proposed arguments, never from which model proposed them. `SENTRYKIT_OLLAMA_MODEL` pins
-which local model to use and `SENTRYKIT_OLLAMA_URL` points at a daemon that is not on
-`localhost:11434`; both are optional, and there is no other model setting.
+environment, and the free-form section at the end runs on the best model within reach.
+`examples.models` is what decides which that is: a frontier model over
+[OpenRouter](https://openrouter.ai) when an `OPENROUTER_API_KEY` is set — in the environment,
+or in the untracked `.env` at the repository root — otherwise a local
+[Ollama](https://ollama.com) daemon with a tool-capable model, otherwise
+`pydantic_ai.models.test.TestModel`. Every authorization outcome is identical whichever tier
+answers, because the decision is made from the principal and the proposed arguments and never
+from which model proposed them. `SENTRYKIT_OPENROUTER_MODEL` and `SENTRYKIT_OLLAMA_MODEL` pin
+which model a tier asks for, and `SENTRYKIT_OPENROUTER_URL` and `SENTRYKIT_OLLAMA_URL` point a
+tier elsewhere or, set to an empty value, switch it off; all four are optional, and
+`examples.models` documents them together.
 
 ## What it demonstrates
 
@@ -41,7 +45,7 @@ arguments it proposes.
 ## Nothing is wired at import
 
 `build_agent()` calls `configure()` and `install()`, which mutate process-global state, and
-`default_model()` probes for a local daemon. A module-level `agent = build_agent()` would run
+`default_model()` probes for a live model. A module-level `agent = build_agent()` would run
 all of that for anyone who so much as imported the module — including a test collector.
 `pixi run -e agent run-agent` invokes `main()` through `__main__` instead, and every test
 builds its own.
@@ -67,7 +71,7 @@ from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_ai.models.test import TestModel
 from pydantic_ai.usage import RunUsage
 
-from examples import desk, ollama
+from examples import desk, models
 from examples.pydantic_ai_agent.policy import POLICY_DIR, build_grants
 from examples.pydantic_ai_agent.service import (
     approve_refund,
@@ -112,41 +116,65 @@ class Caller:
 
 
 def default_model() -> Model:
-    """Pick the model to run the free-form section on: a local one if there is one.
+    """Pick the model to run the free-form section on: the best one within reach.
 
-    An example that needed an API key would not be run, so the live path is Ollama: no
-    account, no key, nothing to configure when the daemon is already on the machine. When
-    there is none, a ``TestModel`` drives the same tools with generated arguments.
+    :mod:`examples.models` answers which tier that is, and this turns its answer into the
+    ``Model`` the agent runs on. Both live tiers speak the same OpenAI-compatible protocol, so
+    one model class covers both and only the provider differs: the frontier tier needs a
+    credential alongside the base URL, the local daemon needs the base URL alone.
+
+    That frontier provider is the generic OpenAI-compatible one rather than pydantic-ai's
+    OpenRouter-specific provider, which pins the base URL itself. ``examples.models`` keeps
+    that URL configurable because emptying it is how the test suite switches the tier off, and
+    a provider that supplied its own would quietly make that switch do nothing.
 
     Returns:
-        An Ollama-backed model when the daemon reports a tool-capable one, otherwise a
-        ``TestModel``.
+        An ``OpenAIChatModel`` over whichever live tier answered, otherwise a ``TestModel``.
+        Which of the three it is changes no authorization outcome anywhere in this example.
     """
-    name = ollama.choose_model()
-    if name is None:
+    choice = models.choose()
+    if choice.model is None:
         return TestModel()
     try:
-        # Imported here rather than at module scope: both come from the optional ``openai``
-        # package, and the example has to keep running where it is absent.
+        # Imported here rather than at module scope: all three come from the optional
+        # ``openai`` package, and the example has to keep running where it is absent.
         from pydantic_ai.models.openai import OpenAIChatModel
         from pydantic_ai.providers.ollama import OllamaProvider
+        from pydantic_ai.providers.openai import OpenAIProvider
     except ImportError:
         return TestModel()
-    return OpenAIChatModel(name, provider=OllamaProvider(base_url=f"{ollama.endpoint()}/v1"))
+    if choice.tier is models.Tier.OPENROUTER:
+        return OpenAIChatModel(
+            choice.model,
+            provider=OpenAIProvider(base_url=choice.base_url, api_key=choice.api_key),
+        )
+    return OpenAIChatModel(choice.model, provider=OllamaProvider(base_url=choice.base_url))
 
 
 def describe_model(model: Model) -> str:
-    """Name a model the way the demonstration prints it.
+    """Name a model the way the demonstration prints it: which tier, and which model id.
+
+    Read back off the model rather than remembered from :func:`default_model`, because
+    ``build_agent`` takes a model from its caller too and the banner has to be right about
+    whichever one it was handed. ``Model.system`` is pydantic-ai's own name for the provider a
+    model is reached through, and that is what separates the live tiers here: Ollama's provider
+    for the local daemon, the generic OpenAI-compatible one for the frontier tier.
+
+    A credential never appears and cannot: it is held by the provider rather than by the
+    model, and :class:`examples.models.Choice` keeps it out of its own repr for the same
+    reason.
 
     Args:
         model: The model in use.
 
     Returns:
-        The class name, plus the model id when it has one worth showing.
+        ``<tier> (<model id>)`` for a live model, and the class name for the stand-in, which
+        has no id worth showing.
     """
-    name = getattr(model, "model_name", "")
-    kind = type(model).__name__
-    return f"{kind} ({name})" if name and name != "test" else kind
+    tiers = {"ollama": models.Tier.OLLAMA, "openai": models.Tier.OPENROUTER}
+    tier = tiers.get(str(getattr(model, "system", "")))
+    name = str(getattr(model, "model_name", ""))
+    return f"{tier} ({name})" if tier is not None and name else type(model).__name__
 
 
 def build_agent(model: Model | None = None) -> Agent[Caller, str]:
@@ -154,7 +182,7 @@ def build_agent(model: Model | None = None) -> Agent[Caller, str]:
 
     Args:
         model: The model to run on. Defaults to :func:`default_model`, which probes for a
-            local daemon; passing one explicitly skips the probe entirely.
+            live one; passing one explicitly skips the probe entirely.
 
     Returns:
         The agent, with every tool registered, governed, and hidden from any run whose
@@ -611,10 +639,12 @@ async def show_free_form(agent: Agent[Caller, str]) -> None:
     print(f"model: {describe_model(agent.model)}")
     if isinstance(agent.model, TestModel):
         print(
-            f"  -- {ollama.why_no_model()}\n"
+            f"  -- {models.why_no_model()}\n"
             "This section runs on a stand-in that calls every visible tool with generated\n"
-            "arguments. Install Ollama and pull a tool-capable model to see a real one\n"
-            "propose these calls; every authorization outcome above is identical either way."
+            f"arguments. An {models.OPENROUTER_KEY_ENV_VAR} in .env at the repository root\n"
+            "opts into a frontier model; a local Ollama daemon with a tool-capable model is\n"
+            "the path that needs no account. Every authorization outcome above is the same\n"
+            "whichever of the three answers."
         )
     print()
 

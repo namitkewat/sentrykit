@@ -1610,12 +1610,17 @@ def test_the_debug_block_the_agents_page_prints_is_what_run_agent_prints(
 def test_the_fallback_banner_the_agents_page_prints_is_what_run_agent_prints(
     agent: Agent[Caller, str],
 ) -> None:
-    """`docs/agents.md` — The optional local model: the two lines printed with no daemon in play.
+    """`docs/agents.md` — The optional live model: the two lines printed with no model in play.
 
-    Which is also the switch this whole suite rests on. `SENTRYKIT_OLLAMA_URL` set to an empty
-    value is the documented way to turn the search off outright, the root `conftest` sets it for
-    every test, and this is the banner a reader gets when they reach for it themselves. No
-    socket is opened to produce either line.
+    Which is also the switch this whole suite rests on. An empty `SENTRYKIT_OPENROUTER_URL` or
+    `SENTRYKIT_OLLAMA_URL` is the documented way to turn a tier off outright, the root
+    `conftest` sets both for every test and empties the key besides, and this is the banner a
+    reader gets when they reach for it themselves. No socket is opened to produce either line.
+
+    The second line names *both* tiers, and it has to: "no model" has two independent causes and
+    a reader who turned one off still wants to know what happened to the other. It also has to
+    be the same sentence on every machine, which is why the fixture empties the key rather than
+    leaving `.env` to decide what this test expects.
     """
     page = page_block("model: TestModel")
 
@@ -1624,7 +1629,8 @@ def test_the_fallback_banner_the_agents_page_prints_is_what_run_agent_prints(
     assert printed[: len(page)] == page
     assert page == [
         "model: TestModel",
-        "  -- the search for one is turned off (SENTRYKIT_OLLAMA_URL is set to an empty value)",
+        "  -- no OPENROUTER_API_KEY is set, and locally the search for one is turned off "
+        "(SENTRYKIT_OLLAMA_URL is set to an empty value)",
     ]
 
 

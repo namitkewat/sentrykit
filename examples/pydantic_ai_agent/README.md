@@ -4,8 +4,9 @@ One agent, seven governed tools, three humans — and a manifest that changes de
 behalf the agent is running. The model **proposes** a call; the **policy decides** whether it
 happens, which arguments survive it, and which values fill the gaps.
 
-It runs with nothing installed beyond the `agent` environment, and it uses a real model when
-one is within reach. Every authorization outcome is identical either way.
+It runs with nothing installed beyond the `agent` environment, and it uses the best model
+within reach — frontier, local, or a deterministic stand-in. Every authorization outcome is
+identical whichever one answers.
 
 ## On-behalf-of is the whole point
 
@@ -102,23 +103,32 @@ of anything.
 
 ### The optional live model
 
-The free-form section runs on a local [Ollama](https://ollama.com) daemon when there is one —
-no API key, no account:
+The free-form section runs on the best model within reach, and
+[`examples/models.py`](../models.py) is what decides which that is.
 
-1. install Ollama;
-2. pull a model whose template supports tools, e.g. `ollama pull qwen2.5:3b`;
-3. optionally `SENTRYKIT_OLLAMA_MODEL=qwen2.5:3b` to pin which one, and
-   `SENTRYKIT_OLLAMA_URL` if the daemon is not on `http://localhost:11434`.
+* An `OPENROUTER_API_KEY` in `.env` at the repository root — untracked — opts into a frontier
+  model over [OpenRouter](https://openrouter.ai). It is the only tier that costs anything,
+  which is why nothing reaches for it unless the key is there. `SENTRYKIT_OPENROUTER_MODEL`
+  pins which model id to ask for.
+* A local [Ollama](https://ollama.com) daemon is the path that needs no account: install it,
+  `ollama pull qwen2.5:3b` or any model whose template supports tools, then optionally
+  `SENTRYKIT_OLLAMA_MODEL=qwen2.5:3b` to pin which one and `SENTRYKIT_OLLAMA_URL` if the
+  daemon is not on `http://localhost:11434`.
+* With neither, `pydantic_ai.models.test.TestModel` drives the same tools with generated
+  arguments.
 
-Setting `SENTRYKIT_OLLAMA_URL` to an *empty* value turns the search off outright — no socket is
-opened and the deterministic model is used. That is how the test suite stays hermetic, and it
-is also the switch to reach for when you have a daemon and want the reproducible run anyway.
+Each live tier has its own off switch and they are independent. `SENTRYKIT_OPENROUTER_URL` set
+to an *empty* value turns the frontier tier off while the key stays where it is;
+`SENTRYKIT_OLLAMA_URL` set to an empty value turns the local search off without opening a
+socket. Both together pin the deterministic path. That is how the test suite stays hermetic,
+and it is also the pair to reach for when you have a live tier and want the reproducible run
+anyway.
 
-With a daemon answering, that section reads like this — the model chose the tool and drafted
-the arguments itself:
+With a live model answering, that section reads like this — the model chose the tool and
+drafted the arguments itself:
 
 ```
-model: OpenAIChatModel (gemma4:e4b)
+model: ollama (gemma4:e4b)
 
 alice : proposed brief_orders
         answered The desk has 198 orders open, spread across three regions -- 81 in the EU, 54 in the UK and 63 in the US. The oldest one still open is ord-0319.
@@ -126,23 +136,25 @@ bob   : proposed export_orders, export_orders
         answered I started a CSV export of the open orders. It covers 81 orders and came back as job exp-0004.
 ```
 
-With none, `pydantic_ai.models.test.TestModel` drives the same tools with generated arguments
-and prints why:
+With none, the stand-in says which tier is missing and why:
 
 ```
 model: TestModel
-  -- no tool-capable model answered at http://127.0.0.1:1
+  -- no OPENROUTER_API_KEY is set, and locally no tool-capable model answered at http://127.0.0.1:1
 This section runs on a stand-in that calls every visible tool with generated
-arguments. Install Ollama and pull a tool-capable model to see a real one
-propose these calls; every authorization outcome above is identical either way.
+arguments. An OPENROUTER_API_KEY in .env at the repository root
+opts into a frontier model; a local Ollama daemon with a tool-capable model is
+the path that needs no account. Every authorization outcome above is the same
+whichever of the three answers.
 ```
 
 The fallback is not a lesser mode. Every authorization outcome in the table below is identical
-either way, because the decision is made from the principal and the proposed arguments and
-never from which model proposed them. A live model adds one thing: sometimes it drafts a call
-badly, and watching sentrykit refuse a call the model should not have proposed is the point,
-not a failure of the demonstration. A small model can also exceed its retries or answer
-malformed JSON; the example catches that and prints it, and the policy layer is unaffected.
+whichever tier answers, because the decision is made from the principal and the proposed
+arguments and never from which model proposed them. A live model adds one thing: sometimes it
+drafts a call badly, and watching sentrykit refuse a call the model should not have proposed is
+the point, not a failure of the demonstration. A small model can also exceed its retries or
+answer malformed JSON; the example catches that and prints it, and the policy layer is
+unaffected.
 
 ## The four surfaces an argument rule can be written on
 

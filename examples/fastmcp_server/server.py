@@ -58,11 +58,14 @@ ambient access token.
 
 The server is model-agnostic and stays that way: a server exposes governed tools, and a client
 drives it. The last section of the self-drive is the client half — it takes the *filtered*
-manifest, hands those schemas to a local Ollama model, and dispatches whatever the model
-proposed back through the same governed path. When no daemon is reachable the deterministic
-drive above it is the whole demonstration, and every authorization outcome is identical either
-way, because the decision is made from the principal and the proposed arguments and never from
-which model proposed them.
+manifest, hands those schemas to the best model within reach, and dispatches whatever the model
+proposed back through the same governed path. `examples.models` is what picks that model: a
+frontier one over [OpenRouter](https://openrouter.ai) when an `OPENROUTER_API_KEY` is set — in
+the environment, or in the untracked `.env` at the repository root — otherwise a local
+[Ollama](https://ollama.com) daemon with a tool-capable model. When neither answers, the
+deterministic drive above it is the whole demonstration, and every authorization outcome is
+identical whichever tier answered, because the decision is made from the principal and the
+proposed arguments and never from which model proposed them.
 
 Nothing in `create_server()` probes for a model. Only the self-drive does, so importing this
 module never touches a network.
@@ -84,7 +87,7 @@ from mcp import Client
 from mcp.server.mcpserver import MCPServer
 from mcp.types import CallToolResult, ListToolsResult
 
-from examples import desk, ollama
+from examples import desk, models
 from examples.fastmcp_server.policy import POLICY_DIR, build_grants
 from examples.fastmcp_server.service import (
     approve_refund,
@@ -430,7 +433,7 @@ async def _nested_records(client: Client, sink: InMemoryAuditSink) -> None:
 
 
 def _declarations(manifest: ListToolsResult) -> list[dict[str, Any]]:
-    """Convert a filtered MCP manifest into Ollama's tool-declaration form.
+    """Convert a filtered MCP manifest into the tool-declaration form both live tiers read.
 
     The manifest is already per-principal, so the model is only ever offered tools this caller
     could actually invoke. That is a usability affordance and not the enforcement: whatever it
@@ -440,7 +443,8 @@ def _declarations(manifest: ListToolsResult) -> list[dict[str, Any]]:
         manifest: What ``tools/list`` answered for this principal.
 
     Returns:
-        Ollama ``tools=`` declarations.
+        ``tools=`` declarations in OpenAI's ``{"type": "function", …}`` shape, which the
+        frontier tier and the local daemon both accept unchanged.
     """
     return [
         {
@@ -455,16 +459,16 @@ def _declarations(manifest: ListToolsResult) -> list[dict[str, Any]]:
     ]
 
 
-async def _live_model(client: Client, model: str, principal: str, ask: str) -> None:
+async def _live_model(client: Client, choice: models.Choice, principal: str, ask: str) -> None:
     """Let a real model choose a tool, then dispatch its proposal through policy.
 
-    Any failure here prints a line and returns. A small local model sometimes proposes a
-    malformed call, an unknown tool, or nothing at all — and a proposal sentrykit refuses is
-    exactly the point, so it is printed rather than hidden.
+    Any failure here prints a line and returns. A model sometimes proposes a malformed call,
+    an unknown tool, or nothing at all — and a proposal sentrykit refuses is exactly the point,
+    so it is printed rather than hidden.
 
     Args:
         client: A connected client.
-        model: The Ollama model to run.
+        choice: The tier and model to run on, as :func:`examples.models.choose` answered it.
         principal: Who to act as.
         ask: The user turn to send.
     """
@@ -473,13 +477,13 @@ async def _live_model(client: Client, model: str, principal: str, ask: str) -> N
     try:
         manifest = await client.list_tools(meta=meta)
         print(f"    offered   {[tool.name for tool in manifest.tools]}")
-        message = ollama.chat(
-            model,
+        message = models.chat(
+            choice,
             [{"role": "user", "content": ask}],
             tools=_declarations(manifest),
         )
         if message is None:
-            print("    the daemon stopped answering; skipping the rest of this section")
+            print("    the model stopped answering; skipping the rest of this section")
             return
         proposals = message.get("tool_calls") or []
         if not proposals:
@@ -491,6 +495,10 @@ async def _live_model(client: Client, model: str, principal: str, ask: str) -> N
             name = function.get("name")
             arguments = function.get("arguments") or {}
             if isinstance(arguments, str):
+                # The one difference between the two live tiers that reaches this far: the
+                # frontier tier answers with `arguments` as a JSON string and the local daemon
+                # with an object. Both are the model's own proposal, and both go on from here
+                # to the same governed dispatch.
                 arguments = json.loads(arguments)
             print(f"    proposed  {_call_text(str(name), dict(arguments))}")
             result = await client.call_tool(str(name), dict(arguments), meta=meta)
@@ -510,18 +518,22 @@ async def _model_section(client: Client) -> None:
         client: A connected client.
     """
     print("\n--- the model proposes; the policy decides ---")
-    model = ollama.choose_model()
-    if model is None:
-        print(f"  {ollama.why_no_model()}.")
+    choice = models.choose()
+    if choice.model is None:
+        print(f"  {models.why_no_model()}.")
         print("  the deterministic drive above is the whole demonstration: every outcome in it")
         print("  is decided from the principal and the proposed arguments, never from which")
-        print("  model proposed them. Install Ollama and pull a tool-capable model to see a")
-        print(f"  real proposal here, or pin one with {ollama.MODEL_ENV_VAR}.")
+        print(f"  model proposed them. {models.OPENROUTER_KEY_ENV_VAR} in .env at the repository")
+        print("  root opts into a frontier model, and a local Ollama daemon with a tool-capable")
+        print("  model is the path that needs no account.")
         return
 
-    print(f"  model: {model} at {ollama.endpoint()}")
-    await _live_model(client, model, "alice", "Search the orders desk for up to 500 CN orders.")
-    await _live_model(client, model, "bob", "Export the open orders as a PDF, please.")
+    # The tier, the model id and the base URL, and nothing else. The credential that reaches
+    # the frontier tier travels in a header and is printed nowhere -- `models.Choice` keeps it
+    # out of its own repr for the same reason.
+    print(f"  model: {choice.model} ({choice.tier} tier) at {choice.base_url}")
+    await _live_model(client, choice, "alice", "Search the orders desk for up to 500 CN orders.")
+    await _live_model(client, choice, "bob", "Export the open orders as a PDF, please.")
     # Two honest notes, because a live model earns the example nothing if its output is tidied
     # up afterwards. The proposals above went through the same governed dispatch the table
     # used — no second path, no prompt asking the model to behave. And the spelling of a

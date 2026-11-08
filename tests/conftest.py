@@ -132,6 +132,17 @@ def clean_process_state(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     # laptop: the suite would send real, billable requests to a third party, and assert against
     # a different model on every machine and every week.
     monkeypatch.setenv("SENTRYKIT_OPENROUTER_URL", "")
+    # And the key itself, emptied rather than deleted, because `examples.models` reads `.env`
+    # when the environment does not carry the variable and treats an empty value as "no key".
+    # Two reasons, and the second is the one that bites. It is a second, independent guard on
+    # the same hazard: the URL above is what turns the tier off, and an empty key means a bug
+    # in that switch still cannot bill anybody. And without it the suite is not *reproducible*
+    # -- `why_no_model()` says "no key is set" on one machine and "the tier is turned off" on
+    # the next, so a test or a documented banner quoting that sentence passes or fails
+    # depending on whether whoever ran it happens to keep a key in `.env`. A test that needs a
+    # key present sets a fake one, which is also the honest way to assert that a key is not
+    # enough.
+    monkeypatch.setenv("OPENROUTER_API_KEY", "")
     _reset()
     yield
     _reset()

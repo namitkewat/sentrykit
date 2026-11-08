@@ -617,16 +617,16 @@ proposed argument whether or not the caller named it. An *omittable* parameter i
 nullable instead, and the shim reads that `null` as *not proposed*, which is how an omission
 stays an omission across the wire.
 
-## The optional local model
+## The optional live model
 
 The server is model-agnostic and stays that way: a server exposes governed tools, and a client
 drives it. The last section of the self-drive is the client half. It takes the **filtered**
-manifest from `list_tools`, converts those schemas into Ollama's `tools=[…]` form, lets a local
-model choose, and dispatches whatever came back through the same governed path:
+manifest from `list_tools`, converts those schemas into the `tools=[…]` form both live tiers
+read, lets the model choose, and dispatches whatever came back through the same governed path:
 
 ```
 --- the model proposes; the policy decides ---
-  model: gemma4:e4b at http://localhost:11434
+  model: gemma4:e4b (ollama tier) at http://localhost:11434/v1
 
   [alice] Search the orders desk for up to 500 CN orders.
     offered   ['desk_status', 'brief_orders', 'search_orders', 'read_order']
@@ -637,32 +637,38 @@ model choose, and dispatches whatever came back through the same governed path:
 Two live-proposed values, both refused, both refilled from alice's own grants — and the model
 was never asked to behave.
 
-To run that half:
+Which model that is comes from [`examples/models.py`](../models.py), and there are two ways in:
 
-1. install [Ollama](https://ollama.com) — no API key, no account;
-2. pull a tool-capable model, for example `ollama pull qwen2.5:3b`;
-3. optionally pin one with `SENTRYKIT_OLLAMA_MODEL`, or point at another daemon with
-   `SENTRYKIT_OLLAMA_URL`.
+* An `OPENROUTER_API_KEY` in `.env` at the repository root — untracked — opts into a frontier
+  model over [OpenRouter](https://openrouter.ai). It is the only tier that costs anything, so
+  nothing reaches for it unless the key is there. `SENTRYKIT_OPENROUTER_MODEL` pins which model
+  id to ask for.
+* A local [Ollama](https://ollama.com) daemon is the path that needs no account: install it,
+  `ollama pull qwen2.5:3b` or any model whose template supports tools, then optionally pin one
+  with `SENTRYKIT_OLLAMA_MODEL` or point at another daemon with `SENTRYKIT_OLLAMA_URL`.
 
-Setting `SENTRYKIT_OLLAMA_URL` to an *empty* value turns the search off outright — no socket is
-opened and the in-process drive above is the whole demonstration. That is how the test suite
-stays hermetic, and it is also the switch to reach for when you have a daemon and want the
-reproducible run anyway.
+Each tier has its own off switch and they are independent. `SENTRYKIT_OPENROUTER_URL` set to an
+*empty* value turns the frontier tier off while the key stays where it is;
+`SENTRYKIT_OLLAMA_URL` set to an empty value turns the local search off without opening a
+socket. Both together leave the in-process drive above as the whole demonstration. That is how
+the test suite stays hermetic, and it is also the pair to reach for when you have a live tier
+and want the reproducible run anyway.
 
-With no daemon reachable the section says so and the run continues:
+With neither reachable the section says so and the run continues:
 
 ```
 --- the model proposes; the policy decides ---
-  no tool-capable model answered at http://127.0.0.1:1.
+  no OPENROUTER_API_KEY is set, and locally no tool-capable model answered at http://127.0.0.1:1.
   the deterministic drive above is the whole demonstration: every outcome in it
   is decided from the principal and the proposed arguments, never from which
-  model proposed them. Install Ollama and pull a tool-capable model to see a
-  real proposal here, or pin one with SENTRYKIT_OLLAMA_MODEL.
+  model proposed them. OPENROUTER_API_KEY in .env at the repository
+  root opts into a frontier model, and a local Ollama daemon with a tool-capable
+  model is the path that needs no account.
 ```
 
-The fallback is not a lesser mode. Every authorization outcome is identical either way, because
-the decision is made from the principal and the proposed arguments and never from which model
-proposed them.
+The fallback is not a lesser mode. Every authorization outcome is identical whichever tier
+answers, because the decision is made from the principal and the proposed arguments and never
+from which model proposed them.
 
 A small local model sometimes proposes a malformed call, a tool it was never offered, or
 nothing at all. Any failure in that section prints one line and the run carries on — the
