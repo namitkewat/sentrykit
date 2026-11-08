@@ -199,6 +199,15 @@ class AuthzAuditRecord(BaseModel):
     record is frozen: chaining produces a new record rather than mutating this one, so a
     record that has been written can never be edited in place by construction.
 
+    One field is there to contradict the others. The chain advances solely on a successful
+    write, so the records either side of a sink outage link perfectly and :func:`verify_chain`
+    calls the run intact — which is true, nothing was altered, and is also exactly what a
+    caller probing the policy boundary while the sink was down would want it to say. So a
+    contiguous chain across a record does **not** mean nothing happened before it;
+    :attr:`dropped_since_last_write` says how much did. It is inside :attr:`record_hash`
+    whenever it is set, which puts the admission on the channel that counts as evidence rather
+    than in an operational log nobody can prove anything from afterwards.
+
     Attributes:
         record_id: Unique id for this record.
         sequence: Position in the chain, starting at 0.
@@ -230,18 +239,9 @@ class AuthzAuditRecord(BaseModel):
             cannot tell an ``hmac:...`` string from a value that genuinely looked like one.
         grant: The grant record, for ``kind="mutation"``.
         dropped_since_last_write: How many records were built, masked and then refused by the
-            sink between the previous record that landed and this one. Zero on all but a
-            vanishing number of records.
-
-            A non-zero value is the only thing that tells a quiet log from a log with a hole
-            in it. The chain advances solely on a successful write, so the records either
-            side of a sink outage link perfectly and :func:`verify_chain` calls the run
-            intact — which is true, nothing was altered, and is also exactly what a caller
-            probing the policy boundary while the sink was down would want it to say. So a
-            contiguous chain across this record does **not** mean nothing happened before it:
-            this count says how much did. It is covered by :attr:`record_hash` whenever it is
-            set, which puts the admission on the channel that counts as evidence rather than
-            in an operational log nobody can prove anything from afterwards.
+            sink between the previous record that landed and this one — the only thing that
+            tells a quiet log from a log with a hole in it. Zero on all but a vanishing
+            number of records, and covered by :attr:`record_hash` whenever it is not.
         prev_hash: The previous record's :attr:`record_hash`, or :data:`GENESIS_HASH`.
         record_hash: This record's digest, over everything above.
     """

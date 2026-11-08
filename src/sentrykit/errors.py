@@ -12,24 +12,23 @@ from typing import Any
 class SentrykitError(Exception):
     """Base class for all sentrykit errors.
 
+    When :attr:`audit_failure` is set, both halves of it matter. The refusal is *correct*: it
+    is the one the decision produced, it stands, and it is not softened because nobody could
+    write it down — deciding and recording are separate guarantees, and losing the second does
+    not forfeit the first. And the refusal is *unrecorded*: there is no audit record that this
+    boundary was tested, so nothing in the trail will later show a caller probing which
+    actions exist and which argument values are accepted.
+
+    It lives on the base class because any refusal can arrive this way, and it travels with
+    the exception so that whoever renders the refusal — a provider's response, a host's own
+    error handler, a report — can say so at the point a reader is looking. The alternative is
+    to leave the fact in an operational log, and the operational channel is deliberately not
+    the audit trail: a fact that only ever lands there is a fact nobody can prove afterwards.
+
     Attributes:
         audit_failure: The audit sink failure that stopped this refusal from being recorded,
             or ``None`` — which is what it is on every refusal a reachable sink accepted, so
             on all but a vanishing fraction of them.
-
-            When it is set, both halves of it matter. The refusal is *correct*: it is the one
-            the decision produced, it stands, and it is not softened because nobody could
-            write it down — deciding and recording are separate guarantees, and losing the
-            second does not forfeit the first. And the refusal is *unrecorded*: there is no
-            audit record that this boundary was tested, so nothing in the trail will later
-            show a caller probing which actions exist and which argument values are accepted.
-
-            It lives on the base class because any refusal can arrive this way, and it travels
-            with the exception so that whoever renders the refusal — a provider's response, a
-            host's own error handler, a report — can say that it went unrecorded at the point
-            a reader is looking. The alternative is to leave the fact in an operational log,
-            and the operational channel is deliberately not the audit trail: a fact that only
-            ever lands there is a fact nobody can prove afterwards.
     """
 
     audit_failure: AuditUnavailable | None = None
