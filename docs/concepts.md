@@ -214,7 +214,7 @@ permit (
 ```
 
 Given `alice -> Team::"eu-support" -> Division::"emea" -> Project::"orders-eu"` and
-`Order::"o-1" -> Project::"orders-eu"`, alice may read the order. The policy mentions neither
+`Order::"ord-0003" -> Project::"orders-eu"`, alice may read the order. The policy mentions neither
 the team nor the division. Sever any one edge and the access disappears — because the
 relationship *is* the authorization. An agent acting for a human is the same pattern:
 delegation, expressed as an edge, resolved by the same machinery.

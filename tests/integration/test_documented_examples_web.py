@@ -261,6 +261,7 @@ def test_a_dsn_built_provider_reads_the_header_the_page_names() -> None:
 @pytest.mark.integration
 def test_an_unprotected_route_calling_a_protected_function_is_governed(
     client: TestClient,
+    seeded_desk: None,
 ) -> None:
     """`docs/web-frameworks.md` — Protected callables that are not routes; and the README.
 
@@ -274,7 +275,9 @@ def test_an_unprotected_route_calling_a_protected_function_is_governed(
 
     assert allowed.status_code == 200
     assert allowed.json() == {
-        "summary": "3 open orders",
+        "open_orders": 198,
+        "regions": {"eu": 81, "uk": 54, "us": 63},
+        "oldest_open": "ord-0319",
         "_authz": {
             "decision": "allow",
             "action": 'Action::"orders.summarize"',
@@ -302,7 +305,7 @@ def test_a_response_model_really_does_strip_the_authz_envelope() -> None:
     class Summary(BaseModel):
         """A response model that, like every response model, does not mention `_authz`."""
 
-        summary: str
+        open_orders: int
 
     app = FastAPI()
     protect_app(app, provider=provider)
@@ -315,7 +318,7 @@ def test_a_response_model_really_does_strip_the_authz_envelope() -> None:
     with TestClient(app) as client:
         body = client.get("/summary", headers={"x-user": "alice"}).json()
 
-    assert body == {"summary": "3 open orders"}
+    assert body == {"open_orders": 198}
     assert "_authz" not in body
 
 
@@ -471,6 +474,7 @@ def test_each_web_run_logs_one_dropped_argument_warning_per_narrowed_value(
 @pytest.mark.integration
 def test_the_bare_protect_route_returns_exactly_the_body_the_page_prints(
     client: TestClient,
+    seeded_desk: None,
 ) -> None:
     """`docs/web-frameworks.md` — The bare `@protect`, and a protected callable that is not a
     route: `curl localhost:8000/orders/status -H 'x-user: alice'`.
@@ -488,6 +492,8 @@ def test_the_bare_protect_route_returns_exactly_the_body_the_page_prints(
     assert body == {
         "desk": "orders",
         "open": True,
+        "open_orders": 198,
+        "pending_refunds": 4,
         "_authz": {
             "decision": "allow",
             "action": f'Action::"{derived}"',

@@ -46,6 +46,7 @@ from typing import Final
 from fastapi import FastAPI
 from starlette.requests import Request
 
+from examples.desk import reset_desk
 from examples.fastapi_app.policy import POLICY_DIR, build_grants
 from examples.fastapi_app.service import (
     approve_refund,
@@ -232,9 +233,9 @@ FLOWS: Final[tuple[_Flow, ...]] = (
     # The reviewed ceiling is Dana's only bound, and her own default is what she runs with.
     ("dana", "GET", "/orders?limit=500&status=open", None),
     # Multi-hop relationship: the permit names a project, not a person.
-    ("alice", "GET", "/orders/o-1", None),
+    ("alice", "GET", "/orders/ord-0003", None),
     # The same chain length, the other project. No permit reaches bob, so nothing is named.
-    ("bob", "GET", "/orders/o-1", None),
+    ("bob", "GET", "/orders/ord-0003", None),
     # Plainly allowed.
     ("bob", "POST", "/orders/export", {"fmt": "csv"}),
     # `fmt` omitted, so Bob's default is injected.
@@ -262,9 +263,9 @@ FLOWS: Final[tuple[_Flow, ...]] = (
     # A pattern rejection with no default to refill from.
     ("alice", "POST", "/refunds", {"order_id": "refund-me", "amount": 100, "region": "eu"}),
     # The admin action.
-    ("dana", "POST", "/refunds/rf-1/approve", None),
+    ("dana", "POST", "/refunds/rf-0002/approve", None),
     # The same call, the other principal.
-    ("alice", "POST", "/refunds/rf-1/approve", None),
+    ("alice", "POST", "/refunds/rf-0002/approve", None),
 )
 """Every decision this example demonstrates, as one request each.
 
@@ -376,6 +377,14 @@ def serve() -> FastAPI:
     # harness, not a dependency of the app itself.
     from fastapi.testclient import TestClient
 
+    # Seven of the flows below write to the desk, and a written row takes the next id in
+    # sequence. Reseeding first is what keeps the demonstration reproducible: the refund
+    # ids and export handles the responses carry are the same on every run, so the page
+    # that quotes them stays true and the table a test holds against that page line for
+    # line is the table this prints. ``create_app`` reseeds nothing -- an application
+    # that emptied its database on startup would be a poor example of anything.
+    reset_desk()
+
     app = create_app()
     client = TestClient(app)
     rows: list[tuple[str, str, str, str, str]] = []
@@ -396,7 +405,8 @@ def serve() -> FastAPI:
     print(
         "Flow 6 is the one to read twice. Dana asked for limit=500. The ceiling declared in\n"
         "policies/10-orders.cedar is 100, and it is the only bound her grants leave in play.\n"
-        "She ran with 25, her own default. The value that breached the ceiling was rejected\n"
-        "and her default was put in the gap. Nothing was trimmed to 100.\n"
+        "She ran with 25, her own default, and the answer carries 25 orders out of the\n"
+        "desk. The value that breached the ceiling was rejected and her default was put\n"
+        "in the gap. Nothing was trimmed to 100.\n"
     )
     return app

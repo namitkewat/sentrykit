@@ -67,7 +67,7 @@ forbid (
 ) when { context.args has fmt && context.args.fmt == "pdf" };
 
 // The relationship policy. It names ONLY the far end of the chain: no team, no division, no
-// `Order::"o-1"`. Cedar walks the entity graph to connect them.
+// `Order::"ord-0003"`. Cedar walks the entity graph to connect them.
 @id("project-members-may-read-project-orders")
 permit (
   principal in Project::"orders-eu",

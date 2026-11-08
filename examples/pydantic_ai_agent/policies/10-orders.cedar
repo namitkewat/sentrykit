@@ -58,7 +58,7 @@ forbid (
 
 // Multi-hop, resolved by Cedar rather than by an `if`. Neither side of this permit names a
 // person: alice reaches Project::"orders-eu" through Team::"eu-support" and Division::"emea",
-// and Order::"o-1" reaches it as a parent. bob's chain is the same length and lands in
+// and Order::"ord-0003" reaches it as a parent. bob's chain is the same length and lands in
 // orders-us, so he is refused -- with no policy naming him either way.
 @id("project-members-may-read-project-orders")
 permit (

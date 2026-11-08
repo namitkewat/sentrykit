@@ -11,6 +11,35 @@ boundaries.
 
 ### Added
 
+- **The four example apps now query a seeded database, so a narrowed argument changes the
+  answer and not only the envelope.** Every protected callable returned a literal, which made
+  the flagship behaviour invisible at exactly the point a reader looks for it: `limit` rejected
+  at 500 and refilled with 25 produced the same three invented order ids as `limit=3` did. It
+  is now 25 rows out of 400, against 10 for the principal whose own default is 10, and the
+  envelope's `narrowed` field and the size of the answer finally say the same thing.
+
+  `examples/desk/` is the support desk the four apps share — sixteen tables over SQLite, seeded
+  deterministically from a fixed seed, in memory unless `SENTRYKIT_DEMO_DB` names a file. The
+  schema is built around the values the shipped policies already decide on, because a demo
+  whose data does not meet its own rules demonstrates nothing: order ids match the
+  `ord-[0-9]{4}` pattern a grant constrains, regions are eu/uk/us so the allow-sets bite, and
+  `search_orders` answers out of a four-table join.
+
+  Nothing in it imports sentrykit and nothing in `src/` imports it. It arrives through a new
+  `demo` pixi feature rather than `pyproject.toml`, because the examples are not in the wheel —
+  so the library gains no dependency and ships no extra for one.
+
+  Two details are there for the shape of the demonstration rather than for the data.
+  `export_orders` returns a **job id**, which is a handle a later call can present — the
+  multi-call shape the argument layer has never been tested against. And `ticket_messages`
+  carries an author that can be a customer rather than an agent, which is where data a model
+  reads can disagree with the instructions it was given.
+
+  Writes are real: issuing a refund inserts a row and allocates the next id, and approving one
+  settles it. So each example's demonstration reseeds before driving its flows, and the tests
+  that pin a printed body ask for a fixture that does the same. Nothing else reseeds — an app
+  that wiped its database on startup would be a bad example of anything, and most tests here
+  assert an authorization outcome, which no amount of written data can move.
 - **Narrowing now reaches the caller whatever the protected callable returns.** The three
   outcome fields below shipped inside the `_authz` key, and that key can only be written into a
   mapping — so a callable returning a list, a string, a model or `None` reported nothing at all.
@@ -141,6 +170,22 @@ boundaries.
 
 ### Changed
 
+- **The examples' two placeholder ids now name rows the desk holds.** `Order::"o-1"` and
+  `rf-1` predated the database and resolved to nothing in it, so the relationship demo
+  authorized a read of an order that did not exist and the approve demo approved nothing.
+  They are `ord-0003` — a seeded open **eu** order, which is what keeps that demo coherent
+  with `Project::"orders-eu"` — and `rf-0002`, a seeded **pending** refund. The printed flow
+  tables on both docs pages were regenerated from the programs rather than edited, because the
+  ids sit in a column-aligned table and the wider id reflows the block.
+- **All four service layers agree about a row the desk does not hold**, and report
+  `found: False` rather than raising. The boundaries would each have justified something
+  different — a web route would map a raised `LookupError` to a 404 quite happily — but an
+  exception out of a tool body becomes an error result, which is the shape a refusal has, and
+  these examples exist to teach the difference between "policy said no" and anything else. The
+  files also claim to be interchangeable, and a claim like that has to survive contact with the
+  awkward case. A missing *order* passed to a refund still raises the desk's own
+  `UnknownOrder`, so the distinction between a domain error and a sentrykit one is still
+  demonstrated once.
 - **All example policy logic moved from Python strings into reviewed `.cedar` files**, loaded
   with `install(policy_source=FilesystemPolicySource(POLICY_DIR), ...)`. `policies=` and
   `policy_source=` are mutually exclusive, so the move takes *all* of it; each example still

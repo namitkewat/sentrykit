@@ -269,7 +269,7 @@ from sentrykit.integrations.pydantic_ai import PydanticAIProvider, governed_tool
 agent = Agent(model, deps_type=Caller)
 governed_tool(agent)(search_orders)
 
-await agent.run("what is on order o-1?", deps=Caller(principal="alice"))
+await agent.run("what is on order ord-0003?", deps=Caller(principal="alice"))
 ```
 
 The filtering guarantee is stated as an invariant and tested as one:

@@ -20,6 +20,7 @@ on a client somebody else built, so they need no import to do it.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field
 from importlib import import_module
@@ -316,7 +317,12 @@ def check_a_protected_non_route_callable_is_governed_by_the_ambient_principal(
     reply = client.get("/orders/summary", user="alice")
 
     assert reply.status == 200
-    assert reply.body["summary"] == "3 open orders"
+    # The body is the desk's own answer rather than a literal, and what it holds is not the
+    # subject here: this case is about a protected function three frames below an unprotected
+    # route being governed at all. Asserting the shape keeps it about that, and keeps it
+    # independent of what earlier tests in this process wrote to the desk.
+    assert isinstance(reply.body["open_orders"], int)
+    assert reply.body["regions"]
     assert reply.authz["action"] == 'Action::"orders.summarize"'
     assert reply.authz["decision"] == "allow"
 
@@ -391,13 +397,15 @@ def check_several_arguments_are_decided_in_one_call(client: WebCaller) -> None:
     reply = client.get("/orders?limit=500&status=open", user="alice")
 
     assert reply.status == 200
-    assert reply.body == {
-        "region": "eu",
-        "limit": 10,
-        "status": "open",
-        "orders": ["order-0", "order-1", "order-2"],
-        "_authz": reply.authz,
-    }
+    assert reply.body["region"] == "eu"
+    assert reply.body["limit"] == 10
+    assert reply.body["status"] == "open"
+    # The part that only became assertable when the examples gained a database: the refilled
+    # bound is not just reported in the envelope, it decides how much data comes back. Ten
+    # rows because ten is alice's own default, which is what replaced the 500 she asked for.
+    assert reply.body["count"] == 10
+    assert len(reply.body["orders"]) == 10
+    assert {row["region"] for row in reply.body["orders"]} == {"eu"}
     assert reply.authz["processed"] == {"status": "open", "region": "eu", "limit": 10}
     assert reply.authz["rejected"] == [
         {
@@ -426,20 +434,25 @@ def check_a_denied_format_is_rejected_and_refilled_beside_a_surviving_argument(
     ``scope`` is what keeps it alive: a rejected argument is refilled *alongside* whatever
     survived, and a proposal with nothing left in it is refused instead — the next row.
 
-    The whole result is asserted rather than the two arguments, because
-    ``docs/web-frameworks.md`` prints the whole result: ``exported`` is what the body returned
-    once policy had settled ``fmt``, so a refill that reached the envelope without reaching the
-    call would still pass an assertion about ``fmt`` alone.
+    What is asserted is what the *body* received rather than what the envelope reported, and
+    that distinction is the point of this case: a refill that reached the envelope without
+    reaching the call would still satisfy an assertion about the envelope alone. Every field
+    below is one the export job recorded from its own arguments, so it can only hold if the
+    refilled value arrived at the function.
+
+    The allocated ``job_id`` is deliberately matched by shape rather than by value. Issuing an
+    export writes a row and takes the next id, so the exact one depends on what else in this
+    process wrote first -- and an assertion that has to be renumbered whenever a neighbouring
+    test is added is an assertion nobody will keep.
     """
     reply = client.post("/orders/export", json={"fmt": "xml", "scope": "open"}, user="bob")
 
     assert reply.status == 200
-    assert reply.body == {
-        "fmt": "csv",
-        "scope": "open",
-        "exported": 42,
-        "_authz": reply.authz,
-    }
+    assert reply.body["fmt"] == "csv"
+    assert reply.body["scope"] == "open"
+    assert re.fullmatch(r"exp-\d{4}", str(reply.body["job_id"]))
+    # The ambient principal reached a body that takes no parameter for it.
+    assert reply.body["requested_by"] == "bob"
     assert reply.authz["rejected"] == [
         {
             "name": "fmt",
@@ -622,22 +635,22 @@ def check_an_admin_reaches_a_support_permit_through_one_role_edge(client: WebCal
 def check_a_multi_hop_relationship_decides_a_read_no_policy_names_either_side_of(
     client: WebCaller,
 ) -> None:
-    """Alice reads ``Order::"o-1"`` and bob does not, through edges no policy mentions.
+    """Alice reads ``Order::"ord-0003"`` and bob does not, through edges no policy mentions.
 
     The permit names ``Project::"orders-eu"`` at both ends. Alice reaches it through her team
     and her division; the order hangs off it as a parent; Cedar walks both. Bob's chain is
     exactly as long and lands on ``Project::"orders-us"``, so the identical call with the
     identical argument is refused — and no route, no callable and no test resolves any of it.
     """
-    allowed = client.get("/orders/o-1", user="alice")
-    refused = client.get("/orders/o-1", user="bob")
+    allowed = client.get("/orders/ord-0003", user="alice")
+    refused = client.get("/orders/ord-0003", user="bob")
 
     assert allowed.status == 200
-    assert allowed.body["order_id"] == "o-1"
-    assert allowed.authz["resource"] == 'Order::"o-1"'
+    assert allowed.body["order_id"] == "ord-0003"
+    assert allowed.authz["resource"] == 'Order::"ord-0003"'
     assert refused.status == 403
     assert refused.error == "AuthzDenied"
-    assert refused.authz["resource"] == 'Order::"o-1"'
+    assert refused.authz["resource"] == 'Order::"ord-0003"'
 
 
 def check_the_admin_action_answers_two_principals_differently(client: WebCaller) -> None:
@@ -650,11 +663,12 @@ def check_the_admin_action_answers_two_principals_differently(client: WebCaller)
     """
     sentrykit.configure(verbosity="debug")
 
-    allowed = client.post("/refunds/rf-1/approve", json={}, user="dana")
-    refused = client.post("/refunds/rf-1/approve", json={}, user="alice")
+    allowed = client.post("/refunds/rf-0002/approve", json={}, user="dana")
+    refused = client.post("/refunds/rf-0002/approve", json={}, user="alice")
 
     assert allowed.status == 200
-    assert allowed.body["approved"] is True
+    assert allowed.body["status"] == "approved"
+    assert allowed.body["approved_by"] == "dana"
     assert refused.status == 403
     assert refused.authz["action"] == 'Action::"refunds.approve"'
     assert refused.authz["determining_policies"] == []

@@ -259,7 +259,7 @@ the URL:
 ```python
 @protect(action='Action::"orders.summarize"', resource='Tool::"orders"')
 def summarize_orders() -> dict[str, object]:
-    return {"summary": "3 open orders"}
+    return desk.order_summary()
 
 
 @app.get("/orders/summary")          # this route is NOT protected
@@ -270,6 +270,12 @@ def summary() -> dict[str, object]:
 The handler mentions no authorization at all. `summarize_orders` is authorized against the same
 ambient principal the provider established, whether it is called from a route, from a service
 layer three frames deeper, or from a background job.
+
+`desk` there is the shipped example's own data layer — a seeded SQLite database the four
+examples share, which is what lets a narrowed argument change the answer rather than only the
+envelope. It knows nothing about sentrykit, and sentrykit knows nothing about it: a protected
+callable is an ordinary function that happens to be governed, and the body below the decorator
+is yours.
 
 !!! warning "Thread-pool offload needs `bind_context`"
     Ambient context follows `await` and `asyncio.to_thread`, and the frameworks' own sync-route
@@ -362,8 +368,8 @@ stderr ahead of the table.
 4   alice  GET  /orders?region=cn&limit=5                                     200   narrowed: region='cn' rejected (allow-set, alice-region), refilled with 'eu'
 5   alice  GET  /orders?limit=500&status=open                                 200   narrowed: limit=500 rejected (maximum, alice-limit), refilled with 10 | defaulted: region='eu'
 6   dana   GET  /orders?limit=500&status=open                                 200   narrowed: limit=500 rejected (maximum, support-may-search), refilled with 25 | defaulted: region='eu'
-7   alice  GET  /orders/o-1                                                   200   allowed
-8   bob    GET  /orders/o-1                                                   403   denied: The policy denied action Action::"orders.read".
+7   alice  GET  /orders/ord-0003                                              200   allowed
+8   bob    GET  /orders/ord-0003                                              403   denied: The policy denied action Action::"orders.read".
 9   bob    POST /orders/export {"fmt":"csv"}                                  200   allowed
 10  bob    POST /orders/export {"scope":"open"}                               200   defaulted: fmt='csv'
 11  bob    POST /orders/export {"fmt":"xml","scope":"open"}                   200   narrowed: fmt='xml' rejected (deny-set, bob-fmt), refilled with 'csv'
@@ -376,8 +382,8 @@ stderr ahead of the table.
 18  alice  POST /refunds {"order_id":"ord-0007","amount":5000,"region":"eu"}  403   denied: The policy denied action Action::"refunds.issue".
 19  dana   POST /refunds {"order_id":"ord-0007","amount":5000,"region":"eu"}  200   allowed
 20  alice  POST /refunds {"order_id":"refund-me","amount":100,"region":"eu"}  400   DefaultUnavailable: Argument 'order_id' is required and no policy default is configured.
-21  dana   POST /refunds/rf-1/approve                                         200   allowed
-22  alice  POST /refunds/rf-1/approve                                         403   denied: The policy denied action Action::"refunds.approve".
+21  dana   POST /refunds/rf-0002/approve                                      200   allowed
+22  alice  POST /refunds/rf-0002/approve                                      403   denied: The policy denied action Action::"refunds.approve".
 ```
 
 Authentication is a stub — the `x-user` header names the principal — which is the seam a real
@@ -424,7 +430,7 @@ bound that bites and the rejection names her grant:
 
 ```bash
 curl -s 'localhost:8000/orders?limit=500&status=open' -H 'x-user: alice'
-# {"region":"eu","limit":10,"status":"open", ...,
+# {"region":"eu","limit":10,"status":"open","count":10, ...,
 #  "_authz":{"decision":"allow","processed":{"status":"open","region":"eu","limit":10},
 #            "rejected":[{"name":"limit","rule":"maximum",
 #                         "reason":"Value is above the maximum of 50",
@@ -439,7 +445,7 @@ bound, and the rejection names the reviewed policy instead:
 
 ```bash
 curl -s 'localhost:8000/orders?limit=500&status=open' -H 'x-user: dana'
-# {"region":"eu","limit":25,"status":"open", ...,
+# {"region":"eu","limit":25,"status":"open","count":25, ...,
 #  "_authz":{"decision":"allow","processed":{"status":"open","limit":25,"region":"eu"},
 #            "rejected":[{"name":"limit","rule":"maximum",
 #                         "reason":"Value is above the maximum of 100",
@@ -507,7 +513,7 @@ curl -s -i -X POST localhost:8000/refunds -H 'x-user: alice' \
 curl -s -X POST localhost:8000/refunds -H 'x-user: dana' \
      -H 'content-type: application/json' \
      -d '{"order_id":"ord-0007","amount":5000,"region":"eu"}'
-# {"refund_id":"rf-1","order_id":"ord-0007","amount":5000,"region":"eu", ...}
+# {"refund_id":"rf-0015","order_id":"ord-0007","amount":5000,"region":"eu","status":"pending"}
 ```
 
 Dana is exempted by the rule's last clause because `Role::"admin"` has `Role::"support"` as a
@@ -552,7 +558,7 @@ survives, so the rejection is refilled and the export runs:
 ```bash
 curl -s -X POST localhost:8000/orders/export -H 'x-user: bob' \
      -H 'content-type: application/json' -d '{"fmt":"xml","scope":"open"}'
-# {"fmt":"csv","scope":"open","exported":42,
+# {"job_id":"exp-0004","fmt":"csv","scope":"open","region":"eu","rows":81,"requested_by":"bob",
 #  "_authz":{"decision":"allow","processed":{"scope":"open","fmt":"csv"},
 #            "rejected":[{"name":"fmt","rule":"deny-set",
 #                         "reason":"Value is explicitly denied","policy":"bob-fmt",
@@ -596,7 +602,7 @@ names the derived action verbatim:
 
 ```bash
 curl -s localhost:8000/orders/status -H 'x-user: alice'
-# {"desk":"orders","open":true,
+# {"desk":"orders","open":true,"open_orders":198,"pending_refunds":4,
 #  "_authz":{"decision":"allow",
 #            "action":"Action::\"examples.fastapi_app.service.desk_status\"",
 #            "resource":"Resource::\"examples.fastapi_app.service.desk_status\"",
@@ -613,7 +619,7 @@ is decided against the same ambient principal the provider established:
 
 ```bash
 curl -s localhost:8000/orders/summary -H 'x-user: alice'
-# {"summary":"3 open orders",
+# {"open_orders":198,"regions":{"eu":81,"uk":54,"us":63},"oldest_open":"ord-0319",
 #  "_authz":{"decision":"allow","action":"Action::\"orders.summarize\"",
 #            "resource":"Tool::\"orders\"","principal":"User::\"alice\""}}
 ```

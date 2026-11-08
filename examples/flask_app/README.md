@@ -9,6 +9,12 @@ relationships, and the `_authz` envelope travelling with every answer.
 The URLs, `service.py`, `policy.py` and `policies/` are identical to `examples/fastapi_app`.
 Diff the two directories: only the boundary wiring differs.
 
+The seven callables query `examples/desk`, a seeded SQLite order desk of four hundred
+orders that knows nothing about authorization. That is what makes the argument layer
+legible: a `limit` refilled with 10 brings back ten rows and one refilled with 25 brings
+back twenty-five, so narrowing is something a reader sees in the answer rather than
+something the envelope merely reports.
+
 ## Layout
 
 | File | What is in it |
@@ -16,7 +22,7 @@ Diff the two directories: only the boundary wiring differs.
 | `policies/10-orders.cedar` | Reviewed policy *logic* for orders, including the `@constraints` argument ceiling |
 | `policies/20-refunds.cedar` | Reviewed policy logic for refunds — a broad permit with two narrow `forbid` rules over it: one decides on an argument *together with* the principal, one on the relationship *between* two arguments |
 | `policy.py` | `POLICY_DIR` / `POLICY_TEXT` (the files above) and `build_grants()` (the entity graph and the per-principal argument constraints — *data*) |
-| `service.py` | The seven `@protect`-ed callables. No Flask import anywhere in it |
+| `service.py` | The seven `@protect`-ed callables. No Flask import anywhere in it — they read and write `examples/desk` |
 | `main.py` | `create_app()`: settings, grants, policy source, provider, `protect_blueprint`, routes. Plus `FLOWS` and `serve()`, the demonstration |
 
 Read `service.py` for the one design rule worth copying: **`status` and `scope` carry Python
@@ -65,6 +71,10 @@ pixi run -e web run-flask   # flask --app examples.flask_app.main:serve run --de
 returns the app for the CLI to serve at `http://127.0.0.1:5000`. `create_app()` stays silent,
 because every test builds its own app with it.
 
+`serve()` reseeds the desk before it drives anything, so the refund ids and export handles
+in the bodies below come out the same on every run. `create_app()` does not reseed: an app that
+emptied its database on startup would be a poor example of anything.
+
 sentrykit logs `Argument dropped by policy` on its own logger each time it rejects a value,
 so seven of those land on stderr before the table:
 
@@ -77,8 +87,8 @@ so seven of those land on stderr before the table:
 4   alice  GET  /orders?region=cn&limit=5                                     200   narrowed: region='cn' rejected (allow-set, alice-region), refilled with 'eu'
 5   alice  GET  /orders?limit=500&status=open                                 200   narrowed: limit=500 rejected (maximum, alice-limit), refilled with 10 | defaulted: region='eu'
 6   dana   GET  /orders?limit=500&status=open                                 200   narrowed: limit=500 rejected (maximum, support-may-search), refilled with 25 | defaulted: region='eu'
-7   alice  GET  /orders/o-1                                                   200   allowed
-8   bob    GET  /orders/o-1                                                   403   denied: The policy denied action Action::"orders.read".
+7   alice  GET  /orders/ord-0003                                              200   allowed
+8   bob    GET  /orders/ord-0003                                              403   denied: The policy denied action Action::"orders.read".
 9   bob    POST /orders/export {"fmt":"csv"}                                  200   allowed
 10  bob    POST /orders/export {"scope":"open"}                               200   defaulted: fmt='csv'
 11  bob    POST /orders/export {"fmt":"xml","scope":"open"}                   200   narrowed: fmt='xml' rejected (deny-set, bob-fmt), refilled with 'csv'
@@ -91,8 +101,8 @@ so seven of those land on stderr before the table:
 18  alice  POST /refunds {"order_id":"ord-0007","amount":5000,"region":"eu"}  403   denied: The policy denied action Action::"refunds.issue".
 19  dana   POST /refunds {"order_id":"ord-0007","amount":5000,"region":"eu"}  200   allowed
 20  alice  POST /refunds {"order_id":"refund-me","amount":100,"region":"eu"}  400   DefaultUnavailable: Argument 'order_id' is required and no policy default is configured.
-21  dana   POST /refunds/rf-1/approve                                         200   allowed
-22  alice  POST /refunds/rf-1/approve                                         403   denied: The policy denied action Action::"refunds.approve".
+21  dana   POST /refunds/rf-0002/approve                                      200   allowed
+22  alice  POST /refunds/rf-0002/approve                                      403   denied: The policy denied action Action::"refunds.approve".
 ```
 
 Authentication is a stub: the **`x-user`** header names the principal. A real app returns the
@@ -117,7 +127,7 @@ curl -s localhost:5000/orders/status -H 'x-user: alice'
 # {"_authz":{"action":"Action::\"examples.flask_app.service.desk_status\"",
 #            "decision":"allow","principal":"User::\"alice\"",
 #            "resource":"Resource::\"examples.flask_app.service.desk_status\""},
-#  "desk":"orders","open":true}
+#  "desk":"orders","open":true,"open_orders":198,"pending_refunds":4}
 ```
 
 **2 — the gate is on the callable, not the URL.** `/orders/summary` is an ordinary unguarded
@@ -126,7 +136,8 @@ route; `summarize_orders()` inside it is protected.
 ```bash
 curl -s localhost:5000/orders/summary -H 'x-user: alice'
 # {"_authz":{"action":"Action::\"orders.summarize\"","decision":"allow", ...},
-#  "summary":"3 open orders"}
+#  "oldest_open":"ord-0319","open_orders":198,
+#  "regions":{"eu":81,"uk":54,"us":63}}
 ```
 
 ### Default injection and reject-and-refill
@@ -138,7 +149,10 @@ was never governed and Python answered for it.
 curl -s localhost:5000/orders -H 'x-user: alice'
 # {"_authz":{"decision":"allow","defaults_applied":{"limit":10,"region":"eu"},
 #            "processed":{"limit":10,"region":"eu"}, ...},
-#  "limit":10,"orders":["order-0","order-1","order-2"],"region":"eu","status":"open"}
+#  "count":10,"limit":10,
+#  "orders":[{"customer":"Marta Rossi","items":2,"order_id":"ord-0003",
+#             "region":"eu","status":"open","total":93500}, ...],
+#  "region":"eu","status":"open"}
 ```
 
 **4 — an allow-set rejection, refilled.** `cn` is not one of Alice's regions, so it is
@@ -151,7 +165,7 @@ curl -s 'localhost:5000/orders?region=cn&limit=5' -H 'x-user: alice'
 #            "rejected":[{"name":"region","policy":"alice-region",
 #                         "reason":"Value is not one of the permitted values",
 #                         "rule":"allow-set","value":"cn"}], ...},
-#  "limit":5,"region":"eu","status":"open", ...}
+#  "count":5,"limit":5,"orders":[ ...5 rows... ],"region":"eu","status":"open"}
 ```
 
 **5 — several arguments decided in one call.** `limit=500` is rejected and refilled with 10;
@@ -164,7 +178,7 @@ curl -s 'localhost:5000/orders?limit=500&status=open' -H 'x-user: alice'
 #            "rejected":[{"name":"limit","policy":"alice-limit",
 #                         "reason":"Value is above the maximum of 50",
 #                         "rule":"maximum","value":500}], ...},
-#  "limit":10,"region":"eu","status":"open", ...}
+#  "count":10,"limit":10,"orders":[ ...10 rows... ],"region":"eu","status":"open"}
 ```
 
 **6 — the reviewed ceiling, and the clearest statement of what refilling means.** Dana's
@@ -180,7 +194,7 @@ curl -s 'localhost:5000/orders?limit=500&status=open' -H 'x-user: dana'
 #            "rejected":[{"name":"limit","policy":"support-may-search",
 #                         "reason":"Value is above the maximum of 100",
 #                         "rule":"maximum","value":500}], ...},
-#  "limit":25,"region":"eu","status":"open", ...}
+#  "count":25,"limit":25,"orders":[ ...25 rows... ],"region":"eu","status":"open"}
 ```
 
 Grants filter before ceilings, so whichever bound is tighter is the one that reports. Run the
@@ -192,15 +206,19 @@ same request as `alice` and the rejection names `alice-limit` and her maximum of
 `project-members-may-read-project-orders` says a member of `Project::"orders-eu"` may read an
 order in `Project::"orders-eu"`. Alice reaches that project through Team then Division; the
 order reaches it through an edge of its own. Bob's chain is the same length and ends at
-`Project::"orders-us"`.
+`Project::"orders-us"`. Nothing in the order row names that project: the edge lives in the
+entity graph the policy walks, not in a column the desk would have to keep true.
 
 ```bash
-curl -s localhost:5000/orders/o-1 -H 'x-user: alice'
+curl -s localhost:5000/orders/ord-0003 -H 'x-user: alice'
 # {"_authz":{"action":"Action::\"orders.read\"","decision":"allow",
-#            "processed":{"order_id":"o-1"},"resource":"Order::\"o-1\"", ...},
-#  "order_id":"o-1","project":"orders-eu","total":120}
+#            "processed":{"order_id":"ord-0003"},"resource":"Order::\"ord-0003\"", ...},
+#  "address":"35 Harbour Road, Utrecht 62299, NL","customer":"Marta Rossi",
+#  "items":[{"name":"Keyboard Tray","price":16750,"quantity":4,"sku":"sku-0005"},
+#           {"name":"Screen Filter","price":5300,"quantity":5,"sku":"sku-0022"}],
+#  "order_id":"ord-0003","region":"eu","shipment":null,"status":"open","total":93500}
 
-curl -s localhost:5000/orders/o-1 -H 'x-user: bob' -i | head -1
+curl -s localhost:5000/orders/ord-0003 -H 'x-user: bob' -i | head -1
 # HTTP/1.1 403 FORBIDDEN
 # {"_authz":{"decision":"deny", ...},
 #  "detail":"The policy denied action Action::\"orders.read\".","error":"AuthzDenied"}
@@ -215,8 +233,15 @@ Python's own default filled it.
 curl -s -X POST localhost:5000/orders/export -H 'x-user: bob' \
      -H 'content-type: application/json' -d '{"fmt":"csv"}'
 # {"_authz":{"decision":"allow","processed":{"fmt":"csv"}, ...},
-#  "exported":42,"fmt":"csv","scope":"open"}
+#  "fmt":"csv","job_id":"exp-0004","region":"eu","requested_by":"bob",
+#  "rows":81,"scope":"open"}
 ```
+
+Two of those fields came from neither the request nor the signature. `requested_by` is the
+ambient principal, read with `current_principal()` inside the callable — a service layer
+learning who is calling without taking a parameter for it, and without being handed a
+request. `region` is the `EXPORT_REGION` constant in `service.py`: `orders.export` is
+governed on `fmt` and `scope`, and no grant supplies a region for it.
 
 **10 — `fmt` omitted, so Bob's default is injected.**
 
@@ -225,7 +250,8 @@ curl -s -X POST localhost:5000/orders/export -H 'x-user: bob' \
      -H 'content-type: application/json' -d '{"scope":"open"}'
 # {"_authz":{"decision":"allow","defaults_applied":{"fmt":"csv"},
 #            "processed":{"fmt":"csv","scope":"open"}, ...},
-#  "exported":42,"fmt":"csv","scope":"open"}
+#  "fmt":"csv","job_id":"exp-0005","region":"eu","requested_by":"bob",
+#  "rows":81,"scope":"open"}
 ```
 
 **11 — a deny-set rejection, refilled.** `xml` is rejected, `csv` fills the gap, and `scope`
@@ -238,7 +264,8 @@ curl -s -X POST localhost:5000/orders/export -H 'x-user: bob' \
 #            "rejected":[{"name":"fmt","policy":"bob-fmt",
 #                         "reason":"Value is explicitly denied","rule":"deny-set",
 #                         "value":"xml"}], ...},
-#  "exported":42,"fmt":"csv","scope":"open"}
+#  "fmt":"csv","job_id":"exp-0006","region":"eu","requested_by":"bob",
+#  "rows":81,"scope":"open"}
 ```
 
 **12 — the same value, alone.** Nothing the caller sent survived, so the call is refused
@@ -297,7 +324,8 @@ curl -s -X POST localhost:5000/refunds -H 'x-user: alice' \
      -H 'content-type: application/json' \
      -d '{"order_id":"ord-0007","amount":100,"region":"uk"}'
 # {"_authz":{"decision":"allow", ...},
-#  "amount":100,"order_id":"ord-0007","refund_id":"rf-1","region":"uk"}
+#  "amount":100,"order_id":"ord-0007","refund_id":"rf-0015","region":"uk",
+#  "status":"pending"}
 
 curl -s -X POST localhost:5000/refunds -H 'x-user: alice' \
      -H 'content-type: application/json' \
@@ -321,7 +349,8 @@ curl -s -X POST localhost:5000/refunds -H 'x-user: alice' \
 #            "rejected":[{"name":"amount","policy":"alice-amount",
 #                         "reason":"Value is above the maximum of 750",
 #                         "rule":"maximum","value":900}], ...},
-#  "amount":50,"order_id":"ord-0007","refund_id":"rf-1","region":"eu"}
+#  "amount":50,"order_id":"ord-0007","refund_id":"rf-0016","region":"eu",
+#  "status":"pending"}
 ```
 
 **18 and 19 — the same call, two principals.** `support-may-issue-refunds` permits the call
@@ -339,7 +368,8 @@ curl -s -X POST localhost:5000/refunds -H 'x-user: dana' \
      -H 'content-type: application/json' \
      -d '{"order_id":"ord-0007","amount":5000,"region":"eu"}'
 # {"_authz":{"decision":"allow", ...},
-#  "amount":5000,"order_id":"ord-0007","refund_id":"rf-1","region":"eu"}
+#  "amount":5000,"order_id":"ord-0007","refund_id":"rf-0017","region":"eu",
+#  "status":"pending"}
 ```
 
 Alice's refusal is a **named** deny: a `forbid` that fires is determining, so at
@@ -371,10 +401,12 @@ curl -s -X POST localhost:5000/refunds -H 'x-user: alice' \
 says who holds `admin`, and the reviewed file never changes when that answer does.
 
 ```bash
-curl -s -X POST localhost:5000/refunds/rf-1/approve -H 'x-user: dana'
-# {"_authz":{"decision":"allow", ...},"approved":true,"refund_id":"rf-1"}
+curl -s -X POST localhost:5000/refunds/rf-0002/approve -H 'x-user: dana'
+# {"_authz":{"decision":"allow", ...},
+#  "amount":7650,"approved_by":"dana","order_id":"ord-0091",
+#  "refund_id":"rf-0002","region":"eu","status":"approved"}
 
-curl -s -X POST localhost:5000/refunds/rf-1/approve -H 'x-user: alice' -i | head -1
+curl -s -X POST localhost:5000/refunds/rf-0002/approve -H 'x-user: alice' -i | head -1
 # HTTP/1.1 403 FORBIDDEN
 # {"detail":"The policy denied action Action::\"refunds.approve\".","error":"AuthzDenied"}
 ```

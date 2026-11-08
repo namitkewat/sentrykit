@@ -168,13 +168,13 @@ permit (
             Entity(EntityRef("Project", "orders-eu")),
             Entity(EntityRef("Division", "emea"), parents=(EntityRef("Project", "orders-eu"),)),
             Entity(EntityRef("Team", "eu-support"), parents=(EntityRef("Division", "emea"),)),
-            Entity(EntityRef("Order", "o-1"), parents=(EntityRef("Project", "orders-eu"),)),
+            Entity(EntityRef("Order", "ord-0003"), parents=(EntityRef("Project", "orders-eu"),)),
         ],
     )
 
-    @protect(action='Action::"order.read"', resource='Order::"o-1"')
+    @protect(action='Action::"order.read"', resource='Order::"ord-0003"')
     def read_order(order_id: str) -> dict[str, str]:
         return {"order_id": order_id}
 
     with establish(Principal(id="alice", parents=(EntityRef("Team", "eu-support"),))):
-        assert read_order(order_id="o-1")["order_id"] == "o-1"
+        assert read_order(order_id="ord-0003")["order_id"] == "ord-0003"

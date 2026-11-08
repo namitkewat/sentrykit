@@ -82,6 +82,33 @@ when { principal.clearance == "high" };
 principal may be missing — which Cedar reports as an *engine error* rather than a denial."""
 
 
+@pytest.fixture
+def seeded_desk() -> Iterator[None]:
+    """Drop and reseed the example apps' database, so a test can assert a row or a count.
+
+    Deliberately **not** autouse. The desk lives in memory for the whole process and the
+    governed callables that write to it really write: issuing a refund inserts a row and
+    allocates the next id in sequence, so a test that asserts ``rf-0015`` or a live
+    ``pending_refunds`` count depends on which tests ran before it in the same process.
+    Reseeding is cheap but not free -- a few tenths of a second -- and most tests here assert
+    an authorization *outcome*, which no amount of written data can move. Paying that cost on
+    every test in the suite to serve the handful that pin a printed body would be several
+    wasted minutes an hour.
+
+    So the rule is: ask for this fixture when the assertion names a row, an allocated id or a
+    count, and leave it alone when the assertion is about the decision. Where a stable field
+    will do -- ``fmt`` after a refill, ``status`` after an approval -- prefer asserting that
+    and skip the reseed entirely.
+
+    Yields:
+        Nothing; the value of this fixture is the state it leaves behind.
+    """
+    from examples.desk import reset_desk
+
+    reset_desk()
+    yield
+
+
 @pytest.fixture(autouse=True)
 def clean_process_state(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     """Give every test an empty environment, no settings, no principal, and no governor."""

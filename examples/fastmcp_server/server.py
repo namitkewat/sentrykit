@@ -24,6 +24,16 @@ Seven tools, and one protected callable that is deliberately **not** a tool:
   *together with* the principal, the other reads two arguments against each other.
 * `approve_refund` — the admin gate, with no arguments involved at all.
 
+## The tools query a real database
+
+Every protected callable in `service.py` reads or writes a seeded SQLite orders desk, so a
+narrowed argument selects different *rows* rather than putting a different number in a report:
+a `limit` refilled with 10 comes back with ten real orders, and a `region` refilled from the
+caller's own grant comes back with other customers and other totals. The self-drive resets that
+desk before it starts, so the refund and export ids it prints are the same on every run.
+`create_server()` resets nothing — a server that emptied its database on startup would be a
+poor example of anything.
+
 ## What the agent boundary adds
 
 A web client already knows which URLs exist, so an HTTP provider has one job: establish
@@ -74,7 +84,7 @@ from mcp import Client
 from mcp.server.mcpserver import MCPServer
 from mcp.types import CallToolResult, ListToolsResult
 
-from examples import ollama
+from examples import desk, ollama
 from examples.fastmcp_server.policy import POLICY_DIR, build_grants
 from examples.fastmcp_server.service import (
     approve_refund,
@@ -105,7 +115,7 @@ def create_server(
     Args:
         severed: Build the graph with ``Team::"eu-support"`` detached from its division, and
             nothing else changed. Alice can still search — that gate is a role — and can no
-            longer read ``Order::"o-1"``.
+            longer read ``Order::"ord-0003"``.
         audit_sink: Where decision records go. ``None`` means no audit trail, which is the
             right default for a library: nothing should start writing files merely because it
             was imported.
@@ -250,11 +260,16 @@ FLOWS: tuple[tuple[str, str, dict[str, Any], str], ...] = (
         {"limit": 500, "status": "open"},
         "the reviewed ceiling is her only bound; she gets her own default of 25",
     ),
-    ("alice", "read_order", {"order_id": "o-1"}, "four hops; the permit names only the project"),
+    (
+        "alice",
+        "read_order",
+        {"order_id": "ord-0003"},
+        "four hops; the permit names only the project",
+    ),
     (
         "bob",
         "read_order",
-        {"order_id": "o-1"},
+        {"order_id": "ord-0003"},
         "same chain length, other project; no permit reaches him, so nothing is named",
     ),
     ("bob", "export_orders", {"fmt": "csv"}, "plainly allowed"),
@@ -309,8 +324,8 @@ FLOWS: tuple[tuple[str, str, dict[str, Any], str], ...] = (
         {"order_id": "refund-me", "amount": 100, "region": "eu"},
         "pattern rejected with no default to refill from; the gate had already said yes",
     ),
-    ("dana", "approve_refund", {"refund_id": "rf-1"}, "the admin action"),
-    ("alice", "approve_refund", {"refund_id": "rf-1"}, "the same call, the other principal"),
+    ("dana", "approve_refund", {"refund_id": "rf-0002"}, "the admin action"),
+    ("alice", "approve_refund", {"refund_id": "rf-0002"}, "the same call, the other principal"),
 )
 """Every flow the example demonstrates: principal, tool, proposal, and what it teaches."""
 
@@ -379,8 +394,8 @@ async def _severed_comparison() -> None:
     async with Client(create_server(severed=True)) as client:
         manifest = await client.list_tools(meta=meta)
         print(f"  tools/list             {[tool.name for tool in manifest.tools]}")
-        read = await client.call_tool("read_order", {"order_id": "o-1"}, meta=meta)
-        print(f"  read_order(o-1)        {_outcome(read)}")
+        read = await client.call_tool("read_order", {"order_id": "ord-0003"}, meta=meta)
+        print(f"  read_order(ord-0003)        {_outcome(read)}")
         search = await client.call_tool("search_orders", {}, meta=meta)
         print(f"  search_orders()        {_outcome(search)}   <- her role gate is untouched")
 
@@ -526,7 +541,18 @@ async def demonstrate() -> None:
     No sockets: :class:`mcp.Client` accepts an :class:`~mcp.server.mcpserver.MCPServer`
     directly and speaks to it over an in-memory transport, which is also how the integration
     tests run.
+
+    Resets the orders desk before driving anything, so the run is reproducible. Nothing else
+    here writes to it.
     """
+    # Several flows WRITE: each permitted refund books a row with a freshly allocated id, and
+    # each export books a job. Without starting from identical rows, a second run would count
+    # on from wherever the first one stopped, and none of the ids below would be the same
+    # twice — so neither the table nor the documentation quoting it could be relied on.
+    #
+    # Only the self-drive does this. ``create_server()`` deliberately does not: a server that
+    # emptied its database on startup would be a poor example of anything.
+    desk.reset_desk()
     sink = InMemoryAuditSink()
     server = create_server(audit_sink=sink)
     async with Client(server) as client:

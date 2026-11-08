@@ -111,6 +111,16 @@ def body_of(result: CallToolResult) -> Mapping[str, Any]:
     raise AssertionError(f"no readable body on {result!r}")
 
 
+def _without_job_id(body: Mapping[str, Any]) -> dict[str, Any]:
+    """The body minus the export job's allocated id.
+
+    Two export calls that agree about every argument still book two different rows, and the
+    row's id is the one field that cannot be equal. Dropping it is what lets an assertion be
+    about the arguments, which is what the tests using this are claiming.
+    """
+    return {name: value for name, value in body.items() if name != "job_id"}
+
+
 @asynccontextmanager
 async def serving(*, severed: bool = False) -> AsyncGenerator[mcp.Client, None]:
     """Open a client over the example MCP server, the way the README's snippets drive it.
@@ -207,8 +217,9 @@ def test_a_protected_callable_that_is_no_tool_is_decided_inside_the_tool_that_ca
     """
     assert asyncio.run(propose(agent, Caller("alice"), "brief_orders")) == {
         "brief": {
-            "open": 3,
-            "closed": 11,
+            "open_orders": 198,
+            "regions": {"eu": 81, "uk": 54, "us": 63},
+            "oldest_open": "ord-0319",
             "_authz": {
                 "decision": "allow",
                 "action": 'Action::"orders.summarize"',
@@ -216,6 +227,9 @@ def test_a_protected_callable_that_is_no_tool_is_decided_inside_the_tool_that_ca
                 "principal": 'User::"alice"',
             },
         },
+        "open_orders": 198,
+        "headline": "198 open orders across 3 regions, oldest ord-0319",
+        "orders": ["ord-0001", "ord-0003", "ord-0006"],
         "_authz": {
             "decision": "allow",
             "action": 'Action::"orders.brief"',
@@ -272,37 +286,46 @@ def test_a_refusal_inside_the_nested_callable_travels_out_unchanged() -> None:
 def test_the_narrowed_search_returns_exactly_what_the_readme_prints(
     agent: Agent[Caller, str],
 ) -> None:
-    """The README — "an allow-set, rejected and refilled"."""
-    assert asyncio.run(propose(agent, Caller("alice"), "search_orders", region="cn", limit=5)) == {
-        "region": "eu",
-        "limit": 5,
-        "status": "open",
-        "orders": ["order-0", "order-1", "order-2"],
-        "_authz": {
-            "decision": "allow",
-            "action": SEARCH,
-            "resource": ORDERS,
-            "principal": 'User::"alice"',
-            "processed": {"limit": 5, "status": "open", "region": "eu"},
-            "rejected": [
-                {
-                    "name": "region",
-                    "rule": "allow-set",
-                    "reason": "Value is not one of the permitted values",
-                    "policy": "alice-region",
-                    "value": "cn",
-                }
-            ],
-            "defaults_applied": {"region": "eu"},
-            # The outcome half of the envelope. ``region`` was proposed as "cn", rejected,
-            # and refilled from alice's own default, so the call ran on a value she may use
-            # and the guidance leads with "valid". ``limit=5`` survived untouched and is
-            # therefore absent from ``narrowed_arguments``: narrowing is defined against the
-            # proposal, not against ``rejected``.
-            "narrowed": True,
-            "narrowed_arguments": ["region"],
-            "guidance": narrowing_guidance(["region"]),
-        },
+    """The README — "an allow-set, rejected and refilled".
+
+    The envelope is asserted whole, because every field in it is a claim the README makes. The
+    rows are asserted by count and by region instead of by value: ten customer names and ten
+    totals would pin the seeder's own random choices to this test, which is a different
+    contract from the one here, and the thing worth asserting about them is that the surviving
+    bound decided how many came back and the refilled region decided which.
+    """
+    body = asyncio.run(propose(agent, Caller("alice"), "search_orders", region="cn", limit=5))
+
+    assert body["region"] == "eu"
+    assert body["limit"] == 5
+    assert body["status"] == "open"
+    assert body["count"] == 5
+    assert len(body["orders"]) == 5
+    assert {row["region"] for row in body["orders"]} == {"eu"}
+    assert body["_authz"] == {
+        "decision": "allow",
+        "action": SEARCH,
+        "resource": ORDERS,
+        "principal": 'User::"alice"',
+        "processed": {"limit": 5, "status": "open", "region": "eu"},
+        "rejected": [
+            {
+                "name": "region",
+                "rule": "allow-set",
+                "reason": "Value is not one of the permitted values",
+                "policy": "alice-region",
+                "value": "cn",
+            }
+        ],
+        "defaults_applied": {"region": "eu"},
+        # The outcome half of the envelope. ``region`` was proposed as "cn", rejected,
+        # and refilled from alice's own default, so the call ran on a value she may use
+        # and the guidance leads with "valid". ``limit=5`` survived untouched and is
+        # therefore absent from ``narrowed_arguments``: narrowing is defined against the
+        # proposal, not against ``rejected``.
+        "narrowed": True,
+        "narrowed_arguments": ["region"],
+        "guidance": narrowing_guidance(["region"]),
     }
 
 
@@ -316,19 +339,21 @@ def test_the_model_may_omit_both_arguments_and_gets_what_the_readme_prints(
     them, and `defaults_applied` naming `region` and `limit` and *not* `status` — which is the
     envelope distinguishing a value policy supplied from one Python had already answered for.
     """
-    assert asyncio.run(propose(agent, Caller("alice"), "search_orders")) == {
-        "region": "eu",
-        "limit": 10,
-        "status": "open",
-        "orders": ["order-0", "order-1", "order-2"],
-        "_authz": {
-            "decision": "allow",
-            "action": SEARCH,
-            "resource": ORDERS,
-            "principal": 'User::"alice"',
-            "processed": {"status": "open", "region": "eu", "limit": 10},
-            "defaults_applied": {"region": "eu", "limit": 10},
-        },
+    body = asyncio.run(propose(agent, Caller("alice"), "search_orders"))
+
+    assert body["region"] == "eu"
+    assert body["limit"] == 10
+    assert body["status"] == "open"
+    # Both defaults reached the call, and the one that is a bound decided the answer's size.
+    assert body["count"] == 10
+    assert len(body["orders"]) == 10
+    assert body["_authz"] == {
+        "decision": "allow",
+        "action": SEARCH,
+        "resource": ORDERS,
+        "principal": 'User::"alice"',
+        "processed": {"status": "open", "region": "eu", "limit": 10},
+        "defaults_applied": {"region": "eu", "limit": 10},
     }
 
 
@@ -411,11 +436,22 @@ def test_hiding_is_not_the_enforcement_exactly_as_the_readme_prints(
 def test_the_argument_aware_forbid_prints_what_the_readme_says_it_does(
     agent: Agent[Caller, str],
 ) -> None:
-    """The README — "a policy that reads the proposed argument": csv allowed, pdf refused."""
-    assert asyncio.run(propose(agent, Caller("bob"), "export_orders", fmt="csv")) == {
+    """The README — "a policy that reads the proposed argument": csv allowed, pdf refused.
+
+    The allocated ``job_id`` is matched by shape. Exporting books a row and takes the next id,
+    so its exact value depends on what else booked one first in this process, and an
+    assertion that has to be renumbered whenever a neighbouring test is added is one nobody
+    will keep.
+    """
+    allowed = asyncio.run(propose(agent, Caller("bob"), "export_orders", fmt="csv"))
+
+    assert re.fullmatch(r"exp-\d{4}", str(allowed.pop("job_id")))
+    assert allowed == {
         "fmt": "csv",
         "scope": "open",
-        "exported": 42,
+        "region": "eu",
+        "rows": 81,
+        "requested_by": "bob",
         "_authz": {
             "decision": "allow",
             "action": EXPORT,
@@ -937,7 +973,10 @@ async def test_a_schema_default_reaches_the_decorator_even_when_the_caller_named
         omitted = await client.call_tool("export_orders", {"scope": "open"}, meta=BOB)
 
     assert alone.is_error is not True
-    assert body_of(alone) == body_of(beside)
+    # Compared without the booked job's id. Each call writes its own export row and takes the
+    # next id in sequence, so two calls can agree about every argument -- which is the claim
+    # here -- while disagreeing about which row they created.
+    assert _without_job_id(body_of(alone)) == _without_job_id(body_of(beside))
     assert body_of(alone)["fmt"] == "csv"
     assert body_of(alone)["scope"] == "open"
     assert body_of(alone)["_authz"]["rejected"][0]["rule"] == "deny-set"
@@ -995,23 +1034,23 @@ async def test_the_mcp_readme_role_gate_prints_what_it_says() -> None:
 async def test_the_mcp_readme_hidden_tool_called_by_name_prints_what_it_says() -> None:
     """The README — "Hiding is not the enforcement", including the resource it names."""
     async with serving() as client:
-        result = await client.call_tool("read_order", {"order_id": "o-1"}, meta=BOB)
+        result = await client.call_tool("read_order", {"order_id": "ord-0003"}, meta=BOB)
 
     body = body_of(result)
     assert result.is_error is True
     assert body["error"] == "AuthzDenied"
-    assert body["_authz"]["resource"] == 'Order::"o-1"'
+    assert body["_authz"]["resource"] == 'Order::"ord-0003"'
 
 
 @pytest.mark.integration
 async def test_the_multi_hop_read_the_mcp_readme_showcases() -> None:
-    """The README — "Four hops, resolved by Cedar": `-> False o-1`, then `-> allow`."""
+    """The README — "Four hops, resolved by Cedar": `-> False ord-0003`, then `-> allow`."""
     async with serving() as client:
-        result = await client.call_tool("read_order", {"order_id": "o-1"}, meta=ALICE)
+        result = await client.call_tool("read_order", {"order_id": "ord-0003"}, meta=ALICE)
 
     body = body_of(result)
     assert result.is_error is not True
-    assert body["order_id"] == "o-1"
+    assert body["order_id"] == "ord-0003"
     assert body["_authz"]["decision"] == "allow"
 
 
@@ -1036,7 +1075,7 @@ async def test_severing_one_edge_does_what_the_mcp_readme_says_it_does() -> None
     graph, so the read was lost because the relationship was, and not because she was.
     """
     async with serving(severed=True) as severed:
-        refused = await severed.call_tool("read_order", {"order_id": "o-1"}, meta=ALICE)
+        refused = await severed.call_tool("read_order", {"order_id": "ord-0003"}, meta=ALICE)
         listed = await severed.list_tools(meta=ALICE)
         still_allowed = await severed.call_tool("search_orders", {}, meta=ALICE)
 
@@ -1152,7 +1191,7 @@ def test_the_fastmcp_module_docstring_example_wires_a_server_as_written() -> Non
     sentrykit.install(MCP_POLICY_TEXT, grant_store=store)
     server: MCPServer = MCPServer("orders")
 
-    @mcp_governed_tool(server, action='Action::"orders.read"', resource='Order::"o-1"')
+    @mcp_governed_tool(server, action='Action::"orders.read"', resource='Order::"ord-0003"')
     def read_order(order_id: str, limit: int = 10) -> dict[str, object]:
         """Read an order."""
         return {"order_id": order_id, "limit": limit}
@@ -1242,8 +1281,10 @@ async def test_the_filtering_guarantee_the_agents_page_states_as_an_iff_holds_bo
     async with serving() as client:
         alice_manifest = [tool.name for tool in (await client.list_tools(meta=ALICE)).tools]
         bob_manifest = [tool.name for tool in (await client.list_tools(meta=BOB)).tools]
-        hidden_called_anyway = await client.call_tool("read_order", {"order_id": "o-1"}, meta=BOB)
-        offered_and_run = await client.call_tool("read_order", {"order_id": "o-1"}, meta=ALICE)
+        hidden_called_anyway = await client.call_tool(
+            "read_order", {"order_id": "ord-0003"}, meta=BOB
+        )
+        offered_and_run = await client.call_tool("read_order", {"order_id": "ord-0003"}, meta=ALICE)
 
     assert "read_order" in alice_manifest
     assert offered_and_run.is_error is not True

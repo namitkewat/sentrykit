@@ -193,7 +193,7 @@ def build_agent() -> Agent[Caller, str]:
     return agent
 
 
-result = await agent.run("what is on order o-1?", deps=Caller(principal="alice"))
+result = await agent.run("what is on order ord-0003?", deps=Caller(principal="alice"))
 ```
 
 ### On-behalf-of is not a special mechanism
@@ -318,7 +318,7 @@ closure; nothing in sentrykit walks the chain, and nothing in the model is asked
 
 Three things follow, and the example demonstrates each:
 
-* **Allowed.** Alice's `read_order("o-1")` succeeds, through edges no policy names.
+* **Allowed.** Alice's `read_order("ord-0003")` succeeds, through edges no policy names.
 * **Denied when the edge is absent.** Bob's chain is just as long and lands on a different
   project, so the same call is refused — and `read_order` is not in his manifest.
 * **Denied when the edge is severed.** Detach the team from its division, change nothing else,
@@ -404,8 +404,8 @@ This is what `run-agent` prints. The MCP server prints the same 22 flows in its 
   4  alice  search_orders(region='cn', limit=5)                          narrowed: region='cn' rejected (allow-set, alice-region) -> region='eu'
   5  alice  search_orders(limit=500, status='open')                      narrowed: limit=500 rejected (maximum, alice-limit) -> limit=10; defaulted: region='eu'
   6  dana   search_orders(limit=500, status='open')                      narrowed: limit=500 rejected (maximum, support-may-search) -> limit=25; defaulted: region='eu'
-  7  alice  read_order(order_id='o-1')                                   allowed
-  8* bob    read_order(order_id='o-1')                                   denied: The policy denied action Action::"orders.read".
+  7  alice  read_order(order_id='ord-0003')                              allowed
+  8* bob    read_order(order_id='ord-0003')                              denied: The policy denied action Action::"orders.read".
   9  bob    export_orders(fmt='csv')                                     allowed
  10  bob    export_orders(scope='open')                                  defaulted: fmt='csv'
  11  bob    export_orders(fmt='xml', scope='open')                       narrowed: fmt='xml' rejected (deny-set, bob-fmt) -> fmt='csv'
@@ -418,8 +418,8 @@ This is what `run-agent` prints. The MCP server prints the same 22 flows in its 
  18  alice  issue_refund(order_id='ord-0007', amount=5000, region='eu')  denied: The policy denied action Action::"refunds.issue".
  19  dana   issue_refund(order_id='ord-0007', amount=5000, region='eu')  allowed
  20  alice  issue_refund(order_id='refund-me', amount=100, region='eu')  DefaultUnavailable: Argument 'order_id' is required and no policy default is configured.
- 21  dana   approve_refund(refund_id='rf-1')                             allowed
- 22* alice  approve_refund(refund_id='rf-1')                             denied: The policy denied action Action::"refunds.approve".
+ 21  dana   approve_refund(refund_id='rf-0002')                          allowed
+ 22* alice  approve_refund(refund_id='rf-0002')                          denied: The policy denied action Action::"refunds.approve".
 ```
 
 A starred row is a tool hidden from that principal's manifest, so no model could have proposed

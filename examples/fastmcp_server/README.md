@@ -23,6 +23,12 @@ distribution does not import against mcp 2.0 and is not used here.
 | `service.py` | The eight `@protect`-ed callables. No MCP, no request object, no model |
 | `server.py` | `create_server()`: settings, grants, the policy directory, the provider, `governed_tool` registration, `protect_server` — plus the self-drive |
 
+Those callables do real work: they read and write [`examples.desk`](../desk), a seeded SQLite
+orders desk that takes no principal and imports nothing from sentrykit. That is what makes
+narrowing legible rather than merely reported — a `limit` refilled with 10 brings back ten
+orders, and a caller refused `region="cn"` is left holding the orders of the region policy gave
+them instead of a field that says `eu`.
+
 Policy logic lives in files that get reviewed. Grants live in a store an admin surface may
 mutate. `install()` takes `policy_source=` **or** `policies=`, never both, so moving to real
 files moves *all* the policy text out of Python:
@@ -40,7 +46,7 @@ install(
 
 | Principal | Role | Team | May |
 | --- | --- | --- | --- |
-| `alice` | `support` | `eu-support` | search and brief orders, read `Order::"o-1"` (**relationship**), issue refunds up to the desk limit |
+| `alice` | `support` | `eu-support` | search and brief orders, read `Order::"ord-0003"` (**relationship**), issue refunds up to the desk limit |
 | `bob` | `auditor` | `us-support` | export orders — but never `fmt="pdf"` |
 | `dana` | `admin` | `eu-support` | everything support may do, plus approve refunds and exceed the desk limit |
 
@@ -110,6 +116,12 @@ ambient access token.
 
 The server calls `configure(verbosity="verbose")` so the envelope carries processed values,
 applied defaults and rejection reasons. A production service would leave it at `summary`.
+
+The self-drive resets the desk before it starts, because several flows **write**: a permitted
+refund books a row with a freshly allocated id, and an export books a job. Starting from
+identical rows is what makes two runs agree, and what makes the ids it prints worth quoting.
+`create_server()` resets nothing — a server that emptied its database on startup would be a
+poor example of anything.
 
 ## Things to try
 
@@ -190,6 +202,18 @@ Both values are in `defaults_applied` and neither is in `rejected`, which is the
 saying *the model chose none of this*. That distinction is the difference between a model that
 can report honestly on what it did and one that cannot.
 
+Those two values then went to the database, so the result carries ten real orders:
+
+```python
+print(result.structured_content["count"])
+# -> 10
+print(result.structured_content["orders"][0])
+# -> {'order_id': 'ord-0003', 'region': 'eu', 'status': 'open', 'customer': 'Marta Rossi', 'total': 93500, 'items': 2}
+```
+
+`limit` is therefore readable twice over — as the number the call ran with, and as the number of
+rows it brought back — and the two agree because the second was produced by the first.
+
 ### Reject-and-refill, from an allow-set
 
 `cn` is not in alice's allow-set. It is **rejected**, and her own default fills the gap so the
@@ -243,6 +267,10 @@ Note the `policy` on the rejection: `support-may-search`, the reviewed file — 
 names the grant instead. Grants filter first, so whichever bound is tighter is the one that
 reports.
 
+She also gets twenty-five rows where alice's identical proposal got ten, which is the whole
+point of putting a database behind these calls: two grants over one request are two different
+answers, not one answer with two different numbers reported beside it.
+
 ### Four hops, resolved by Cedar
 
 ```cedar
@@ -258,23 +286,30 @@ That policy names **only the far end of the chain**. Alice reaches it as
 
 ```
 User::"alice" -> Team::"eu-support" -> Division::"emea" -> Project::"orders-eu"
-                                       Order::"o-1"     -> Project::"orders-eu"
+                                       Order::"ord-0003"     -> Project::"orders-eu"
 ```
 
 and **Cedar walks every one of those edges itself.** No application code resolves the
 relationship, no model infers it, and there is no ladder of `if` statements approximating it:
 
 ```python
-result = await client.call_tool("read_order", {"order_id": "o-1"}, meta=ALICE)
+result = await client.call_tool("read_order", {"order_id": "ord-0003"}, meta=ALICE)
 print(result.is_error, result.structured_content["_authz"]["decision"])
 # -> False allow
-result = await client.call_tool("read_order", {"order_id": "o-1"}, meta=BOB)
+result = await client.call_tool("read_order", {"order_id": "ord-0003"}, meta=BOB)
 print(result.is_error, result.structured_content["error"])
 # -> True AuthzDenied
 ```
 
 Bob's chain is exactly as long and lands on `Project::"orders-us"`, so he is refused without
 any policy naming him.
+
+Alice's result is the order in full — customer, one-line address, priced lines and shipment —
+beside `'found': True`. An id the desk does not hold comes back as `{'order_id': …, 'found':
+False}` rather than raising, and that choice is about this boundary in particular: mcp turns any
+exception out of a tool body into an error result, which is the same shape a refusal has. A row
+that is not there and a call that was refused are two different answers, and a tool that
+reported them identically would cost the model the one distinction it most needs.
 
 ### A policy that reads the proposed argument
 
@@ -311,6 +346,35 @@ print(result.structured_content["_authz"]["defaults_applied"])
 # -> {'fmt': 'csv'}
 ```
 
+### What a tool body knows that the model does not
+
+Every one of those calls books a job, and the job carries a name the model never wrote:
+
+```python
+result = await client.call_tool("export_orders", {"fmt": "csv"}, meta=BOB)
+print(result.structured_content["requested_by"], result.structured_content["region"])
+# -> bob eu
+print(result.structured_content["rows"])
+# -> 81
+```
+
+The result also carries a `job_id` the desk allocated, which counts on from the jobs already
+stored — so the self-drive resets before it prints one and these snippets do not promise a
+particular handle.
+
+`export_orders(fmt, scope="open")` has no parameter for `requested_by`. The body reads the
+ambient principal with `current_principal()`, so the stored row records the human the agent is
+acting for — and because it is not an argument, the model can neither see that name nor propose
+a different one. That is the mechanism worth copying: a service layer learns who it is acting
+for without taking a parameter, without being handed a request, and without importing a
+framework to ask. `region` is the stated `EXPORT_REGION` constant, since no argument carries one
+and borrowing the `region` rule from `orders.search` would apply a rule about searching to an
+export.
+
+The stored `scope` and `region` are what make the handle worth having: the job remembers the
+narrowing it was created under, so whoever presents the id later can be held to it rather than
+trusted about it.
+
 ### Two arguments that are only wrong together
 
 `no-large-cross-region-refunds` forbids a large refund booked outside the EU. Neither value is
@@ -342,7 +406,16 @@ print(result.structured_content["amount"])
 # -> 50
 print(result.structured_content["_authz"]["rejected"][0]["policy"])
 # -> alice-amount
+print(result.structured_content["status"])
+# -> pending
 ```
+
+The refund row the desk wrote carries the **50**, which is the part worth dwelling on: the side
+effect that really happened is the one policy settled on, not the one the caller proposed. Its
+`refund_id` is allocated by the desk, so it counts on from the refunds already there — which is
+why the self-drive resets first and these snippets do not promise a particular id. It is written
+`pending` because booking a refund and approving one are two calls under two different policies,
+and a row that waits between them is what lets the next section show the second decision.
 
 Push past the desk limit and the *gate* refuses instead — by a `forbid` that reads the proposed
 `amount` **and** the principal at once:
@@ -406,11 +479,17 @@ because the one that failed had no answer available.
 ```python
 print((await client.call_tool("search_orders", {}, meta=BOB)).is_error)
 # -> True
-print((await client.call_tool("approve_refund", {"refund_id": "rf-1"}, meta=DANA)).is_error)
+print((await client.call_tool("approve_refund", {"refund_id": "rf-0002"}, meta=DANA)).is_error)
 # -> False
-print((await client.call_tool("approve_refund", {"refund_id": "rf-1"}, meta=ALICE)).is_error)
+print((await client.call_tool("approve_refund", {"refund_id": "rf-0002"}, meta=ALICE)).is_error)
 # -> True
 ```
+
+Dana's answer is the settled refund, carrying `'approved_by': 'dana'` — the desk's admin *of
+record*, resolved from its own roster, because the desk is never told who called it. Which
+principal was authorized to approve this is in the audit trail instead, where it cannot drift
+out of step with the decision that permitted it. Approving twice is not an error and does not
+change the approver, and a refund id the desk does not hold comes back as `'found': False`.
 
 These are the refusals that **name nothing**. No permit reaches bob for `orders.search`, and
 none reaches alice for `refunds.approve`, so no policy was determining, the request falls
@@ -454,11 +533,11 @@ Bob ignores the manifest and calls a hidden tool by name. He is refused exactly 
 never been hidden:
 
 ```python
-result = await client.call_tool("read_order", {"order_id": "o-1"}, meta=BOB)
+result = await client.call_tool("read_order", {"order_id": "ord-0003"}, meta=BOB)
 print(result.is_error, result.structured_content["error"])
 # -> True AuthzDenied
 print(result.structured_content["_authz"]["resource"])
-# -> Order::"o-1"
+# -> Order::"ord-0003"
 ```
 
 ### Break one edge and the access goes with it
@@ -470,7 +549,7 @@ Alice keeps her team and her role, the policy keeps its wording, and only
 async with Client(create_server(severed=True)) as client:
     print([tool.name for tool in (await client.list_tools(meta=ALICE)).tools])
     # -> ['desk_status', 'brief_orders', 'search_orders', 'issue_refund']
-    result = await client.call_tool("read_order", {"order_id": "o-1"}, meta=ALICE)
+    result = await client.call_tool("read_order", {"order_id": "ord-0003"}, meta=ALICE)
     print(result.is_error, result.structured_content["error"])
     # -> True AuthzDenied
     result = await client.call_tool("search_orders", {}, meta=ALICE)

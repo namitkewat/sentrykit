@@ -64,9 +64,9 @@ def build_grants() -> InMemoryGrantStore:
         Entity(EntityRef("Division", "amer"), parents=(EntityRef("Project", "orders-us"),)),
         Entity(EntityRef("Team", "eu-support"), parents=(EntityRef("Division", "emea"),)),
         Entity(EntityRef("Team", "us-support"), parents=(EntityRef("Division", "amer"),)),
-        # The resource end of the same chain. Reading o-1 is a question about two walks
+        # The resource end of the same chain. Reading ord-0003 is a question about two walks
         # meeting at Project::"orders-eu", not about an access list on the order.
-        Entity(EntityRef("Order", "o-1"), parents=(EntityRef("Project", "orders-eu"),)),
+        Entity(EntityRef("Order", "ord-0003"), parents=(EntityRef("Project", "orders-eu"),)),
     ):
         store.add_entity(entity)
 

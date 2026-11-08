@@ -331,7 +331,7 @@ async def test_the_manifest_is_per_principal_and_hiding_is_not_the_enforcement()
     async with serving() as caller:
         alice_manifest = await caller.manifest(user="alice")
         bob_manifest = await caller.manifest(user="bob")
-        bob_direct = await caller.call("read_order", {"order_id": "o-1"}, user="bob")
+        bob_direct = await caller.call("read_order", {"order_id": "ord-0003"}, user="bob")
 
     assert "read_order" in alice_manifest
     assert "read_order" not in bob_manifest
@@ -374,16 +374,16 @@ async def test_a_four_hop_relationship_permits_a_call_no_policy_names_directly()
     """User → Team → Division → Project ∋ Order, resolved by Cedar and by nothing else.
 
     The permitting policy names ``Project::"orders-eu"`` at both ends and mentions neither
-    alice nor ``Order::"o-1"``. This is the relationship resolution sentrykit offloads to
+    alice nor ``Order::"ord-0003"``. This is the relationship resolution sentrykit offloads to
     policy rather than letting a model infer it or scattering it across ``if`` statements.
     """
     async with serving() as caller:
-        result = await caller.call("read_order", {"order_id": "o-1"}, user="alice")
+        result = await caller.call("read_order", {"order_id": "ord-0003"}, user="alice")
         manifest = await caller.manifest(user="alice")
 
     body = payload_of(result)
     assert result.is_error is not True
-    assert body["order_id"] == "o-1"
+    assert body["order_id"] == "ord-0003"
     assert authz_of(result)["decision"] == "allow"
     assert "read_order" in manifest
 
@@ -398,7 +398,7 @@ async def test_cutting_one_edge_of_the_chain_denies_and_hides_the_same_call() ->
     granted the call.
     """
     async with serving(severed=True) as caller:
-        result = await caller.call("read_order", {"order_id": "o-1"}, user="alice")
+        result = await caller.call("read_order", {"order_id": "ord-0003"}, user="alice")
         manifest = await caller.manifest(user="alice")
 
     assert result.is_error is True
@@ -431,7 +431,7 @@ async def test_a_principal_on_the_other_branch_never_reaches_the_order() -> None
     relationships do not reach the resource, on a graph where alice's do.
     """
     async with serving() as caller:
-        result = await caller.call("read_order", {"order_id": "o-1"}, user="bob")
+        result = await caller.call("read_order", {"order_id": "ord-0003"}, user="bob")
         manifest = await caller.manifest(user="bob")
 
     assert result.is_error is True

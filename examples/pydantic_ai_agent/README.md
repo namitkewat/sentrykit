@@ -29,6 +29,12 @@ tool schemas, not in the arguments it proposes.
 | `service.py` | The eight `@protect`-ed callables. No `RunContext`, no `deps`, no LLM |
 | `agent.py` | `build_agent()`: settings, grants, policy, provider, `governed_tool` — plus the deterministic drivers `offered_tools`, `propose`, `dispatch` and the printed demonstration |
 
+The callables in `service.py` do real work: they read and write [`examples.desk`](../desk), a
+seeded SQLite orders desk that takes no principal and imports nothing from sentrykit. That is
+what makes narrowing legible rather than merely reported — a `limit` refilled with 10 brings
+back ten orders, and a caller refused `region="cn"` is left holding the orders of the region
+policy gave them instead of a field that says `eu`.
+
 Policy logic is loaded from the directory, never from a string:
 
 ```python
@@ -52,7 +58,7 @@ that there is one place policy logic lives.
 
 `Role::"admin"` has `Role::"support"` as a parent, so dana satisfies `principal in
 Role::"support"` without a second grant. `Team::"eu-support"` → `Division::"emea"` →
-`Project::"orders-eu"`, and `Order::"o-1"` hangs off the same project — which is how
+`Project::"orders-eu"`, and `Order::"ord-0003"` hangs off the same project — which is how
 `read_order` is decided without either side of the permit naming a person.
 
 Their argument rules, all of them *data* in the grant store:
@@ -88,6 +94,12 @@ Nothing is wired at import: there is no module-level `agent = build_agent()`, be
 `configure()` and `install()` mutate process-global state and `default_model()` probes the
 network, and importing a module should do neither.
 
+`demonstrate()` resets the desk before it drives anything, because several flows **write**: a
+permitted refund books a row with a freshly allocated id, and an export books a job. Starting
+from identical rows is what makes two runs agree and the ids below worth quoting. Building the
+agent resets nothing — a service that emptied its database on startup would be a poor example
+of anything.
+
 ### The optional live model
 
 The free-form section runs on a local [Ollama](https://ollama.com) daemon when there is one —
@@ -109,9 +121,9 @@ the arguments itself:
 model: OpenAIChatModel (gemma4:e4b)
 
 alice : proposed brief_orders
-        answered Based on the information available about the orders on this desk: * **There are 3 open orders.** * **There are 11 closed orders.**
+        answered The desk has 198 orders open, spread across three regions -- 81 in the EU, 54 in the UK and 63 in the US. The oldest one still open is ord-0319.
 bob   : proposed export_orders, export_orders
-        answered I found that 42 orders were exported from your open scope in CSV format. The export was successfully processed and allowed according to the current policy.
+        answered I started a CSV export of the open orders. It covers 81 orders and came back as job exp-0004.
 ```
 
 With none, `pydantic_ai.models.test.TestModel` drives the same tools with generated arguments
@@ -207,7 +219,7 @@ enforcement is completely intact.
 
 ```python
 asyncio.run(propose(agent, Caller("alice"), "desk_status"))
-# {'desk': 'orders', 'open': True,
+# {'desk': 'orders', 'open': True, 'open_orders': 198, 'pending_refunds': 4,
 #  '_authz': {'decision': 'allow',
 #             'action': 'Action::"examples.pydantic_ai_agent.service.desk_status"',
 #             'resource': 'Resource::"examples.pydantic_ai_agent.service.desk_status"',
@@ -221,12 +233,21 @@ registered. Two decisions, two envelopes, one tool call:
 
 ```python
 asyncio.run(propose(agent, Caller("alice"), "brief_orders"))
-# {'brief': {'open': 3, 'closed': 11,
+# {'brief': {'open_orders': 198, 'regions': {'eu': 81, 'uk': 54, 'us': 63},
+#            'oldest_open': 'ord-0319',
 #            '_authz': {'decision': 'allow', 'action': 'Action::"orders.summarize"',
 #                       'resource': 'Tool::"orders"', 'principal': 'User::"alice"'}},
+#  'open_orders': 198,
+#  'headline': '198 open orders across 3 regions, oldest ord-0319',
+#  'orders': ['ord-0001', 'ord-0003', 'ord-0006'],
 #  '_authz': {'decision': 'allow', 'action': 'Action::"orders.brief"',
 #             'resource': 'Tool::"orders"', 'principal': 'User::"alice"'}}
 ```
+
+It names three ids and reports the true total beside them, so the distance between the whole
+order book and what was served is in the answer itself. Three is `BRIEF_LIMIT` in
+`service.py`: `brief_orders` has no parameter to put it in, and adding one would change what
+the model is told it may propose.
 
 The gate is on the *call*, not on the registration: no model was ever told `summarize_orders`
 exists, and it is decided anyway. Two decisions means two audit records at whatever sink is
@@ -241,8 +262,10 @@ value the call runs with came from alice's grants:
 
 ```python
 asyncio.run(propose(agent, Caller("alice"), "search_orders"))
-# {'region': 'eu', 'limit': 10, 'status': 'open',
-#  'orders': ['order-0', 'order-1', 'order-2'],
+# {'region': 'eu', 'limit': 10, 'status': 'open', 'count': 10,
+#  'orders': [{'order_id': 'ord-0003', 'region': 'eu', 'status': 'open',
+#              'customer': 'Marta Rossi', 'total': 93500, 'items': 2},
+#             ...],   # ten rows, lowest id first
 #  '_authz': {'decision': 'allow', 'action': 'Action::"orders.search"',
 #             'resource': 'Tool::"orders"', 'principal': 'User::"alice"',
 #             'processed': {'status': 'open', 'region': 'eu', 'limit': 10},
@@ -252,6 +275,9 @@ asyncio.run(propose(agent, Caller("alice"), "search_orders"))
 `status` is not in `defaults_applied`, because it was never absent: it has a Python default,
 nobody's policy has an opinion about it, and Python answered for it.
 
+`limit` is readable twice over in that result — as the number the call ran with, and as the
+number of rows it brought back. The two agree because the second was produced by the first.
+
 ### 4 — an allow-set, rejected and refilled
 
 `cn` is not in alice's allow-set, so it is thrown away and her own default takes its place. The
@@ -259,8 +285,8 @@ call still succeeds and the envelope says exactly what happened:
 
 ```python
 asyncio.run(propose(agent, Caller("alice"), "search_orders", region="cn", limit=5))
-# {'region': 'eu', 'limit': 5, 'status': 'open',
-#  'orders': ['order-0', 'order-1', 'order-2'],
+# {'region': 'eu', 'limit': 5, 'status': 'open', 'count': 5,
+#  'orders': [...],   # five EU orders -- the region she was given, not the one she asked for
 #  '_authz': {'decision': 'allow', 'action': 'Action::"orders.search"',
 #             'resource': 'Tool::"orders"', 'principal': 'User::"alice"',
 #             'processed': {'limit': 5, 'status': 'open', 'region': 'eu'},
@@ -286,8 +312,8 @@ her only one. She proposes 500. The ceiling is 100. She runs with **25** — her
 
 ```python
 asyncio.run(propose(agent, Caller("dana"), "search_orders", limit=500, status="open"))
-# {'region': 'eu', 'limit': 25, 'status': 'open',
-#  'orders': ['order-0', 'order-1', 'order-2'],
+# {'region': 'eu', 'limit': 25, 'status': 'open', 'count': 25,
+#  'orders': [...],   # twenty-five rows, where alice's identical call brought back ten
 #  '_authz': {'decision': 'allow', 'action': 'Action::"orders.search"',
 #             'resource': 'Tool::"orders"', 'principal': 'User::"dana"',
 #             'processed': {'status': 'open', 'limit': 25, 'region': 'eu'},
@@ -304,9 +330,9 @@ a rejection from her own grant names the grant instead.
 ### 7 and 8 — a relationship, resolved by Cedar
 
 ```python
-asyncio.run(propose(agent, Caller("alice"), "read_order", order_id="o-1"))
+asyncio.run(propose(agent, Caller("alice"), "read_order", order_id="ord-0003"))
 # -> allowed
-asyncio.run(dispatch(agent, Caller("bob"), read_order, order_id="o-1"))
+asyncio.run(dispatch(agent, Caller("bob"), read_order, order_id="ord-0003"))
 # -> denied: The policy denied action Action::"orders.read".
 ```
 
@@ -314,6 +340,13 @@ Same call, same argument, same chain length. Nothing in the permit names either 
 alice's team rolls up to `Project::"orders-eu"` and bob's to `Project::"orders-us"`.
 `read_order` is hidden from bob's manifest, so the second one has to go around the model —
 which is the next section's point.
+
+Alice's answer is the order in full — customer, one-line address, priced lines and shipment —
+beside `'found': True`. An id the desk does not hold comes back as `{'order_id': …, 'found':
+False}` instead of raising, because an exception out of a tool body reaches the model as a
+failed call, which is exactly the shape a refusal has. A row that is not there and a call that
+was refused are two different answers, and blurring them would cost the model the one
+distinction it most needs.
 
 ### 9, 10, 11 — one argument, three fates
 
@@ -329,6 +362,29 @@ asyncio.run(propose(agent, Caller("bob"), "export_orders", fmt="xml", scope="ope
 A tool call carries the advertised schema's defaults, so `scope` arrives even when the model
 did not propose it. That is why the third call above still narrows: `fmt` is rejected, `scope`
 survives, and a rejected argument is refilled alongside whatever survived.
+
+All three book a job, and the job is worth looking at — this is what the first of them returned:
+
+```python
+# {'job_id': 'exp-0004', 'fmt': 'csv', 'scope': 'open', 'region': 'eu', 'rows': 81,
+#  'requested_by': 'bob', '_authz': {...}}
+```
+
+The desk allocates `job_id`, so it counts on from the jobs already stored; the other two book
+`exp-0005` and `exp-0006`.
+
+`requested_by` is **not** an argument. `export_orders(fmt, scope="open")` has no parameter for
+it, so the body reads the ambient principal with `current_principal()` — which means the stored
+row records the human the agent was acting for, and the model can neither see that name nor
+influence it. That is the mechanism worth copying: a service layer can learn who it is acting
+for without taking a parameter, without being handed a request, and without importing a
+framework to ask. `region` is the stated `EXPORT_REGION` constant, because no argument carries
+one and borrowing the `region` rule from `orders.search` would apply a rule about searching to
+an export.
+
+The stored `scope` and `region` are what make the handle worth having: the job remembers the
+narrowing it was created under, so whoever presents the id later can be held to it rather than
+trusted about it.
 
 ### 12 — narrowing refines a proposal, it does not rescue one
 
@@ -425,7 +481,8 @@ could say that; Cedar evaluates the whole request and says it in four lines.
 ```python
 asyncio.run(propose(agent, Caller("alice"), "issue_refund",
                     order_id="ord-0007", amount=900, region="eu"))
-# {'order_id': 'ord-0007', 'amount': 50, 'region': 'eu', 'refund_id': 'rf-1',
+# {'refund_id': 'rf-0016', 'order_id': 'ord-0007', 'amount': 50, 'region': 'eu',
+#  'status': 'pending',
 #  '_authz': {'decision': 'allow', 'action': 'Action::"refunds.issue"',
 #             'resource': 'Tool::"refunds"', 'principal': 'User::"alice"',
 #             'processed': {'order_id': 'ord-0007', 'region': 'eu', 'amount': 50},
@@ -438,6 +495,13 @@ asyncio.run(propose(agent, Caller("alice"), "issue_refund",
 900 is within the desk's limit of 1000, so the gate permitted the call. It is above alice's own
 750, so the argument layer rejected the value and refilled with her default of 50. Two layers,
 two different questions, one call.
+
+The row the desk wrote carries the **50**, which is the part worth dwelling on: the side effect
+that really happened is the one policy settled on, not the one the model proposed. It is also
+the first snippet here with a visible side effect, so the id depends on what came before it —
+the desk is seeded with fourteen refunds, the allowed call in 15 above booked `rf-0015`, and
+this one books the next. `run-agent` resets the desk first, so its own ids are the same on
+every run.
 
 ### 18 and 19 — the desk limit, and who is exempt from it
 
@@ -477,14 +541,20 @@ inventing one would refund the wrong order. A pattern is where you *want* the re
 ### 21 and 22 — the admin action
 
 ```python
-asyncio.run(propose(agent, Caller("dana"), "approve_refund", refund_id="rf-1"))
+asyncio.run(propose(agent, Caller("dana"), "approve_refund", refund_id="rf-0002"))
 # -> allowed
-asyncio.run(dispatch(agent, Caller("alice"), approve_refund, refund_id="rf-1"))
+asyncio.run(dispatch(agent, Caller("alice"), approve_refund, refund_id="rf-0002"))
 # -> denied: The policy denied action Action::"refunds.approve".
 ```
 
 `approve_refund` is in dana's manifest and absent from alice's, because alice would be refused
 whatever she passed — which is exactly when a tool is hidden.
+
+Dana's answer is the settled refund, including `'approved_by': 'dana'`. That name is the desk's
+admin *of record*, resolved from its own roster — the desk is never told who called it. Which
+principal was authorized to approve this is in the audit trail instead, where it cannot drift
+out of step with the decision that permitted it. Approving twice is not an error and does not
+change the approver, and an id the desk does not hold comes back as `'found': False`.
 
 ## The invariant: hidden **if and only if** denied
 

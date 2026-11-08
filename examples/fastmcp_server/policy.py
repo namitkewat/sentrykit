@@ -47,7 +47,7 @@ def build_grants(*, severed: bool = False) -> InMemoryGrantStore:
     Args:
         severed: When true, ``Team::"eu-support"`` is seeded with **no parent division**, and
             nothing else changes. Alice keeps her team, the policy keeps its wording, and her
-            read of ``Order::"o-1"`` stops being authorized — because the relationship *was*
+            read of ``Order::"ord-0003"`` stops being authorized — because the relationship *was*
             the authorization.
 
     Returns:
@@ -80,7 +80,7 @@ def build_grants(*, severed: bool = False) -> InMemoryGrantStore:
             parents=() if severed else (EntityRef("Division", "emea"),),
         ),
         Entity(EntityRef("Team", "us-support"), parents=(EntityRef("Division", "amer"),)),
-        Entity(EntityRef("Order", "o-1"), parents=(EntityRef("Project", "orders-eu"),)),
+        Entity(EntityRef("Order", "ord-0003"), parents=(EntityRef("Project", "orders-eu"),)),
     )
     for entity in graph:
         store.add_entity(entity)
@@ -181,7 +181,7 @@ def _grant_bob(store: InMemoryGrantStore) -> None:
     bob = EntityRef("User", "bob")
     store.grant(GrantSpec(principal=bob, kind="role", subject="auditor"))
     # Bob's chain is exactly as long as alice's. It simply lands on the other project, which
-    # is why he is refused ``Order::"o-1"`` without any policy naming him.
+    # is why he is refused ``Order::"ord-0003"`` without any policy naming him.
     store.grant(GrantSpec(principal=bob, kind="parent", subject='Team::"us-support"'))
     # deny-set + default. A deny-set names what is out; everything else is in. ``xml`` is
     # rejected and ``csv`` refills the gap, so the export still happens — in a format bob is

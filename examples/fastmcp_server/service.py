@@ -17,6 +17,29 @@ envelope intact. A bare ``@server.tool()`` over ``@protect`` would lose that env
 :func:`brief_orders`, and it is decided on its own terms all the same — a second decision, a
 second audit record, from the same ambient principal.
 
+## Every body queries a real database
+
+The bodies read and write :mod:`examples.desk`, a seeded SQLite orders desk, and that is what
+makes the argument layer legible rather than merely reported. A ``limit`` refilled with 10
+comes back with ten real orders; a ``region`` the caller was not entitled to leaves them looking
+at a different set of rows, with different customers and different totals. The number in the
+envelope and the answer in the result agree because the answer was produced by the number.
+
+The desk takes no principal, imports nothing from the authorization layer and never asks
+whether a call is permitted — which is the separation an application should be able to keep.
+By the time one of these bodies runs, the decision has been taken and the arguments it was
+given are the ones policy settled on.
+
+## A row that is not there is not a refusal
+
+The desk has already decided which misses are answers and which are failures: a read of an id
+it does not hold comes back as ``None``, and a *write* against one raises. These bodies follow
+that judgement rather than overruling it — a ``None`` is reported as ``found: False`` and the
+raise is left to propagate — and at this boundary that is worth being deliberate about. mcp
+turns any exception out of a tool body into an error result, which is the same shape a refusal
+has, so converting "there is no such order" into one would blur the single distinction a model
+most needs: policy said no, versus nothing is there.
+
 ## Where a Python default belongs, and where it does not
 
 ``status`` and ``scope`` carry Python defaults. ``region``, ``limit``, ``fmt``, ``amount`` and
@@ -39,7 +62,41 @@ Run the whole thing with `pixi run -e agent run-mcp`.
 
 from __future__ import annotations
 
-from sentrykit import protect
+from typing import Final
+
+from examples import desk
+from sentrykit import current_principal, protect
+
+# The desk is reached through the module rather than by importing its functions, for one
+# concrete reason: it exports ``approve_refund`` too, and a bare import of that name would be
+# shadowed by the protected callable below — leaving the tool body calling itself.
+
+BRIEF_LIMIT: Final = 3
+"""How many order ids a briefing names.
+
+Fixed here rather than taken as an argument, because :func:`brief_orders` has no parameter to
+put it in and adding one would change what the model is told it may propose. Three keeps a
+briefing down to a line, and the true total travels beside the ids, so the gap between the
+whole order book and what was named is visible in the answer itself.
+"""
+
+EXPORT_REGION: Final = "eu"
+"""Which region an export covers, since nothing in :func:`export_orders` carries one.
+
+A stated constant rather than something inferred, and the distinction matters. The grants here
+bound ``region`` on searches and on refunds, and an argument constraint governs the one action
+it names; borrowing the search rule would apply a rule about searching to an export. So the
+desk's home region is said once, here, where a reader can see that it is this example's
+decision and not policy's.
+"""
+
+UNATTRIBUTED: Final = "unattributed"
+"""What an export is booked against when no principal is ambient.
+
+Named rather than guessed at, because it is out of reach through the gate: a call the engine
+let through has a principal, so a body that finds none was never authorized and has no business
+inventing a name for whoever ran it.
+"""
 
 
 # THE BARE FORM. No ``action=`` and no ``resource=``, so sentrykit derives both from the
@@ -56,9 +113,10 @@ def desk_status() -> dict[str, object]:
     """Report whether the desk is open. The one action nobody is gated on.
 
     Returns:
-        The desk's status.
+        The desk's name, whether anybody is staffing it, and the two queues worth seeing at a
+        glance: open orders, and refunds waiting on an approval.
     """
-    return {"desk": "orders", "open": True}
+    return desk.desk_counts()
 
 
 # Protected, and NOT registered as a tool anywhere in this example. A model cannot propose it;
@@ -71,9 +129,10 @@ def summarize_orders() -> dict[str, object]:
     """Summarize the desk's open orders.
 
     Returns:
-        The summary.
+        How many orders are open, how those split across regions, and the id of the one placed
+        longest ago.
     """
-    return {"open": 3, "closed": 11}
+    return desk.order_summary()
 
 
 # The tool that calls the protected non-tool above. Two ``@protect`` decorators in one dispatch
@@ -89,8 +148,11 @@ def brief_orders() -> dict[str, object]:
 
     Returns:
         A briefing that wraps the summary the inner call was separately authorized to make.
+        ``brief`` is that summary, carrying its own envelope; beside it are ``headline``, one
+        line a caller can print as-is, the true ``open_orders`` total, and the first few open
+        order ids.
     """
-    return {"brief": summarize_orders()}
+    return {"brief": summarize_orders(), **desk.order_brief(limit=BRIEF_LIMIT)}
 
 
 # Default injection and per-principal argument filtering, both on one call.
@@ -102,7 +164,8 @@ def brief_orders() -> dict[str, object]:
 # Watch in the envelope: ``defaults_applied`` holds what the caller never chose, ``rejected``
 # holds what was refused and why, and ``processed`` holds what sentrykit actually passed. A
 # value that appears in both ``rejected`` and ``defaults_applied`` was rejected and refilled —
-# the refill is the principal's own default, never the bound that refused it.
+# the refill is the principal's own default, never the bound that refused it. Then watch the
+# rows: they are the same three values asking the database a question.
 @protect(action='Action::"orders.search"', resource='Tool::"orders"')
 def search_orders(region: str, limit: int, status: str = "open") -> dict[str, object]:
     """Search orders in one region.
@@ -113,13 +176,20 @@ def search_orders(region: str, limit: int, status: str = "open") -> dict[str, ob
         status: Which orders to look at. The caller's own choice; policy says nothing about it.
 
     Returns:
-        The search result, which the engine annotates with ``_authz`` in place.
+        The three arguments as policy settled on them, ``count``, and ``orders`` — the matching
+        rows from the desk, lowest id first, each with its region, status, customer, total in
+        minor units and number of lines. ``limit`` is therefore legible twice: as the number
+        the call ran with, and as the number of rows it brought back. A narrowed limit is a
+        shorter answer, not the same answer with a smaller number attached to it; a refilled
+        ``region`` is a different set of customers.
     """
+    orders = desk.find_orders(region=region, status=status, limit=limit)
     return {
         "region": region,
         "limit": limit,
         "status": status,
-        "orders": [f"order-{n}" for n in range(min(limit, 3))],
+        "count": len(orders),
+        "orders": orders,
     }
 
 
@@ -127,10 +197,10 @@ def search_orders(region: str, limit: int, status: str = "open") -> dict[str, ob
 # authorizes it mentions a team or a division. Alice reaches it over four hops and Cedar walks
 # every one of them; bob's chain is exactly as long and lands on the other project.
 #
-# Watch in the envelope: ``resource`` is ``Order::"o-1"`` for both principals and ``decision``
+# Watch in the envelope: ``resource`` is ``Order::"ord-0003"`` for both principals and ``decision``
 # differs. At ``debug`` verbosity, alice's ``determining_policies`` names
 # ``project-members-may-read-project-orders`` — a policy that mentions neither of them.
-@protect(action='Action::"orders.read"', resource='Order::"o-1"')
+@protect(action='Action::"orders.read"', resource='Order::"ord-0003"')
 def read_order(order_id: str) -> dict[str, object]:
     """Read one order.
 
@@ -138,9 +208,15 @@ def read_order(order_id: str) -> dict[str, object]:
         order_id: Which order to read.
 
     Returns:
-        The order.
+        The order with its customer, its shipping address, its priced lines and its shipment,
+        beside ``found: True``. ``shipment`` is ``null`` for an order not yet dispatched. An id
+        the desk does not hold comes back as ``found: False`` and nothing else — a miss the
+        desk itself answers rather than raises, reported here as what it is.
     """
-    return {"order_id": order_id, "project": "orders-eu", "total": 120}
+    order = desk.order_detail(order_id)
+    if order is None:
+        return {"order_id": order_id, "found": False}
+    return {"found": True, **order}
 
 
 # A gate that reads the proposed argument, over an argument layer that also reads it. Cedar
@@ -155,14 +231,31 @@ def read_order(order_id: str) -> dict[str, object]:
 def export_orders(fmt: str, scope: str = "open") -> dict[str, object]:
     """Export orders in one format.
 
+    Two of the things the desk stores on the job are not in this signature, which is the part
+    worth copying. ``requested_by`` is the human the agent is acting for, learned from
+    :func:`~sentrykit.current_principal` — the ambient principal the provider established at
+    the boundary. The model can neither read that name nor write it, because it is not an
+    argument, so a tool body knows whose export it is booking without taking a parameter for
+    it, without being handed a request, and without importing a framework to ask. ``region`` is
+    :data:`EXPORT_REGION`, because no argument carries one.
+
     Args:
         fmt: The export format. Decided by policy, so it declares no Python default.
         scope: Which orders to export. The caller's own choice.
 
     Returns:
-        The export result.
+        The job's handle and the four fields stored on it, plus ``rows`` — how many orders the
+        export covers. The stored ``scope`` and ``region`` are what make the handle worth
+        having: the job remembers the narrowing it was created under, so a caller presenting
+        the id later can be held to it rather than trusted about it.
     """
-    return {"fmt": fmt, "scope": scope, "exported": 42}
+    principal = current_principal()
+    return desk.start_export(
+        fmt=fmt,
+        scope=scope,
+        region=EXPORT_REGION,
+        requested_by=principal.id if principal is not None else UNATTRIBUTED,
+    )
 
 
 # Three arguments, one unconditional permit, and two reviewed ``forbid`` rules that read the
@@ -185,6 +278,9 @@ def export_orders(fmt: str, scope: str = "open") -> dict[str, object]:
 def issue_refund(order_id: str, amount: int, region: str) -> dict[str, object]:
     """Issue a refund against one order.
 
+    A **write**: each permitted call books a new row and the desk allocates its id, so two
+    calls are two refunds and a re-run is not idempotent.
+
     Args:
         order_id: The order to refund. Alice's grant constrains its shape and gives it no
             default, so a malformed one is refused rather than replaced.
@@ -192,9 +288,19 @@ def issue_refund(order_id: str, amount: int, region: str) -> dict[str, object]:
         region: Where the refund is booked.
 
     Returns:
-        The refund.
+        The refund as the desk booked it: a freshly allocated ``refund_id``, the three
+        arguments as policy settled on them, and ``status`` — ``pending``, because booking a
+        refund and approving one are two calls under two different policies. The row carries
+        the *processed* amount, which is the part worth noticing: the side effect that really
+        happened is the one policy settled on, not the one that was proposed.
+
+    Raises:
+        UnknownOrder: When the desk holds no order with that id. Refunding an order that is
+            not there is a failed call rather than an answer, which is why the desk raises
+            where a read returns nothing, and this body leaves the raise alone: deciding how a
+            domain error is rendered is the host's job, not the authorization layer's.
     """
-    return {"refund_id": "rf-1", "order_id": order_id, "amount": amount, "region": region}
+    return desk.record_refund(order_id=order_id, amount=amount, region=region)
 
 
 # The admin action, and the cheapest possible demonstration that a gate is about the principal
@@ -210,6 +316,14 @@ def approve_refund(refund_id: str) -> dict[str, object]:
         refund_id: The refund to approve.
 
     Returns:
-        The approval.
+        The settled refund beside ``found: True``, including ``approved_by``. That name is the
+        desk's admin of record and not the caller: the desk is never told who called it, and
+        which principal was authorized to approve this is in the audit trail, where it cannot
+        drift out of step with the decision that permitted it. An id the desk does not hold
+        comes back as ``found: False``. Approving an already-approved refund changes nothing
+        and keeps the approver it was settled by.
     """
-    return {"refund_id": refund_id, "approved": True}
+    approval = desk.approve_refund(refund_id)
+    if approval is None:
+        return {"refund_id": refund_id, "found": False}
+    return {"found": True, **approval}

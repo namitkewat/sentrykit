@@ -25,6 +25,11 @@ The model **proposes**. The policy **decides**. When a proposed value is not one
 may pass, it is rejected and their own default refills the gap — reject-and-refill, so the
 value the call runs with is the principal's default and never the bound that refused them.
 
+And the tools do real work: each one reads or writes a seeded SQLite orders desk, so a narrowed
+argument selects different *rows* rather than putting a different number in a report. The
+demonstration resets that desk before it starts, so the refund and export ids it prints are the
+same on every run. `build_agent()` does not touch it.
+
 ## On-behalf-of
 
 The agent process has no identity of its own. Whoever the application names in `deps` is the
@@ -62,7 +67,7 @@ from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_ai.models.test import TestModel
 from pydantic_ai.usage import RunUsage
 
-from examples import ollama
+from examples import desk, ollama
 from examples.pydantic_ai_agent.policy import POLICY_DIR, build_grants
 from examples.pydantic_ai_agent.service import (
     approve_refund,
@@ -355,8 +360,8 @@ FLOWS: tuple[Flow, ...] = (
     Flow(4, "alice", search_orders, {"region": "cn", "limit": 5}),
     Flow(5, "alice", search_orders, {"limit": 500, "status": "open"}),
     Flow(6, "dana", search_orders, {"limit": 500, "status": "open"}),
-    Flow(7, "alice", read_order, {"order_id": "o-1"}),
-    Flow(8, "bob", read_order, {"order_id": "o-1"}, mark="*"),
+    Flow(7, "alice", read_order, {"order_id": "ord-0003"}),
+    Flow(8, "bob", read_order, {"order_id": "ord-0003"}, mark="*"),
     Flow(9, "bob", export_orders, {"fmt": "csv"}),
     Flow(10, "bob", export_orders, {"scope": "open"}),
     Flow(11, "bob", export_orders, {"fmt": "xml", "scope": "open"}),
@@ -369,8 +374,8 @@ FLOWS: tuple[Flow, ...] = (
     Flow(18, "alice", issue_refund, {"order_id": "ord-0007", "amount": 5000, "region": "eu"}),
     Flow(19, "dana", issue_refund, {"order_id": "ord-0007", "amount": 5000, "region": "eu"}),
     Flow(20, "alice", issue_refund, {"order_id": "refund-me", "amount": 100, "region": "eu"}),
-    Flow(21, "dana", approve_refund, {"refund_id": "rf-1"}),
-    Flow(22, "alice", approve_refund, {"refund_id": "rf-1"}, mark="*"),
+    Flow(21, "dana", approve_refund, {"refund_id": "rf-0002"}),
+    Flow(22, "alice", approve_refund, {"refund_id": "rf-0002"}, mark="*"),
 )
 """Every flow the example prints, in the order it prints them."""
 
@@ -638,9 +643,20 @@ async def show_free_form(agent: Agent[Caller, str]) -> None:
 async def demonstrate(agent: Agent[Caller, str]) -> None:
     """Print the manifests, every flow, the ceiling case and the free-form run.
 
+    Resets the orders desk before driving anything, so the run is reproducible. Nothing else
+    here writes to it.
+
     Args:
         agent: The agent to drive.
     """
+    # Several flows WRITE: each permitted refund books a row with a freshly allocated id, and
+    # each export books a job. Starting from identical rows is what makes two runs agree — the
+    # table below is reproduced in the documentation and checked against it line for line, and
+    # "line for line" has to mean the same thing twice.
+    #
+    # ``build_agent()`` deliberately does not do this: a service that emptied its database on
+    # startup would be a poor example of anything.
+    desk.reset_desk()
     print(
         "sentrykit logs a `Argument dropped by policy` warning on every rejection. They are\n"
         "this run's own log lines arriving on stderr, one per narrowed argument below."

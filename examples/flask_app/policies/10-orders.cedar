@@ -61,7 +61,7 @@ forbid (
 ) when { context.args has fmt && context.args.fmt == "pdf" };
 
 // Relationship resolution, and the only policy here that mentions no role at all. Alice
-// reaches `Project::"orders-eu"` through Team -> Division -> Project, and `Order::"o-1"`
+// reaches `Project::"orders-eu"` through Team -> Division -> Project, and `Order::"ord-0003"`
 // reaches it through one edge of its own; Cedar walks both chains. Bob's chain is the same
 // length and ends at `Project::"orders-us"`, so the same call is refused for him with no
 // second policy written and no `if` statement anywhere in the app.

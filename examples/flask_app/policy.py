@@ -55,7 +55,7 @@ def build_grants() -> InMemoryGrantStore:
     # are what ``project-members-may-read-project-orders`` resolves:
     #
     #     User::"alice" -> Team::"eu-support" -> Division::"emea" -> Project::"orders-eu"
-    #     Order::"o-1"  -> Project::"orders-eu"
+    #     Order::"ord-0003"  -> Project::"orders-eu"
     #
     # Multi-hop and nested, resolved by the engine rather than by application code. It is a
     # capability that composes underneath the argument layer, not the headline.
@@ -74,7 +74,7 @@ def build_grants() -> InMemoryGrantStore:
         Entity(EntityRef("Division", "amer"), parents=(EntityRef("Project", "orders-us"),)),
         Entity(EntityRef("Team", "eu-support"), parents=(EntityRef("Division", "emea"),)),
         Entity(EntityRef("Team", "us-support"), parents=(EntityRef("Division", "amer"),)),
-        Entity(EntityRef("Order", "o-1"), parents=(EntityRef("Project", "orders-eu"),)),
+        Entity(EntityRef("Order", "ord-0003"), parents=(EntityRef("Project", "orders-eu"),)),
     ):
         store.add_entity(entity)
 
