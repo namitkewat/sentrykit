@@ -37,6 +37,13 @@ jobs:
           exit 1
 
       - uses: actions/checkout@v4
+        with:
+          # The whole history, not the default depth of one. `tests/unit/test_commit_history.py`
+          # re-checks every commit message against the `commit-msg` hook's own rules, because a
+          # hook only protects a machine that installed it and `--no-verify` walks around it. On
+          # a shallow clone that test can see one commit, so it skips -- and a check that
+          # reports success after inspecting nothing is worse than no check.
+          fetch-depth: 0
 
       # Runs before pixi is installed so a mismatched tag fails in seconds rather than after
       # a full environment solve and a full `check`.

@@ -36,6 +36,13 @@ jobs:
         features: [default, web, agent, all]
     steps:
       - uses: actions/checkout@v4
+        with:
+          # The whole history, not the default depth of one. `tests/unit/test_commit_history.py`
+          # re-checks every commit message against the `commit-msg` hook's own rules, because a
+          # hook only protects a machine that installed it and `--no-verify` walks around it. On
+          # a shallow clone that test can see one commit, so it skips -- and a check that
+          # reports success after inspecting nothing is worse than no check.
+          fetch-depth: 0
 
       - uses: prefix-dev/setup-pixi@v0
         with:
@@ -63,6 +70,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # The whole history, not the default depth of one. `tests/unit/test_commit_history.py`
+          # re-checks every commit message against the `commit-msg` hook's own rules, because a
+          # hook only protects a machine that installed it and `--no-verify` walks around it. On
+          # a shallow clone that test can see one commit, so it skips -- and a check that
+          # reports success after inspecting nothing is worse than no check.
+          fetch-depth: 0
 
       - uses: prefix-dev/setup-pixi@v0
         with:
