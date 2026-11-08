@@ -103,7 +103,7 @@ so a baseline can be refined per action.
 | Rule | Effect |
 | --- | --- |
 | `allow` | The value must be one of these |
-| `deny` | The value must not be one of these |
+| `deny` | Neither the value nor anything inside it may be one of these |
 | `pattern` | A regex the value must match in full |
 | `minimum` / `maximum` | Inclusive numeric bounds |
 | `default` | Injected when the caller supplies none, or theirs was dropped |
@@ -125,6 +125,23 @@ A few deliberate sharp edges:
   surprise.
 - An unparseable `pattern` **rejects the value** and logs once, rather than raising. Filtering
   promises not to raise, so a malformed grant fails closed.
+- **`deny` reads inside containers; every other rule judges the whole value.** A deny-set is
+  matched against the value and then against what the value *contains* — list and tuple
+  elements, set members, and both the keys and the values of a mapping, recursively. So
+  `deny=("prod",)` refuses `"prod"` and `["dev", "prod"]` alike, and wrapping a forbidden value
+  in a list is not a way past the rule. `allow`, `pattern` and the bounds do the opposite: they
+  compare the value as a whole, so a container is refused outright rather than checked
+  element-wise. The asymmetry is deliberate — reading a *denial* element-wise can only refuse
+  more, while reading a *permission* element-wise would have to decide what `allow=("eu","uk")`
+  means for `["eu"]` or for `[]`, and a wrong answer there grants something nobody granted.
+  There is no way to say "every element must be in this set" today.
+- A structure nested beyond a fixed depth, or one that refers to itself, is **refused** by a
+  deny-set rather than searched. A value that cannot be read cannot be shown to satisfy a rule.
+- **A numeric bound compares anything real.** `int`, `float`, `Decimal` and `Fraction` all work,
+  each at its own precision — which is what makes `maximum=1000` usable on
+  `def issue_refund(amount: Decimal)`. The bound itself is written as an `int` or a `float`;
+  `Decimal` compares against both exactly, so nothing is lost. A NaN satisfies no bound and is
+  reported as not comparable, in either direction.
 
 ### Two layers: the grant and the ceiling
 

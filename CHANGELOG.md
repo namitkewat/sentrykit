@@ -158,6 +158,139 @@ boundaries.
   a single argument that is then rejected, and at an agent boundary only from a tool whose every
   parameter is omittable.
 - **`README.md`** corrects the same two claims about the example apps.
+- **`SentrykitError` carries an optional `audit_failure`.** A refusal whose record the sink
+  would not accept is still raised as the refusal it is — replacing a precise `AuthzDenied`
+  with an operational error would answer the wrong question — but the sink failure now travels
+  on the exception instead of only on the operational log, which this project deliberately does
+  not treat as evidence. It is `None` on every refusal a reachable sink recorded, so on all but
+  a vanishing fraction of them. Under `fail_mode="closed"` it reaches the error; under
+  `fail_mode="open"` the trail absorbs the failure before the engine sees it, which is what the
+  dropped-record count on the next landed record is for.
+
+### Fixed
+
+- **A refusal the sink could not record left no trace anywhere an auditor could reach, and the
+  chain read clean across the gap.** A failed write on a *refusal* is swallowed deliberately —
+  the call is already being refused, and raising would replace the precise `AuthzDenied` the
+  caller needs with an operational error. But the fact of the loss then went nowhere. Measured
+  with a full-disk sink: three records attempted, none stored, both refusals proceeding
+  normally. And because the chain advances only on a successful write, the records that
+  survived were perfectly contiguous — `verify_chain` returned `ok=True` across the hole. So
+  with the sink down, a caller could enumerate the policy boundary and the log showed nothing,
+  with the reconnaissance phase being precisely the one not recorded.
+
+  A refused record is now admitted by the next one that lands, as
+  `dropped_since_last_write`. The count sits inside `record_hash`, so it cannot be stripped
+  without breaking the record carrying it, and it resets only on a successful write, so no loss
+  is reported twice. `audit-report` sums it over the window and will no longer describe such a
+  window as intact — the previous wording said "Chain: intact across the window" with no
+  qualification, which over a window containing an outage told the auditor something false.
+
+  **Existing logs verify unchanged.** A record with nothing to admit omits the field from the
+  data it hashes, so its hash is byte-identical to what the previous version computed —
+  verified against that version directly, not reasoned about. The reverse does not hold: a
+  record carrying a count cannot be read by an older install, so readers upgrade before
+  writers. And the count lives in memory until a record lands, so a process that dies while its
+  sink is down still takes its unreported count with it. This narrows the window in which a
+  loss is invisible; it does not close it.
+- **The hash chain broke under threads, and `verify_chain` then reported tampering that never
+  happened.** `AuditTrail._append` read `prev_hash` and `sequence`, built the record, wrote it,
+  and advanced both — with no lock. The sinks each held their own write lock, so every record
+  was written and well-formed, but the chain's state lives on the *trail*, and nothing
+  protected it. Eight threads deciding concurrently produced 1600 records with 1597 distinct
+  sequence numbers and a chain that did not link; on the JSONL sink, 1452 distinct of 1600 —
+  worse, because serializing slow file IO inside the trail's unprotected window widens it.
+
+  The trigger was the ordinary deployment, not an exotic one: Flask with `threaded=True`,
+  gunicorn's threaded workers, waitress, and FastAPI's threadpool for a sync endpoint all put
+  concurrent requests on threads in one process sharing one trail. And the failure degraded in
+  both directions — a false alarm on a healthy log, which the documented check treats as fatal,
+  and then a genuine deletion indistinguishable from the noise.
+
+  The chaining and the sink write now happen together under one lock. The cost is stated rather
+  than discovered: audit writes are serialized per trail, which is free for the in-memory sink
+  and for a plain `jsonl://`, and means every decision in the process queues behind the
+  durability call when `jsonl://path?fsync=true` is set.
+- **A numeric bound rejected `Decimal` as "not comparable", which made the library's own
+  canonical example unusable.** `minimum`/`maximum` compared only `int` and `float`, so
+  `def issue_refund(amount: Decimal)` under `maximum=1000` refused *every* value — and the
+  argument then fell through to the callable's signature default, so the desk limit was both
+  unusable and bypassed. Bounds now compare `Decimal` and any real number at its own precision.
+  The bound itself is still written as an `int` or a `float`; `Decimal` compares against both
+  exactly, so nothing is lost by that.
+
+  Found while fixing it: a NaN **satisfied** a bound. `maximum=1000` kept `float("nan")`,
+  because `nan > 1000` is `False`. A NaN is now reported as not comparable, in either
+  direction. Infinities are unaffected — they are ordered, so an infinite value is refused by
+  the bound rather than as not comparable.
+- **A policy default for a `**kwargs`-only argument was never delivered.** `ArgumentSpec`
+  recorded whether a callable accepts `**kwargs` and nothing read it, while default injection
+  filtered on the listed parameters alone — which is the right guard for an ordinary signature,
+  because a stale grant must not make a call fail with an unexpected keyword argument. For a
+  callable that *declares* `**kwargs` it meant a constraint on such a name was a
+  reject-everything rule: the proposal was filtered out and the default was then skipped for
+  not being a parameter. Those defaults are now injected, and only for a signature that can
+  actually accept them.
+
+### Security
+
+- **A principal's argument allow-set, deny-set and pattern were written into every decision
+  record in the clear, bypassing masking entirely.** `ConstraintSet.describe()` withholds the
+  default *value* — deliberately, because a per-principal default can itself be sensitive — and
+  emitted the sets and the pattern verbatim. So a principal fenced to two tenant ids under
+  `@obligations("hmac:tenant")` got the proposed id as a digest and, two fields away in the
+  same record, both ids in plaintext.
+
+  What leaked was not one value but the principal's whole authorization surface — every
+  identifier they may reach, including peers they never asked for — on every decision, into an
+  append-only store where an erasure request cannot be honoured. Three places said this could
+  not happen: the field's own docstring, the masking invariants, and `docs/audit.md`.
+
+  Those rules are now masked with the same strategy as the argument, and keyed by the *argument
+  name*, so a value masked as an argument and as an allow-set member produce the same digest
+  and *"was what the caller proposed one of the values they were permitted to pass"* is still
+  answerable from the record. `minimum` and `maximum` are left as written: a bound is a rule
+  rather than a value, and it is usually what an auditor came to read.
+
+  The one test that would have caught this was **vacuous** — its allow-set member was a
+  placeholder deliberately outside the module's set of raw values, so its whole-record search
+  never inspected the allow-set, and 132 masking and audit tests passed over the leak. The
+  placeholder is gone.
+
+  **Still outstanding, and now documented rather than implied:** a *mutation* record is not
+  masked. A grant write has no determining policies and no protected callable, so nothing
+  declares which of its fields are sensitive, and an `attribute` grant's value reaches the sink
+  as written. Masking the decision path does not close that.
+- **A deny-set was a complete no-op against any container.** `deny` was the only rule whose "no
+  match" outcome is *keep*, and it had no not-comparable guard where the pattern and the two
+  bounds each have one. A container never equals a scalar member, so `deny=("prod",)` admitted
+  `["prod"]`, `["dev", "prod"]`, `("prod",)`, `{"prod"}` and `{"env": "prod"}` while correctly
+  refusing the bare string — wrapping a forbidden value in a one-element list defeated the
+  rule, and `list[str]` is exactly the shape a model proposes. The envelope then recorded
+  nothing as rejected, so the trail showed a clean allow with nothing to replay, and a
+  `default` carrying a denied element passed the grant-write check and was injected later.
+
+  A deny-set is now matched against the value and, recursively, against what it contains — list
+  and tuple elements, set members, and both the keys and the values of a mapping. `str` and
+  `bytes` are leaves. A structure nested past a fixed depth, or one that refers to itself, is
+  refused unsearched rather than raising, because filtering promises not to raise and a value
+  that cannot be read cannot be shown to satisfy a rule. The grant-write check inherited the
+  same walk, so the unusable-default case is caught where it is written.
+
+  `allow`, `pattern` and the bounds still judge the whole value and still refuse a container.
+  That asymmetry is deliberate: reading a *denial* element-wise can only refuse more, while
+  reading a *permission* element-wise would have to decide what `allow=("eu", "uk")` means for
+  `["eu"]` or for `[]`, and a wrong answer there grants something nobody granted. There is
+  still no way to say "every element must be in this set".
+- **A provider built with no `identify=` now says so, once, at construction.** Its own fallback
+  decides who the caller is, and every shipped fallback ends at something the request supplies
+  — a header, an MCP `_meta` key, a `deps` attribute. So a caller who can set that is
+  authorized as the principal they name, with that principal's roles and grants. That is the
+  right wiring for an example app and for a service behind a gateway that has already
+  authenticated the caller, and the wrong one everywhere else; the defect was that nothing said
+  which you had. It is one `WARNING` at wiring time naming the provider and the key, not one
+  per request, and it is silent once `identify=` is given. Both shipped agent examples emit it
+  on startup, because both take the example path on purpose.
 
 ## [0.2.0] - 2026-08-20
 

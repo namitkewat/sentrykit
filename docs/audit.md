@@ -49,7 +49,7 @@ record = sink.records[-1]
 | Outcome | `decision`, `outcome`, `reason` | `outcome` is finer than allow/deny: `denied`, `no-valid-arguments`, `default-unavailable`, `validation-failed`, `arguments-rejected`, `engine-error`. All are denials to the caller and completely different events to an auditor. |
 | Arguments | `proposed`, `processed`, `rejected`, `defaults_applied` | What was asked for, what actually ran, what policy refused and why. A narrowed call is recorded as completely as a refused one, because "it ran, with these arguments rather than those" is a different fact from "it ran". |
 | Policy | `obligations`, `determining_policies`, `provenance`, `policy_set_hash`, `engine_errors` | `policy_set_hash` pins the logic so a decision replays; `provenance` says which source and which artifact each determining policy came from. |
-| Integrity | `masked`, `prev_hash`, `record_hash` | |
+| Integrity | `masked`, `prev_hash`, `record_hash`, `dropped_since_last_write` | The first three are what `verify_chain` reads. The last is what the chain cannot tell you: how many records were built and then refused by the sink before this one landed. |
 
 For the call above:
 
@@ -63,6 +63,34 @@ record.provenance             # ({'cedar_id': 'policy0', 'policy_id': 'support-m
 ```
 
 The callable received `ACCT-4417-9930`. The sink never did.
+
+Masking reaches the principal's own constraints too, and this is easy to miss: an allow-set
+*enumerates* values, so a record that named one in the clear would be publishing every
+identifier that principal may reach — including peers they never asked for — on every decision.
+So for each argument the plan covers, the `allow` members, the `deny` members and the `pattern`
+inside `record.principal.constraints` are masked with the same strategy and the same key as the
+argument itself:
+
+```python
+record.principal.constraints['Action::"tool.lookup"']['account']
+# {'allow': ['hmac:9aceb229b6349cc0807f99047180c19e'], 'required': False, 'has_default': True}
+```
+
+Because the key is the argument name rather than the rule name, the digests still line up, and
+*"was what the caller proposed one of the values they were permitted to pass"* is still a
+question you can answer from the record alone:
+
+```python
+record.proposed["account"] in record.principal.constraints[action]["account"]["allow"]
+```
+
+`minimum` and `maximum` are **not** masked. A bound is a rule rather than a value — it
+identifies nobody, and it is usually the thing you came to read.
+
+One gap worth knowing about: a **mutation** record is not masked. A grant write has no
+determining policies and no protected callable, so nothing declares which of its fields are
+sensitive, and an `attribute` grant's value and the constraint it carries reach the sink as
+written. Keep that in mind when choosing who can read the audit store.
 
 `rejected` is where a narrowed call becomes reconstructable. It carries one entry per argument
 that did not survive, whatever refused it: a value the caller proposed that violated a rule, a
@@ -167,6 +195,53 @@ with JsonlAuditSink("./var/audit.jsonl") as sink:
         raise SystemExit(f"audit log broken at record {verdict.broken_at}: {verdict.reason}")
 ```
 
+### An intact chain is not a complete log
+
+These are different claims, and the chain can only make the first one. The chain advances only
+on a write that *landed*, so if the sink refuses a record — a full disk, a network partition —
+the records written either side of that gap link to each other perfectly and `verify_chain`
+returns `ok=True` across it.
+
+So a refused record is admitted by the next one that lands:
+
+```python
+record.dropped_since_last_write   # 3
+```
+
+Three records were built, masked, and never stored. The decisions they described still
+happened. The count is inside `record_hash`, so it cannot be stripped without breaking the
+record it sits on, and `audit-report` sums it over the window:
+
+```text
+## Tamper evidence
+
+- Records whose own hash recomputes: 412 of 412.
+- Chain: intact across the records that were written — but this window is **incomplete**, and
+  the chain cannot show that.
+- Records lost: 3. The sink refused that many records, which were built and masked and never
+  stored. The decisions they described still happened, and nothing here says what they were.
+```
+
+A record with nothing to admit omits the field from the data it hashes, so logs written before
+this existed verify unchanged. The reverse is not true: a record carrying a count cannot be read
+by an older install, so upgrade readers before writers.
+
+One limit worth knowing: the count lives in memory until a record lands, so a process that dies
+while its sink is down takes its unreported count with it. This narrows the window in which a
+loss is invisible rather than closing it.
+
+A refusal that could not be recorded also carries the failure on the exception, so the boundary
+answering the caller can say so:
+
+```python
+except AuthzDenied as denied:
+    if denied.audit_failure is not None:
+        ...  # correct refusal, and nothing in the trail will show it happened
+```
+
+That reaches the error under `fail_mode="closed"`. Under `fail_mode="open"` the trail absorbs
+the failure and the call proceeds, which is what the count on the next record is for.
+
 This is **detection, not prevention**. Preventing a rewrite is the storage layer's job — S3
 Object Lock, WORM media — and no such backend ships today. Write one against the `AuditSink`
 Protocol and the core will not be able to tell it from the built-ins; see
@@ -177,6 +252,17 @@ Protocol and the core will not be able to tell it from the built-ins; see
 One file has exactly one writing process. That is not a limitation being papered over:
 `record_hash` depends on `prev_hash`, so a writer must know the file's tail, and that state
 cannot be shared across processes without a distributed lock.
+
+**Threads inside that one process are fine.** The chain's own state lives on the trail, not on
+the sink, so that is where it is protected: a decision takes a lock, links its record, writes
+it, and advances the chain before releasing. Concurrent requests — Flask with `threaded=True`,
+gunicorn's threaded workers, waitress, or FastAPI's threadpool for a sync endpoint — produce a
+chain that links and sequence numbers that neither repeat nor skip.
+
+The cost is that audit writes are serialized per trail. That is free for the in-memory sink and
+for a plain `jsonl://`, which serialized its own writes anyway; with
+`jsonl://path?fsync=true` it means every decision in the process queues behind that durability
+call. If you need both per-record `fsync` and concurrency, give each writer its own sink.
 
 The sink holds one handle open, serializes writes behind a lock, and opens with
 `newline="\n"`. All three are forced by measurement rather than taste — on Windows,

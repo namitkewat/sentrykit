@@ -156,6 +156,11 @@ from mcp.server.mcpserver import authenticated_principal
 provider = FastMCPProvider(identify=authenticated_principal, grants=store)
 ```
 
+A provider built with no `identify` logs one `WARNING` when it is constructed, naming itself
+and the key its fallback ends at. Both shipped agent examples emit it on startup, because both
+take the example path on purpose; it disappears as soon as `identify=` is supplied. It is a
+wiring-time line, not a per-request one.
+
 ### Manifest caching
 
 A `tools/list` result carries `cacheScope: "private"` and `ttlMs: 0` by default, so a

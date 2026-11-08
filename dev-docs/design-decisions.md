@@ -186,6 +186,30 @@ one writing process; concurrent writers get separate files (or a `CompositeAudit
 `fail_mode="closed"` the call is refused — "can't prove it, don't do it", per the logging
 standards.
 
+**Amended 2026-11-08 — the invariant is one writer per *chain*, not per *process*, and this
+ADR fixed the lock at the wrong layer.** The third bullet above reasons that `prev_hash` state
+"cannot be shared across processes without a distributed lock, which makes single-writer an
+invariant of the chain". The premise is true and the conclusion does not follow from it: the
+state the chain depends on lives on `AuditTrail`, and one process with eight threads shares one
+`AuditTrail` while satisfying every word of the single-writing-*process* rule. So this ADR
+anticipated threads — its own measurement is 8 threads × 200 records — put a lock in
+`JsonlAuditSink.write` to defend the *file*, and left the read-modify-write of `_prev_hash` and
+`_sequence` one layer above it unprotected.
+
+Measured through the public decorator path at 8 × 200: the in-memory sink wrote 1600 of 1600
+records with 1597 distinct sequence numbers and `verify_chain` returned
+`ok=False broken_at=189`; the JSONL sink wrote 1600 of 1600 lines with **1452** distinct
+sequences and `broken_at=2`. The durable, recommended sink is the worse of the two, and
+instructively so: the lock this ADR added serialises slow file IO *inside* the trail's
+unprotected window, so the fix below it widened the defect above it.
+
+Nothing crossed a security boundary — the gate decided correctly, every record was written,
+each record's own hash still verified, and masking still ran upstream of the write. What broke
+is the integrity *evidence*, in both directions: `verify_chain` reported "a record was removed
+or altered" over a healthy log, which `docs/audit.md` tells an operator to treat as fatal, and
+once breaks are ambient noise a genuine deletion is indistinguishable from them. See ADR-032
+for the decision that closes it, and for the cost of closing it that way.
+
 ## ADR-014 — Masking is unconditional on the audit path
 **Decision.** Every value crossing into an `AuditSink` is masked first, and the `redaction`
 setting cannot switch that off. `redaction` governs the caller-facing `_authz` envelope and
@@ -742,3 +766,205 @@ was actively misleading — plus first principles, that a caller cannot act on w
 told, plus the single run in the corpus that fabricated a table of invented orders rather than
 relay a narrowed result. **It is not that the envelope out-performs silence**, on throughput or
 on disclosure. Any positioning text that argues otherwise is arguing past the data.
+
+## ADR-031 — A described constraint is masked before the audit write, and bounds are not
+**Decision.** `AuditTrail._snapshot` masks the **value-bearing** rules of every described
+constraint it writes: each member of `allow`, each member of `deny`, and `pattern`, for every
+argument the decision's masking plan names. `minimum`, `maximum`, `policy`, `required` and
+`has_default` reach the sink as written. The masking key is the **argument name**, not the rule
+name, so a value masked as an argument and the same value masked as an allow-set member produce
+the same digest. `PrincipalSnapshot.of()` still does not mask, and now says so.
+
+**Why.** `ConstraintSet.describe()` withholds the default *value* — that was deliberate, and the
+reason is in its docstring — and emits the allow-set, the deny-set and the pattern verbatim. So a
+principal fenced to two tenant ids under `@obligations("hmac:tenant")` got `proposed.tenant` as a
+digest and, two fields away, both tenant ids in the clear, in the same record. The leak was not
+one value but the principal's whole authorization surface, including values they never passed, on
+every decision, into an append-only sink where an erasure request cannot be honoured. ADR-007 and
+ADR-014 both state the opposite, `docs/audit.md` states the opposite, and the field's own
+docstring stated the opposite.
+
+**Why the bounds are exempt.** A bound is a rule, not a value. `maximum: 50` is the thing an
+auditor came to read, it identifies nobody, and masking it would make the record unreadable for
+the question it exists to answer. The distinction is that `allow`, `deny` and `pattern` carry
+data drawn from the domain, while a bound carries a policy author's number.
+
+**Why `pattern` is in rather than left out.** A per-principal pattern can embed a literal —
+`^TENANT-SECRET-7781$` — so masking the two sets and not the pattern leaves the same hole through
+a third door.
+
+**Why the argument name is the masking key.** `hmac` is keyed and deterministic and binds the
+field name into the digest, so keying both by the argument preserves set-membership replay
+exactly: `record.proposed["account"] in record.principal.constraints[action]["account"]["allow"]`
+still answers *"was what the caller proposed one of the values they were permitted to pass"*.
+That disposes of the one principled argument for leaving an allow-set in the clear, which was
+that reproducibility needed it.
+
+**What this does not fix, and it is not small.** Two residual holes, both named rather than
+quietly left:
+
+- **A mutation record is still unmasked, by construction.** `record_mutation` builds its plan
+  with a bare `masker.plan()`, which is always empty, so an `attribute` grant's raw `value`, the
+  actor's own snapshot attributes and the grant's own described constraint all reach the sink in
+  the clear. This is not an oversight at that line: a mutation has no determining policies and no
+  protected-callable signature, so there is no plan to *derive*. Giving it one means either a new
+  parameter on `record_mutation` supplied by the admin surface, or a way to ask the bundle for
+  obligations by action rather than by determining policy. Either is a design change and belongs
+  in its own ADR.
+- **The boundary is still per-field-name.** A constraint on `customer_id` whose allow-set holds
+  account numbers is masked only if `customer_id` itself is in the plan. That is the same limit
+  `proposed`, `processed` and `attributes` already have, so this change does not widen it — but a
+  value is protected here because of the name it sits under, not because of what it is.
+
+**Also corrected.** The `constraints:` attribute docstring on `PrincipalSnapshot`,
+`PrincipalSnapshot.of`'s docstring and the `audit.py` module docstring each asserted a property
+the module did not have. The one test that would have caught this —
+`tests/unit/test_audit_invariants.py`'s leniently-dropped-argument case — was *vacuous*: its
+allow-set member was a placeholder deliberately outside the module's `RAW_VALUES`, so its
+whole-record string search never inspected the allow-set, and 132 masking and audit tests passed
+over the leak. The placeholder is gone, and a permitted peer value is now a raw constant like any
+other.
+
+## ADR-032 — The chain append and the sink write happen together, under one lock
+**Decision.** `AuditTrail` holds a `threading.Lock`. `_append` takes it around *both* the chaining
+of the record and the `sink.write` that follows, and releases it after advancing `_prev_hash` and
+`_sequence`. Every existing behaviour inside that window is unchanged, including
+advance-only-on-success. This supersedes the part of ADR-013 that located this guarantee in the
+sink; the amendment there records what that ADR got wrong, and the measurements.
+
+**Why both, and not just the reservation.** Holding the lock only long enough to reserve
+`(prev_hash, sequence)` and writing outside it is the cheaper shape, and it is wrong twice. Two
+threads would then call `write()` in an order that need not match the order their links describe,
+so the file's sequence of records and the chain's sequence of records could disagree. And
+advance-only-on-success depends on a failure being observed before the next reservation, which a
+released lock does not provide.
+
+**What it costs, stated rather than discovered.** Audit writes are now fully serialized per trail.
+For the in-memory sink and for `jsonl://` that is no change in kind — the JSONL sink already
+serialized its own writes — but with `jsonl://path?fsync=true` the per-record durability call
+becomes a process-wide serialization point on every authorization decision. ADR-013 measured that
+call; this ADR is what makes it everybody's. An operator who needs both per-record fsync and
+concurrency wants a sink per writer, which ADR-013 already prescribes, or a sink that batches.
+
+**What this does not establish.** Anything about processes. Two processes sharing one file still
+corrupt the chain, still silently, and that is a separate unfixed finding. This lock makes one
+process correct, which is the deployment shape every shipped example and every documented wiring
+actually has.
+
+**The test is probabilistic, and says so.** The regression test races eight threads through the
+public governor path. Against the unfixed code it detected the break in 13 of 14 runs, and smaller
+shapes were materially worse, so the shape was kept rather than shrunk. It cannot flake *red*
+against correct code: with the lock, a linking chain and non-repeating sequence numbers are
+invariant rather than likely.
+
+## ADR-033 — A deny-set is read element-wise; the rest of the vocabulary is scalar-only
+**Decision.** `ArgumentConstraint.check` matches a `deny` member against the value and,
+recursively, against the elements of any container that is not `str` or `bytes` — a `Mapping`'s
+values *and* its keys included. `str` and `bytes` are leaves. Nesting deeper than a fixed limit,
+or a self-referential structure, is **rejected unsearched**. `allow`, `pattern`, `minimum` and
+`maximum` continue to judge the whole value and continue to refuse a container, as they already
+did. A NaN is `not-comparable` against a bound.
+
+**Why deny had to change.** `deny` was the only rule whose "no match" outcome is *keep*, and it
+had no not-comparable guard where `pattern` and the two bounds each have one. A container never
+equals a scalar member, so `deny=('prod',)` admitted `['prod']`, `['dev','prod']`, `('prod',)`,
+`{'prod'}` and `{'env':'prod'}` while correctly refusing the bare string. Wrapping a forbidden
+value in a one-element list defeated the rule — and `list[str]` is exactly the shape an LLM sends.
+The envelope then recorded `rejected=[]`, so the audit trail showed a clean allow with nothing to
+replay, and a `default` carrying a denied element passed the grant-write check and was injected
+later. That last part needed no separate fix: `inconsistencies()` reaches the same `check`, so the
+write-time guard inherited the walk.
+
+**Why the asymmetry is the decision and not a leftover.** Denial is the fail-closed direction, so
+reading it element-wise can only ever refuse more. Permission element-wise would *widen*: it would
+have to decide whether `allow=('eu','uk')` admits `['eu','uk']`, `['eu']` or `[]`, and what
+`minimum` means for a list — questions whose wrong answer grants something nobody granted. So the
+vocabulary is deliberately half element-wise and half whole-value, and the half that refuses is
+the element-wise one. Someone who reaches for `allow`, `pattern` or a bound on a container learns
+immediately, through a loud refusal; the one who reached for `deny` used to get silence.
+
+**Why the depth limit rejects rather than raises.** `filter` promises not to raise, and a proposal
+is caller input. A structure too deep to read is a structure that cannot be shown to satisfy the
+rule, which is a rejection.
+
+**Why NaN moved with it.** Widening a numeric bound to accept `Decimal` makes a proposed
+`Decimal("NaN")` *raise* `decimal.InvalidOperation` from the ordering comparison, which would
+break `filter`'s no-raise promise — and a signalling NaN raises from `!=` as well, so it has to be
+recognised rather than compared. Excluding `float('nan')` on the same terms closes a pre-existing
+fail-open nobody had filed: `maximum=1000` *kept* `float('nan')`, because `nan > 1000` is `False`.
+Infinities are untouched; they are ordered, so `Decimal("Infinity")` is rejected by the bound
+rather than as not-comparable.
+
+**Related, and deliberately separate: a bound now accepts `Decimal` and any `numbers.Real`.**
+`_as_number` admitted `int` and `float` only, so `def issue_refund(amount: Decimal)` under
+`maximum=1000` refused **every** value as not-comparable — the desk limit in this project's own
+canonical example was unusable, and the value then fell through to the callable's signature
+default. The *bound* stays `int | float`: widening the field would put a `Decimal` into
+`ConstraintSet.describe()`, which flows into `NoValidArguments(allowed=…)` and from there into a
+framework JSON error body, where `json.dumps` raises on it. `Decimal` compares exactly against
+`int` and `float`, so nothing needed the field to widen. Note for anyone extending this —
+`Decimal` is registered as a `numbers.Number` but **not** a `numbers.Real`, so it has to be named
+explicitly, and a `numbers.Real` branch alone does not catch it.
+
+**What this does not establish.** That container-valued arguments are *supported*. There is still
+no way to express "every element must be in this set", and the breadth of the deny walk is
+uncapped, so one very large collection is walked in full. Both are design work, not guards.
+
+## ADR-034 — A record the sink refused is admitted by the next record that lands, and by the report
+**Decision.** `AuditTrail` counts the records a sink refused, and `AuthzAuditRecord` carries that
+count as `dropped_since_last_write` on the next record that does land. The count is set inside
+`chained()`, so it is inside `record_hash` and cannot be stripped without breaking it, and it is
+reset only on a successful write, so no loss is reported twice. `payload()` **omits the key when
+it is zero**, so a record with nothing to admit hashes exactly as it did before this field
+existed. Separately, `SentrykitError.audit_failure` carries the sink failure out on the refusal
+itself, and `audit-report` sums the counts into `records_lost` and refuses to call such a window
+intact.
+
+**Why a lost refusal was the worst case.** `_audit_decision` lets `AuditUnavailable` propagate,
+so under `fail_mode="closed"` an unprovable *allow* is refused before the side effect — correct,
+and the record is attempted before the call, which is the right order. `_audit_refusal` swallows
+it, which is also correct: the call is already being refused, and raising would replace the
+precise `AuthzDenied` the caller needs with an operational error. The defect was that the fact
+then went nowhere an auditor could reach. Measured with a full-disk sink: three records
+attempted, none landed, both refusals proceeded normally. So with the sink down, a caller can
+enumerate the policy boundary — which actions exist, which argument values are accepted, whose
+grants cover what — and the reconnaissance is exactly the phase not recorded.
+
+**Why the next record has to say so.** `_append` advances `_prev_hash` and `_sequence` only on
+success, which is the right rule and is what makes the gap *invisible*: the records that survive
+an outage are perfectly contiguous, so `verify_chain` returns `ok=True` across it. An integrity
+check that reads clean over a hole is worse than no check, because the operator concludes
+something false from it. The only place that can carry the admission is a record that landed,
+and the only channel that counts as evidence is the record itself — `audit.py` says plainly that
+the operational log is not the audit trail, so a fact that lives only in an ERROR line is a fact
+nobody can prove afterwards.
+
+**Why the key is omitted when zero, which is not a micro-optimisation.** `payload()` is the
+canonical pre-image of `record_hash`. A new field with a default would have added
+`"dropped_since_last_write": 0` to the pre-image of *every* record, so every record already
+written would have re-hashed differently and re-verification of a deployed log would have failed
+wholesale — the field meant to improve the integrity story would have destroyed it. Verified
+against the previous implementation rather than reasoned about: a zero-drop record's
+`record_hash` is byte-identical to the hash the old code computed for the same record, an
+existing JSONL log reads back and verifies unchanged, and a lossy record is still tamper-evident
+in both directions — forging the count up or down breaks its own hash.
+
+**The forward direction does not survive, and that is inherent.** `AuthzAuditRecord` is
+`extra="forbid"`, so a record written with a non-zero count cannot be read by an older install.
+A mixed-version fleet reading one file upgrades its readers first. There is no way to add a
+field to this model without that, and pretending otherwise by making the model lenient would
+give up the thing `extra="forbid"` is there for.
+
+**Why `audit_failure` is not the whole fix, and this corrects an earlier assumption.** Attaching
+the sink failure to the error covers `fail_mode="closed"` only. Under `fail_mode="open"` the
+trail absorbs the failure and returns normally, so nothing reaches the engine to attach — which
+is what the counter is for. The two halves are complementary by fail mode rather than redundant:
+one tells the caller's own boundary that this refusal is unrecorded, the other tells a later
+auditor that something was.
+
+**What this does not close.** A process that dies while its sink is down takes its unreported
+count with it; nothing on the sink side can be probed for a record that never reached it, so
+`_resume` has nothing to recover and does not try. This narrows the window in which a loss is
+invisible; it does not eliminate it. A spool — writing the already-masked, already-chained record
+to a local file when the primary refuses, and replaying on recovery — is what would, and it is
+cheap precisely because the record is already masked and chained. That is separate work.

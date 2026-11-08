@@ -170,6 +170,21 @@ it reads a header instead — `x-sentrykit-principal` by default, or `?header=x-
 an example app or a service behind a gateway that has already authenticated the caller, and
 nothing else.
 
+So a provider built with no `identify` says so, once, when it is constructed:
+
+```text
+WARNING sentrykit.integrations: FastAPIProvider was built without identify=, so its own
+fallback decides who the caller is, and that fallback ends at the request-supplied
+'x-sentrykit-principal': whoever can set that is authorized as the principal they name, with
+that principal's roles and grants. Pass identify= to resolve identity from the application's
+own authentication.
+```
+
+It is one line at wiring time, not one per request, and it does not appear at all once
+`identify=` is given. Whether a request-supplied principal is acceptable depends on what sits
+in front of your service, which is a judgement only you can make — the warning exists so that
+you make it, rather than inherit it from a default.
+
 ## What the provider establishes
 
 | Key | Value |
