@@ -29,7 +29,7 @@ import contextlib
 import io
 import json
 import re
-from collections.abc import AsyncIterator, Callable, Coroutine, Mapping
+from collections.abc import AsyncGenerator, Callable, Coroutine, Mapping
 from contextlib import asynccontextmanager
 from functools import partial
 from pathlib import Path
@@ -112,7 +112,7 @@ def body_of(result: CallToolResult) -> Mapping[str, Any]:
 
 
 @asynccontextmanager
-async def serving(*, severed: bool = False) -> AsyncIterator[mcp.Client]:
+async def serving(*, severed: bool = False) -> AsyncGenerator[mcp.Client, None]:
     """Open a client over the example MCP server, the way the README's snippets drive it.
 
     A context manager rather than a fixture because ``mcp.Client`` holds an AnyIO task group,

@@ -20,7 +20,7 @@ wherever the callable happens to live. Three rules follow from that, and they ar
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Generator, Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar, Token, copy_context
 from datetime import datetime
@@ -300,7 +300,7 @@ def establish(principal: Principal, **environment: object) -> ContextScope:
 
 
 @contextmanager
-def principal_context(principal: Principal, **environment: object) -> Iterator[None]:
+def principal_context(principal: Principal, **environment: object) -> Generator[None, None, None]:
     """Establish ``principal`` for the duration of a ``with`` block.
 
     The generator-based twin of :func:`establish`, for callers who prefer an explicit

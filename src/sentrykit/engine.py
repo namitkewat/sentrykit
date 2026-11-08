@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import inspect
 import logging
-from collections.abc import Awaitable, Callable, Iterator, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Generator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
@@ -1437,7 +1437,7 @@ def get_governor() -> Governor:
 
 
 @contextmanager
-def use_governor(governor: Governor) -> Iterator[Governor]:
+def use_governor(governor: Governor) -> Generator[Governor, None, None]:
     """Install ``governor`` for the duration of a block, then restore the previous one.
 
     Args:

@@ -26,7 +26,7 @@ Two things are asked here that the web suite has no analogue for:
 from __future__ import annotations
 
 import json
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncGenerator, Mapping
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -132,7 +132,7 @@ class Caller:
 
 
 @asynccontextmanager
-async def serving(*, severed: bool = False) -> AsyncIterator[Caller]:
+async def serving(*, severed: bool = False) -> AsyncGenerator[Caller, None]:
     """Open a client over a freshly built example server.
 
     Built per test rather than imported: ``create_server()`` calls ``configure()`` and
