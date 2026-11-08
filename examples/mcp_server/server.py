@@ -88,8 +88,8 @@ from mcp.server.mcpserver import MCPServer
 from mcp.types import CallToolResult, ListToolsResult
 
 from examples import desk, models
-from examples.fastmcp_server.policy import POLICY_DIR, build_grants
-from examples.fastmcp_server.service import (
+from examples.mcp_server.policy import POLICY_DIR, build_grants
+from examples.mcp_server.service import (
     approve_refund,
     brief_orders,
     desk_status,
@@ -99,7 +99,7 @@ from examples.fastmcp_server.service import (
     search_orders,
 )
 from sentrykit import configure, install
-from sentrykit.integrations.fastmcp import FastMCPProvider, governed_tool, protect_server
+from sentrykit.integrations.mcp import MCPProvider, governed_tool, protect_server
 from sentrykit.stores.filesystem import FilesystemPolicySource
 from sentrykit.stores.memory import InMemoryAuditSink
 
@@ -131,7 +131,7 @@ def create_server(
     configure(verbosity="verbose")
 
     store = build_grants(severed=severed)
-    provider = FastMCPProvider(grants=store)
+    provider = MCPProvider(grants=store)
     # ``policy_source=`` rather than a policy string. The two are mutually exclusive, and this
     # is the shape a real deployment has: reviewed Cedar files on disk, grants in a store.
     install(

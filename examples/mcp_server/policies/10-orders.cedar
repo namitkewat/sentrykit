@@ -82,6 +82,6 @@ permit (
 @id("anyone-signed-in-may-see-desk-status")
 permit (
   principal,
-  action == Action::"examples.fastmcp_server.service.desk_status",
+  action == Action::"examples.mcp_server.service.desk_status",
   resource
 );

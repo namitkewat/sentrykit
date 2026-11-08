@@ -132,7 +132,7 @@ autodoc_mock_imports = [
 # defining module — which lifts pydantic's `if TYPE_CHECKING:` declarations onto the real
 # `BaseModel` class. From that point on, every model declaring `extra="allow"` fails to build
 # with "the type annotation for `__pydantic_extra__` must be `dict[str, ...]`", so
-# `sentrykit.cli`, `sentrykit.integrations.fastapi` and `sentrykit.integrations.fastmcp` stop
+# `sentrykit.cli`, `sentrykit.integrations.fastapi` and `sentrykit.integrations.mcp` stop
 # importing halfway through the build and their pages come out empty. Not documenting these
 # names avoids the mutation entirely, and none of them was ever worth a paragraph.
 autodoc_default_options = {

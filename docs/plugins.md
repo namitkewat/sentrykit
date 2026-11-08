@@ -20,7 +20,7 @@ rather than a property.
 | Policy source | `PolicySource` | `sentrykit.policy_sources` | `file`, `pack` |
 | Grant store | `GrantStore` | `sentrykit.grant_stores` | `jsonfile`, `memory` |
 | Audit sink | `AuditSink` | `sentrykit.audit_sinks` | `jsonl`, `memory` |
-| Context provider | `ContextProvider` | `sentrykit.context_providers` | `fastapi`, `flask` |
+| Context provider | `ContextProvider` | `sentrykit.context_providers` | `fastapi`, `flask`, `mcp`, `pydantic-ai` |
 
 ## Addressing a backend: the DSN
 

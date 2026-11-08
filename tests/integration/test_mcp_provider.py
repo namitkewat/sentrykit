@@ -35,14 +35,14 @@ import pytest
 pytest.importorskip("mcp")
 
 import mcp
-from examples.fastmcp_server.policy import POLICY_TEXT, build_grants
-from examples.fastmcp_server.server import create_server
+from examples.mcp_server.policy import POLICY_TEXT, build_grants
+from examples.mcp_server.server import create_server
 from mcp.server.mcpserver import MCPServer
 from mcp.types import CallToolResult
 
 import sentrykit
 from sentrykit.integrations.base import DEFAULT_PRINCIPAL_HEADER
-from sentrykit.integrations.fastmcp import FastMCPProvider, governed_tool, protect_server
+from sentrykit.integrations.mcp import MCPProvider, governed_tool, protect_server
 from sentrykit.stores.memory import InMemoryAuditSink
 
 PRINCIPAL_KEY = DEFAULT_PRINCIPAL_HEADER
@@ -69,7 +69,7 @@ def payload_of(result: CallToolResult) -> Mapping[str, Any]:
     """Read a tool result's body, whichever way this result carried it.
 
     A tool annotated ``-> dict[str, object]`` gets an output schema, so its body arrives in
-    ``structured_content``; a refusal built by :meth:`FastMCPProvider.render_error` puts it
+    ``structured_content``; a refusal built by :meth:`MCPProvider.render_error` puts it
     there too. The text fallback exists so this helper still reports something useful — rather
     than ``None`` — if a tool is ever registered without an output schema.
 
@@ -263,7 +263,7 @@ async def test_a_refused_call_never_reaches_the_tool_body() -> None:
         calls.append(region)
         return {"region": region, "limit": limit}
 
-    protect_server(server, provider=FastMCPProvider(grants=store))
+    protect_server(server, provider=MCPProvider(grants=store))
 
     async with mcp.Client(server) as client:
         allowed = await client.call_tool("search_orders", {}, meta=meta_for("alice"))
@@ -302,7 +302,7 @@ async def test_one_dispatch_writes_exactly_one_audit_record() -> None:
         """Search orders."""
         return {"region": region, "limit": limit}
 
-    protect_server(server, provider=FastMCPProvider(grants=store))
+    protect_server(server, provider=MCPProvider(grants=store))
 
     async with mcp.Client(server) as client:
         allowed = await client.call_tool("search_orders", {}, meta=meta_for("alice"))
@@ -456,7 +456,7 @@ async def test_the_middleware_leaves_every_other_method_alone() -> None:
 @pytest.mark.integration
 def test_the_provider_refuses_to_narrow_a_request_from_another_framework() -> None:
     """A provider wired to the wrong boundary says so, naming both sides."""
-    provider = FastMCPProvider(grants=build_grants())
+    provider = MCPProvider(grants=build_grants())
 
     with pytest.raises(sentrykit.ConfigurationError, match="wrong framework"):
         provider.narrow(object())
@@ -470,9 +470,9 @@ def test_wiring_the_same_server_twice_governs_each_dispatch_once() -> None:
     server: MCPServer = MCPServer("orders")
 
     before = len(list(server.middleware))
-    protect_server(server, provider=FastMCPProvider(grants=store))
+    protect_server(server, provider=MCPProvider(grants=store))
     after_first = len(list(server.middleware))
-    protect_server(server, provider=FastMCPProvider(grants=store))
+    protect_server(server, provider=MCPProvider(grants=store))
 
     assert after_first == before + 1, "wiring must add exactly one middleware"
     assert len(list(server.middleware)) == after_first, "wiring twice must not add a second"

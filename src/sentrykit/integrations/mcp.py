@@ -5,7 +5,7 @@ call arrived for:
 
 ```python
 from mcp.server.mcpserver import MCPServer
-from sentrykit.integrations.fastmcp import governed_tool, protect_server
+from sentrykit.integrations.mcp import governed_tool, protect_server
 
 server = MCPServer("orders")
 
@@ -22,13 +22,19 @@ nothing else: it establishes ambient context around every ``tools/call`` and rel
 after, and it filters every ``tools/list`` result down to the tools the caller may actually
 invoke.
 
-## What "FastMCP" means here
+## What this is built against
 
-The name is the one the extra, the entry point and the docs commit to — ``sentrykit[fastmcp]``,
-``fastmcp://``. What it is built against is **mcp 2.0**, where the ergonomic server class was
-renamed `mcp.server.fastmcp.FastMCP` → :class:`mcp.server.mcpserver.MCPServer`. Nothing here
-imports the standalone `fastmcp` distribution, which does not import against mcp 2.0 at all.
-If you have installed it hoping to use this module, you do not need it.
+**mcp 2.0** — :class:`mcp.server.mcpserver.MCPServer` and the ``ServerMiddleware`` protocol in
+:mod:`mcp.server.context`. That one distribution is the whole dependency: ``sentrykit[mcp]``
+installs ``mcp>=2,<3``, the entry point and the ``mcp://`` DSN name the same thing, and nothing
+here reaches for any other MCP package.
+
+Two names you may meet elsewhere are not this. mcp 2.0 renamed its own ergonomic server class
+`mcp.server.fastmcp.FastMCP` → :class:`~mcp.server.mcpserver.MCPServer`, so a 1.x example will
+import a class that no longer exists. And the separately published `fastmcp` project is a
+different library: it dropped `mcp` as a dependency, does not import against mcp 2.0, and
+carries its own tool-authorization parameter. Neither is needed here, and neither is installed
+by this extra.
 
 ## Register protected tools with `governed_tool`, and nothing else
 
@@ -136,14 +142,14 @@ __all__ = [
     "LIST_TOOLS_METHOD",
     "NARROWED_ARGUMENTS_META_KEY",
     "NARROWED_META_KEY",
-    "FastMCPProvider",
+    "MCPProvider",
     "SentrykitToolMiddleware",
     "governed_tool",
     "protect_server",
     "registered_tools",
 ]
 
-_LOGGER: Final = logging.getLogger("sentrykit.integrations.fastmcp")
+_LOGGER: Final = logging.getLogger("sentrykit.integrations.mcp")
 
 CALL_TOOL_METHOD: str = "tools/call"
 """The inbound method the middleware establishes context around."""
@@ -159,8 +165,8 @@ unwraps the refusal and renders it as a tool result before it can reach the wire
 """
 
 
-@register_context_provider("fastmcp")
-class FastMCPProvider(BaseContextProvider["ServerRequestContext[Any, Any]"]):
+@register_context_provider("mcp")
+class MCPProvider(BaseContextProvider["ServerRequestContext[Any, Any]"]):
     """Establishes ambient context from an MCP request and renders refusals as tool results.
 
     Construction is inherited from :class:`~sentrykit.integrations.base.BaseContextProvider`;
@@ -225,8 +231,8 @@ class FastMCPProvider(BaseContextProvider["ServerRequestContext[Any, Any]"]):
         )
 
     @classmethod
-    def from_dsn(cls, dsn: DSN) -> FastMCPProvider:
-        """Build from ``fastmcp://`` — the registry's door, used by ``install()``.
+    def from_dsn(cls, dsn: DSN) -> MCPProvider:
+        """Build from ``mcp://`` — the registry's door, used by ``install()``.
 
         Args:
             dsn: The parsed address. Options: ``header`` (the ``_meta`` key, or header name,
@@ -245,8 +251,8 @@ class FastMCPProvider(BaseContextProvider["ServerRequestContext[Any, Any]"]):
 
     @property
     def name(self) -> str:
-        """``fastmcp``."""
-        return "fastmcp"
+        """``mcp``."""
+        return "mcp"
 
     def narrow(self, request: object) -> ServerRequestContext[Any, Any]:
         """Check that ``request`` is an MCP server request context.
@@ -266,7 +272,7 @@ class FastMCPProvider(BaseContextProvider["ServerRequestContext[Any, Any]"]):
             return request
         actual = type(request)
         raise ConfigurationError(
-            "the fastmcp context provider expects an mcp ServerRequestContext but was given "
+            "the mcp context provider expects an mcp ServerRequestContext but was given "
             f"a {actual.__module__}.{actual.__qualname__}; it is wired to the wrong framework"
         )
 
@@ -328,7 +334,7 @@ def _as_header_value(value: object) -> str | None:
     A scalar is coerced — a principal id serialized as a number is still a principal id — but
     a mapping or a sequence is *not* stringified: ``"{'sub': 'alice'}"`` is not an identity,
     and inventing one from a structure nobody agreed on is exactly the guess that
-    :meth:`FastMCPProvider.read_header` exists to avoid.
+    :meth:`MCPProvider.read_header` exists to avoid.
 
     Args:
         value: Whatever was found under the key.
@@ -373,7 +379,7 @@ def _read_case_insensitively(headers: object, name: str) -> str | None:
     return None
 
 
-def _effective_provider(provider: FastMCPProvider | None) -> FastMCPProvider:
+def _effective_provider(provider: MCPProvider | None) -> MCPProvider:
     """Resolve the provider a middleware should establish with.
 
     The one place the defaulting rule lives, so the middleware and :func:`protect_server`
@@ -391,7 +397,7 @@ def _effective_provider(provider: FastMCPProvider | None) -> FastMCPProvider:
         provider: An explicitly supplied provider, or ``None``.
 
     Returns:
-        The explicit provider, the installed governor's when it is a :class:`FastMCPProvider`,
+        The explicit provider, the installed governor's when it is a :class:`MCPProvider`,
         or a freshly built default.
     """
     if provider is not None:
@@ -403,9 +409,9 @@ def _effective_provider(provider: FastMCPProvider | None) -> FastMCPProvider:
 
     governor = current_governor()
     wired = governor.context_provider if governor is not None else None
-    if isinstance(wired, FastMCPProvider):
+    if isinstance(wired, MCPProvider):
         return wired
-    return FastMCPProvider(channel="agent")
+    return MCPProvider(channel="agent")
 
 
 def registered_tools(server: MCPServer) -> dict[str, Callable[..., object]]:
@@ -619,7 +625,7 @@ class SentrykitToolMiddleware:
             given.
         provider: The provider to establish with. Defaults to the one wired into the installed
             governor by ``install(context_provider=...)``, and failing that to a
-            ``_meta``-identifying :class:`FastMCPProvider`.
+            ``_meta``-identifying :class:`MCPProvider`.
         tools: An explicit tool name → callable mapping, for a host that would rather not rely
             on :func:`registered_tools`. Takes precedence over ``server`` when both are given.
         filter_manifest: Whether to filter ``tools/list``. Turning it off leaves enforcement
@@ -633,7 +639,7 @@ class SentrykitToolMiddleware:
         self,
         server: MCPServer | None = None,
         *,
-        provider: FastMCPProvider | None = None,
+        provider: MCPProvider | None = None,
         tools: Mapping[str, Callable[..., object]] | None = None,
         filter_manifest: bool = True,
     ) -> None:
@@ -777,7 +783,7 @@ NARROWED_ARGUMENTS_META_KEY: str = "sentrykit/narrowedArguments"
 """``_meta`` key naming the narrowed arguments, in first-seen order."""
 
 
-def _report_narrowing(provider: FastMCPProvider, result: HandlerResult) -> HandlerResult:
+def _report_narrowing(provider: MCPProvider, result: HandlerResult) -> HandlerResult:
     """Carry narrowing out of a ``tools/call`` whose result could not carry it in band.
 
     A tool returning a mapping gets the whole ``_authz`` envelope inside its own payload, and
@@ -862,10 +868,10 @@ def _keep_private(result: dict[str, Any]) -> None:
 def protect_server(
     server: MCPServer,
     *,
-    provider: FastMCPProvider | None = None,
+    provider: MCPProvider | None = None,
     tools: Mapping[str, Callable[..., object]] | None = None,
     filter_manifest: bool = True,
-) -> FastMCPProvider:
+) -> MCPProvider:
     """Wire sentrykit into ``server`` in one call.
 
     Appends one :class:`SentrykitToolMiddleware` to ``server.middleware``. Calling it twice on

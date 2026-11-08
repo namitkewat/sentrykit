@@ -6,7 +6,7 @@ at the MCP boundary, which is what lets the same functions be called from a tool
 an HTTP route, or from a background job with no change.
 
 Most of them are registered on the server through
-:func:`~sentrykit.integrations.fastmcp.governed_tool`, which takes them exactly as they are —
+:func:`~sentrykit.integrations.mcp.governed_tool`, which takes them exactly as they are —
 already protected, still directly callable from anywhere else in the program — and adds the two
 layers an MCP boundary needs: an omittable-argument shim, so the model can propose nothing and
 let policy decide, and a translator that carries a refusal out of the tool body with its
@@ -100,7 +100,7 @@ inventing a name for whoever ran it.
 
 
 # THE BARE FORM. No ``action=`` and no ``resource=``, so sentrykit derives both from the
-# callable's import path: this is ``Action::"examples.fastmcp_server.service.desk_status"``,
+# callable's import path: this is ``Action::"examples.mcp_server.service.desk_status"``,
 # and the resource is the matching ``Resource::"…"``. The reviewed policy that permits it has
 # to name that exact string, which is why an explicit ``action=`` is what you want as soon as
 # the policy outlives the module layout — moving or renaming this function silently changes

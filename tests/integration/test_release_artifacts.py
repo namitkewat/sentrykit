@@ -38,7 +38,7 @@ EXPECTED_ENTRY_POINTS = {
     "sentrykit.policy_sources": {"file", "pack"},
     "sentrykit.grant_stores": {"jsonfile", "memory"},
     "sentrykit.audit_sinks": {"jsonl", "memory"},
-    "sentrykit.context_providers": {"fastapi", "flask", "fastmcp", "pydantic-ai"},
+    "sentrykit.context_providers": {"fastapi", "flask", "mcp", "pydantic-ai"},
 }
 """Every discovery group and the names it must advertise.
 

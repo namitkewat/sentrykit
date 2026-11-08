@@ -1,4 +1,4 @@
-# Example: fastmcp_server
+# Example: mcp_server
 
 Seven governed MCP tools showing the thing sentrykit exists for: **the model proposes, the
 policy decides.** The model picks a tool and drafts its arguments; Cedar decides whether the
@@ -9,9 +9,9 @@ happens.
 The argument layer is the point. Relationship resolution — user → team → division → project →
 order — composes underneath it, deterministically, and this example demonstrates that too.
 
-Built against **mcp 2.0** (`mcp.server.mcpserver.MCPServer`). The module is called `fastmcp`
-because that is the name the extra and the docs commit to; the standalone `fastmcp`
-distribution does not import against mcp 2.0 and is not used here.
+Built against **mcp 2.0** (`mcp.server.mcpserver.MCPServer`), which is the whole dependency:
+`sentrykit[mcp]` installs `mcp>=2,<3`. The separately published `fastmcp` project is a
+different library and is not used here.
 
 ## Layout
 
@@ -132,7 +132,7 @@ speaks to it over an in-memory transport:
 import anyio
 from mcp import Client
 
-from examples.fastmcp_server.server import create_server
+from examples.mcp_server.server import create_server
 
 ALICE = {"x-sentrykit-principal": "alice"}
 BOB = {"x-sentrykit-principal": "bob"}
@@ -154,9 +154,9 @@ No `action=` and no `resource=`, so both are derived from the callable's import 
 ```python
 result = await client.call_tool("desk_status", {}, meta=ALICE)
 print(result.structured_content["_authz"]["action"])
-# -> Action::"examples.fastmcp_server.service.desk_status"
+# -> Action::"examples.mcp_server.service.desk_status"
 print(result.structured_content["_authz"]["resource"])
-# -> Resource::"examples.fastmcp_server.service.desk_status"
+# -> Resource::"examples.mcp_server.service.desk_status"
 ```
 
 The reviewed policy has to name that exact string, which is why an explicit `action=` is what
@@ -179,8 +179,8 @@ print(result.structured_content["brief"]["_authz"]["action"])
 One dispatch, two audit records, the outer one written **before** the body ran:
 
 ```
-seq 44  Action::"orders.brief"       allow  allowed    callable=examples.fastmcp_server.service.brief_orders
-seq 45  Action::"orders.summarize"   allow  allowed    callable=examples.fastmcp_server.service.summarize_orders
+seq 44  Action::"orders.brief"       allow  allowed    callable=examples.mcp_server.service.brief_orders
+seq 45  Action::"orders.summarize"   allow  allowed    callable=examples.mcp_server.service.summarize_orders
 ```
 
 Had the inner decision been a refusal, its `AuthzDenied` would have travelled out through

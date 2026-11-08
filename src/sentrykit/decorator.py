@@ -1,7 +1,7 @@
 """``@protect`` — one decorator, and N context providers behind it.
 
 Everything a framework contributes is a context provider. Everything a developer writes is
-this decorator. A Flask view, a background reconciliation job and a FastMCP tool are all
+this decorator. A Flask view, a background reconciliation job and an MCP tool are all
 guarded by the same three lines of code, because the decorator only supplies the *action*
 and the *proposed arguments*; who is acting comes from the ambient context.
 

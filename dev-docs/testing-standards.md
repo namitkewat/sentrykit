@@ -5,7 +5,7 @@
 - Three suites:
   - `tests/unit/` — fast, isolated, **no network, no real frameworks**. The whole core is
     covered here.
-  - `tests/integration/` — exercise a real adapter (FastAPI/Flask/FastMCP/Pydantic-AI) via
+  - `tests/integration/` — exercise a real adapter (FastAPI/Flask/mcp/Pydantic-AI) via
     its test client or a simulated tool-call. Run in the matching pixi env
     (`pixi run -e web test-integration`, `pixi run -e agent test-integration`).
   - `tests/scenarios/` — end-to-end policy-pattern scenarios (RBAC, ownership, delegation,

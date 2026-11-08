@@ -14,7 +14,7 @@ sentrykit is a small decision core wrapped by swappable adapters. The core opera
 
 The `@protect` decorator supplies `action` + `args` (from the callable). A **context
 provider** supplies `principal` + `environment` (from the framework). This split is why the
-same decorator guards a Flask view, a background function, and a FastMCP tool unchanged.
+same decorator guards a Flask view, a background function, and an MCP tool unchanged.
 
 ```
 your app / agent ──► @protect (action, args) ──► Governor ──► Cedar decision

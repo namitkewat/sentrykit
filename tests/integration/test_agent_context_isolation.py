@@ -28,8 +28,8 @@ pytest.importorskip("mcp")
 pytest.importorskip("pydantic_ai")
 
 import mcp
-from examples.fastmcp_server.policy import build_grants as build_mcp_grants
-from examples.fastmcp_server.server import create_server
+from examples.mcp_server.policy import build_grants as build_mcp_grants
+from examples.mcp_server.server import create_server
 from examples.pydantic_ai_agent.agent import Caller
 from examples.pydantic_ai_agent.policy import POLICY_TEXT as AGENT_POLICY_TEXT
 from examples.pydantic_ai_agent.policy import build_grants as build_agent_grants
@@ -43,14 +43,14 @@ import sentrykit
 from sentrykit.context import ContextScope
 from sentrykit.decorator import protect
 from sentrykit.integrations.base import DEFAULT_PRINCIPAL_HEADER
-from sentrykit.integrations.fastmcp import FastMCPProvider, SentrykitToolMiddleware
+from sentrykit.integrations.mcp import MCPProvider, SentrykitToolMiddleware
 from sentrykit.integrations.pydantic_ai import PydanticAIProvider, tool_adapter
 
 PRINCIPAL_KEY = DEFAULT_PRINCIPAL_HEADER
 """The ``_meta`` key a principal id travels in."""
 
 
-class LeakyFastMCPProvider(FastMCPProvider):
+class LeakyMCPProvider(MCPProvider):
     """A provider whose ``release`` does nothing — the bug this module exists to catch.
 
     Not a mock: everything else about it is the real provider, so a test that fails against it
@@ -62,7 +62,7 @@ class LeakyFastMCPProvider(FastMCPProvider):
 
 
 class LeakyPydanticAIProvider(PydanticAIProvider):
-    """The Pydantic-AI mirror of :class:`LeakyFastMCPProvider`."""
+    """The Pydantic-AI mirror of :class:`LeakyMCPProvider`."""
 
     def release(self, scope: ContextScope | None) -> None:
         """Do nothing, leaving the last dispatch's principal ambient."""
@@ -150,7 +150,7 @@ def mcp_middleware(*, leaky: bool = False) -> SentrykitToolMiddleware:
         The middleware.
     """
     server = create_server()
-    provider = LeakyFastMCPProvider() if leaky else FastMCPProvider()
+    provider = LeakyMCPProvider() if leaky else MCPProvider()
     return SentrykitToolMiddleware(server, provider=provider)
 
 
@@ -338,7 +338,7 @@ async def test_a_dispatch_with_no_caller_after_an_entitled_one_is_refused() -> N
 @pytest.mark.integration
 async def test_the_mcp_provider_releases_what_it_established() -> None:
     """The narrowest form of the claim: establish, observe, release, observe."""
-    provider = FastMCPProvider(grants=build_mcp_grants())
+    provider = MCPProvider(grants=build_mcp_grants())
 
     scope = provider.establish(call_context("alice"))
     established = sentrykit.current_principal()
@@ -363,7 +363,7 @@ async def test_the_pydantic_ai_provider_releases_what_it_established() -> None:
 
 
 @pytest.mark.integration
-@pytest.mark.parametrize("provider_class", [FastMCPProvider, PydanticAIProvider])
+@pytest.mark.parametrize("provider_class", [MCPProvider, PydanticAIProvider])
 def test_releasing_nothing_still_leaves_the_context_clean(provider_class: type) -> None:
     """``release(None)`` is what an unauthenticated dispatch's ``finally`` calls.
 

@@ -13,7 +13,8 @@ license-files = ["LICENSE"]
 authors = [{ name = "Namit Kewat", email = "namitkewat@gmail.com" }]
 keywords = [
   "authorization", "authz", "cedar", "access-control", "rbac", "abac", "rebac",
-  "fastapi", "flask", "mcp", "fastmcp", "pydantic-ai", "agents", "llm", "policy",
+  "fastapi", "flask", "mcp", "model-context-protocol", "pydantic-ai", "agents", "llm",
+  "policy",
 ]
 classifiers = [
   "Development Status :: 3 - Alpha",
@@ -35,10 +36,10 @@ dependencies = [
 [project.optional-dependencies]
 fastapi = ["fastapi>=0.110", "starlette>=0.37"]
 flask = ["flask>=3.0"]
-fastmcp = ["mcp>=2,<3"]
+mcp = ["mcp>=2,<3"]
 pydantic-ai = ["pydantic-ai"]
 web = ["sentrykit[fastapi,flask]"]
-agents = ["sentrykit[fastmcp,pydantic-ai]"]
+agents = ["sentrykit[mcp,pydantic-ai]"]
 all = ["sentrykit[web,agents]"]
 
 [project.scripts]
@@ -63,7 +64,7 @@ memory = "sentrykit.stores.memory:InMemoryAuditSink"
 [project.entry-points."sentrykit.context_providers"]
 fastapi = "sentrykit.integrations.fastapi:FastAPIProvider"
 flask = "sentrykit.integrations.flask:FlaskProvider"
-fastmcp = "sentrykit.integrations.fastmcp:FastMCPProvider"
+mcp = "sentrykit.integrations.mcp:MCPProvider"
 pydantic-ai = "sentrykit.integrations.pydantic_ai:PydanticAIProvider"
 
 # The repository is private, so the documentation is shipped as release assets -- HTML,
@@ -114,12 +115,12 @@ files = ["src/sentrykit"]
 # and `agent` environments the real packages are found and these overrides do nothing.
 # The MCP integration must subclass ``mcp.shared.exceptions.MCPError``: it is the one exception
 # mcp re-raises rather than swallowing, which is what lets a refusal leave a tool body carrying
-# its envelope. In an environment without the ``fastmcp`` extra that base resolves to
+# its envelope. In an environment without the ``mcp`` extra that base resolves to
 # ``Any``, and strict mode refuses to subclass ``Any`` -- so the check is environment-dependent
 # noise here rather than signal. It stays on everywhere else, including for this module in the
 # ``agent`` and ``all`` environments, where the real class is found.
 [[tool.mypy.overrides]]
-module = ["sentrykit.integrations.fastmcp"]
+module = ["sentrykit.integrations.mcp"]
 disallow_subclassing_any = false
 
 [[tool.mypy.overrides]]

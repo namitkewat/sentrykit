@@ -49,14 +49,14 @@ Python and left the data behind.
 EXTRAS: Final[dict[str, tuple[str, ...]]] = {
     "fastapi": ("sentrykit.integrations.fastapi",),
     "flask": ("sentrykit.integrations.flask",),
-    "fastmcp": ("sentrykit.integrations.fastmcp",),
+    "mcp": ("sentrykit.integrations.mcp",),
     "pydantic-ai": ("sentrykit.integrations.pydantic_ai",),
     "web": ("sentrykit.integrations.fastapi", "sentrykit.integrations.flask"),
-    "agents": ("sentrykit.integrations.fastmcp", "sentrykit.integrations.pydantic_ai"),
+    "agents": ("sentrykit.integrations.mcp", "sentrykit.integrations.pydantic_ai"),
     "all": (
         "sentrykit.integrations.fastapi",
         "sentrykit.integrations.flask",
-        "sentrykit.integrations.fastmcp",
+        "sentrykit.integrations.mcp",
         "sentrykit.integrations.pydantic_ai",
     ),
 }

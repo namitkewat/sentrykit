@@ -14,7 +14,7 @@ masked, hash-chained record of what it decided.
 It targets two worlds with one decorator:
 
 - **Web frameworks** — FastAPI, Flask (more to come).
-- **Agent tooling** — FastMCP servers, Pydantic-AI (more to come).
+- **Agent tooling** — MCP tool servers, Pydantic-AI (more to come).
 
 What that gives you, in the order it matters:
 
@@ -63,7 +63,7 @@ policy engine, that argument layer is the part you would otherwise assemble your
 pip install sentrykit                 # core
 pip install "sentrykit[fastapi]"      # + FastAPI provider
 pip install "sentrykit[flask]"        # + Flask provider
-pip install "sentrykit[fastmcp]"      # + FastMCP provider
+pip install "sentrykit[mcp]"      # + MCP tool-server provider
 pip install "sentrykit[pydantic-ai]"  # + Pydantic-AI provider
 pip install "sentrykit[all]"          # everything
 ```
@@ -252,9 +252,9 @@ per-caller**. sentrykit filters it with the same decision that enforces the call
 from mcp.server.mcpserver import MCPServer
 
 from sentrykit import install
-from sentrykit.integrations.fastmcp import FastMCPProvider, governed_tool, protect_server
+from sentrykit.integrations.mcp import MCPProvider, governed_tool, protect_server
 
-provider = FastMCPProvider(grants=store)
+provider = MCPProvider(grants=store)
 install(POLICY_TEXT, grant_store=store, context_provider=provider)
 
 server = MCPServer("orders")
@@ -283,7 +283,7 @@ calls a hidden tool by name is refused just the same — both halves are asserte
 test, because a filter that *were* the control would be a hole the moment someone skipped
 `tools/list`.
 
-An MCP tool server and an on-behalf-of agent govern that same desk in `examples/fastmcp_server/`
+An MCP tool server and an on-behalf-of agent govern that same desk in `examples/mcp_server/`
 and `examples/pydantic_ai_agent/`, and print a 22-flow table of their own. Neither needs an API
 key: each uses a local [Ollama](https://ollama.com) model when one is reachable and a
 deterministic stand-in otherwise, and every authorization outcome is identical either way — a

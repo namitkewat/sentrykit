@@ -2,8 +2,8 @@
 
 The unit-suite `test_documented_examples*.py` modules pin the quickstart and the store pages
 and `test_documented_examples_web.py` pins the web page; this pins the two agent examples —
-`examples/fastmcp_server/README.md`, `examples/pydantic_ai_agent/README.md` — and the module
-docstrings of `sentrykit.integrations.fastmcp`, `sentrykit.integrations.pydantic_ai` and
+`examples/mcp_server/README.md`, `examples/pydantic_ai_agent/README.md` — and the module
+docstrings of `sentrykit.integrations.mcp`, `sentrykit.integrations.pydantic_ai` and
 `sentrykit.integrations.tools`. It also pins `docs/agents.md`, the page a reader meets before
 either README — including the five blocks it reproduces from what `run-agent` prints, each
 checked by running the section that prints it and reading the block back out of the page.
@@ -16,10 +16,10 @@ file disagree, one of them is a bug.
 Several of these pin a **warning** rather than a feature — that a bare `@server.tool()`
 registration swallows a refusal, that an omittable argument cannot carry a meaningful `None`,
 that a framework rejects a proposal against the advertised schema before any adapter runs, that
-the standalone `fastmcp` distribution does not import. A warning nobody checks is a rumour, and
-two of those four are now the *reason* a piece of the design exists rather than a footnote about
-it — so they are asserted as contrasts, showing both what goes wrong without the mechanism and
-what it buys.
+the separately published `fastmcp` project is never imported. A warning nobody checks is a
+rumour, and two of those four are now the *reason* a piece of the design exists rather than a
+footnote about it — so they are asserted as contrasts, showing both what goes wrong without
+the mechanism and what it buys.
 """
 
 from __future__ import annotations
@@ -42,11 +42,11 @@ pytest.importorskip("pydantic_ai")
 
 import mcp
 from examples import ollama
-from examples.fastmcp_server import service as mcp_service
-from examples.fastmcp_server.policy import POLICY_TEXT as MCP_POLICY_TEXT
-from examples.fastmcp_server.policy import build_grants as build_mcp_grants
-from examples.fastmcp_server.server import FLOWS as MCP_FLOWS
-from examples.fastmcp_server.server import create_server
+from examples.mcp_server import service as mcp_service
+from examples.mcp_server.policy import POLICY_TEXT as MCP_POLICY_TEXT
+from examples.mcp_server.policy import build_grants as build_mcp_grants
+from examples.mcp_server.server import FLOWS as MCP_FLOWS
+from examples.mcp_server.server import create_server
 from examples.pydantic_ai_agent.agent import FLOWS as AGENT_FLOWS
 from examples.pydantic_ai_agent.agent import (
     Caller,
@@ -78,8 +78,8 @@ from sentrykit.context import principal_context
 from sentrykit.decorator import protect
 from sentrykit.envelope import narrowing_guidance
 from sentrykit.integrations.base import DEFAULT_PRINCIPAL_HEADER
-from sentrykit.integrations.fastmcp import FastMCPProvider, protect_server, registered_tools
-from sentrykit.integrations.fastmcp import governed_tool as mcp_governed_tool
+from sentrykit.integrations.mcp import MCPProvider, protect_server, registered_tools
+from sentrykit.integrations.mcp import governed_tool as mcp_governed_tool
 from sentrykit.integrations.pydantic_ai import (
     PydanticAIProvider,
     governed_tool,
@@ -731,7 +731,7 @@ def test_the_pydantic_ai_module_docstring_example_runs_as_written() -> None:
     assert json.loads(result.output)["search_orders"]["_authz"]["principal"] == 'User::"alice"'
 
 
-# --- examples/fastmcp_server/README.md and the fastmcp module docstring -------------------------
+# --- examples/mcp_server/README.md and the mcp module docstring -----------------------------
 
 
 ALICE = {DEFAULT_PRINCIPAL_HEADER: "alice"}
@@ -805,8 +805,8 @@ async def test_one_dispatch_of_brief_orders_writes_the_two_records_the_mcp_readm
     ]
     assert [record.decision for record in written] == ["allow", "allow"]
     assert [record.callable_name for record in written] == [
-        "examples.fastmcp_server.service.brief_orders",
-        "examples.fastmcp_server.service.summarize_orders",
+        "examples.mcp_server.service.brief_orders",
+        "examples.mcp_server.service.summarize_orders",
     ]
 
 
@@ -846,8 +846,8 @@ async def test_the_bare_protect_is_served_under_the_derived_ids_the_mcp_readme_p
 
     envelope = body_of(result)["_authz"]
     assert result.is_error is not True
-    assert envelope["action"] == 'Action::"examples.fastmcp_server.service.desk_status"'
-    assert envelope["resource"] == 'Resource::"examples.fastmcp_server.service.desk_status"'
+    assert envelope["action"] == 'Action::"examples.mcp_server.service.desk_status"'
+    assert envelope["resource"] == 'Resource::"examples.mcp_server.service.desk_status"'
 
 
 @pytest.mark.integration
@@ -1164,7 +1164,7 @@ async def test_a_bare_server_tool_registration_really_does_swallow_the_refusal()
         ran.append(region)
         return {"region": region, "limit": limit}
 
-    protect_server(server, provider=FastMCPProvider(grants=store))
+    protect_server(server, provider=MCPProvider(grants=store))
 
     async with mcp.Client(server) as client:
         refused = await client.call_tool("search_orders", {}, meta=BOB)
@@ -1176,7 +1176,7 @@ async def test_a_bare_server_tool_registration_really_does_swallow_the_refusal()
 
 
 @pytest.mark.integration
-def test_the_fastmcp_module_docstring_example_wires_a_server_as_written() -> None:
+def test_the_mcp_module_docstring_example_wires_a_server_as_written() -> None:
     """The `governed_tool` + `protect_server` snippet at the top of the module, as written.
 
     The snippet passes `action`/`resource` to `governed_tool` and writes no separate
@@ -1196,10 +1196,10 @@ def test_the_fastmcp_module_docstring_example_wires_a_server_as_written() -> Non
         """Read an order."""
         return {"order_id": order_id, "limit": limit}
 
-    provider = protect_server(server, provider=FastMCPProvider(grants=store))
+    provider = protect_server(server, provider=MCPProvider(grants=store))
     discovered = registered_tools(server)
 
-    assert isinstance(provider, FastMCPProvider)
+    assert isinstance(provider, MCPProvider)
     assert sentrykit.is_protected(read_order)
     assert "read_order" in discovered
     assert discovered["read_order"] is not read_order, "the registered callable is the wrapper"
@@ -1207,18 +1207,18 @@ def test_the_fastmcp_module_docstring_example_wires_a_server_as_written() -> Non
 
 
 @pytest.mark.integration
-def test_the_standalone_fastmcp_distribution_is_never_imported() -> None:
-    """Pins the module docstring's warning and `docs/agents.md`'s admonition.
+def test_the_standalone_fastmcp_project_is_never_imported() -> None:
+    """Pins the module docstring's note and `docs/agents.md`'s admonition.
 
-    Three places say it, so it is worth being sure once: `sentrykit[fastmcp]` installs
-    `mcp>=2,<3` and the separately published `fastmcp` distribution — which is in this
-    environment as somebody else's transitive dependency and does not import against mcp 2.0 —
-    is never reached for. A reader who takes the module's name at face value and runs
-    `pip install fastmcp` gets a broken environment, which is exactly why the page says so.
+    Both places say the extra names one distribution, so it is worth being sure once:
+    `sentrykit[mcp]` installs `mcp>=2,<3`, and the separately published `fastmcp` project —
+    which is in this environment as somebody else's transitive dependency, and does not import
+    against mcp 2.0 — is never reached for. The two are easy to conflate by name alone, and
+    only the declared requirement settles which one a host actually gets.
     """
     from importlib import metadata
 
-    from sentrykit.integrations import fastmcp as module
+    from sentrykit.integrations import mcp as module
 
     borrowed = {
         getattr(value, "__module__", "").split(".")[0]
@@ -1228,12 +1228,12 @@ def test_the_standalone_fastmcp_distribution_is_never_imported() -> None:
     requirements = metadata.metadata("sentrykit").get_all("Requires-Dist") or []
     # The quoting of a marker is the packaging tooling's business, so it is normalized away
     # rather than pinned: what this test is about is which distribution the extra names.
-    declared = [item for item in requirements if "extra == fastmcp" in item.replace("'", "")]
+    declared = [item for item in requirements if "extra == mcp" in item.replace("'", "")]
 
     assert "mcp.server.mcpserver" in (module.__doc__ or "")
     assert "fastmcp" not in borrowed
     assert module.MCPServer.__module__.startswith("mcp.")
-    assert declared, "sentrykit declares no fastmcp extra at all"
+    assert declared, "sentrykit declares no mcp extra at all"
     assert all(item.startswith("mcp<3,>=2") for item in declared), declared
 
 
@@ -1354,10 +1354,10 @@ def test_the_agents_page_accepts_authenticated_principal_as_an_identify_callback
     """
     from mcp.server.mcpserver import authenticated_principal
 
-    provider = FastMCPProvider(identify=authenticated_principal, grants=build_mcp_grants())
+    provider = MCPProvider(identify=authenticated_principal, grants=build_mcp_grants())
 
     assert provider.channel == "agent"
-    assert provider.name == "fastmcp"
+    assert provider.name == "mcp"
 
 
 @pytest.mark.integration
@@ -1382,7 +1382,7 @@ def test_the_four_hop_policy_the_agents_page_quotes_is_the_example_policy() -> N
 
     The page quotes the policy as Cedar source. A quoted policy that had drifted from the one
     the example actually evaluates would be the worst kind of documentation bug: it reads as
-    evidence. So the quote is checked against `examples/fastmcp_server/policy.py` rather than
+    evidence. So the quote is checked against `examples/mcp_server/policy.py` rather than
     described.
     """
     quoted = (
@@ -1676,8 +1676,8 @@ def test_the_boundary_note_holds_on_the_pydantic_ai_boundary_too(
     So the unshown half is the one asserted here. `export_orders(fmt="xml")` is a
     `NoValidArguments` refusal at a web boundary and a narrowed call at both agent ones, for the
     same reason in both: `scope` carries a Python default, is advertised with it, and arrives as
-    a proposed argument that survives filtering. The MCP half is pinned beside the fastmcp
-    README; if these two ever disagreed, the page's "both frameworks" would be wrong.
+    a proposed argument that survives filtering. The MCP half is pinned beside the MCP
+    server's README; if these two ever disagreed, the page's "both frameworks" would be wrong.
     """
     narrowed = asyncio.run(propose(agent, Caller("bob"), "export_orders", fmt="xml"))
 

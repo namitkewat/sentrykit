@@ -18,7 +18,7 @@ and **which defaults** to inject when they pass none. It is built on **AWS Cedar
 the `cedarpy` binding) and it targets two worlds with one decorator:
 
 - **Web frameworks:** FastAPI, Flask (Django/Litestar/Starlette later).
-- **Agent tooling:** FastMCP servers, Pydantic-AI (LangChain/others later).
+- **Agent tooling:** MCP tool servers, Pydantic-AI (LangChain/others later).
 
 The one idea:
 
@@ -110,7 +110,7 @@ pixi run -e all check        # full gate: format-check, lint, typecheck, tests+c
 ```
 
 Environments: `default` (core+dev), `web` (adds FastAPI/Flask), `agent` (adds
-FastMCP/Pydantic-AI), `all` (everything). Run integration work in the environment that has
+mcp/Pydantic-AI), `all` (everything). Run integration work in the environment that has
 the relevant extra, e.g. `pixi run -e web test-integration`.
 
 Key tasks (see `pixi.toml` for the full list): `fmt`, `lint`, `typecheck`, `test`,
@@ -125,7 +125,7 @@ Key tasks (see `pixi.toml` for the full list): `fmt`, `lint`, `typecheck`, `test
 Every phase in `dev-docs/implementation.md` is executed with this loop. Do not skip a step.
 
 1. **Research** — read the relevant sections of `dev-docs/architecture.md` and
-   `dev-docs/design-decisions.md`; confirm current library APIs (cedarpy, mcp v2/FastMCP,
+   `dev-docs/design-decisions.md`; confirm current library APIs (cedarpy, mcp v2,
    pydantic-ai, pixi schema) against what is actually installed before coding. Note findings
    in the phase's working notes.
 2. **Build / implement** — write the modules for the phase, following
@@ -184,7 +184,7 @@ so a documentation warning fails the gate); new/changed public API is typed and 
 `llms-full.txt` cleanly, with `llms-full.txt` still sufficient to implement against on its
 own; and the example apps for in-scope frameworks run.
 
-The project is done when all phases are done, the four example apps (FastAPI, Flask, FastMCP
+The project is done when all phases are done, the four example apps (FastAPI, Flask, MCP
 server, Pydantic-AI) each demonstrate gate + argument filtering + default injection + a
 denial + the audit envelope, the attack/defence suite under `examples/scenarios/` runs every
 scenario through both arms with the three it does not win still in it, the shipped Cedar policy
@@ -209,10 +209,10 @@ docs/                         ← user docs (Sphinx + MyST → HTML, PDF, llms.t
 src/sentrykit/                ← the library (core has NO framework imports)
   stores/                     ← PolicySource / GrantStore / AuditSink + reference impls
   policy/pack/                ← shipped Cedar policy pack + schema (data)
-  integrations/               ← fastapi, flask, fastmcp, pydantic_ai (behind extras)
+  integrations/               ← fastapi, flask, mcp, pydantic_ai (behind extras)
 tests/{unit,integration,scenarios}/
 examples/desk/                ← the seeded SQLite orders desk the examples query
-examples/{fastapi_app,flask_app,fastmcp_server,pydantic_ai_agent}/
+examples/{fastapi_app,flask_app,mcp_server,pydantic_ai_agent}/
 examples/scenarios/           ← nine attacks, each run governed and ungoverned
 ```
 

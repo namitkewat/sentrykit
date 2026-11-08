@@ -220,6 +220,27 @@ than asserted.
 
 ### Changed
 
+- **The MCP integration is named `mcp`, after the one distribution it is built against.**
+  Every surface that spelled it `fastmcp` now spells it `mcp`: the extra is
+  `sentrykit[mcp]` (and `sentrykit[agents]` installs it under that name), the module is
+  `sentrykit.integrations.mcp`, the class is `MCPProvider`, the context-provider DSN is
+  `mcp://`, the entry point registered in `sentrykit.context_providers` is `mcp`, and the
+  example server is `examples/mcp_server/` — which moves the Cedar action ids its policies
+  name to `examples.mcp_server.service.*`.
+
+  The old spelling was borrowed from an ergonomic server class that mcp 2.0 had already
+  renamed, and the separately published `fastmcp` project has since grown its own tool-call
+  authorization parameter — so a name that was a nod to a convention had become a claim about
+  somebody else's integration surface. Naming the extra after what it installs also puts this
+  provider back in line with `fastapi`, `flask` and `pydantic-ai`, each of which names the
+  distribution it needs, and retires the note in the install block explaining that
+  `sentrykit[fastmcp]` does not install `fastmcp`.
+
+  **There is no deprecated alias.** `fastmcp://`, `sentrykit[fastmcp]` and
+  `sentrykit.integrations.fastmcp` are gone rather than redirected: an alias is permanent API
+  surface, and one that still resolved would keep pointing readers at the package the rename
+  exists to distinguish sentrykit from. An unknown scheme already fails with the list of
+  schemes that do resolve.
 - **The examples' two placeholder ids now name rows the desk holds.** `Order::"o-1"` and
   `rf-1` predated the database and resolved to nothing in it, so the relationship demo
   authorized a read of an order that did not exist and the approve demo approved nothing.

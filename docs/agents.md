@@ -8,16 +8,17 @@ function's body knows it is being invoked by a language model.
 Two integrations ship, behind two extras:
 
 ```bash
-pip install "sentrykit[fastmcp]"        # MCP tool servers
+pip install "sentrykit[mcp]"        # MCP tool servers
 pip install "sentrykit[pydantic-ai]"    # Pydantic-AI agents
 ```
 
-!!! note "`sentrykit[fastmcp]` does not install `fastmcp`"
-    It installs `mcp>=2,<3`. In mcp 2.0 the ergonomic server class was renamed
-    `mcp.server.fastmcp.FastMCP` → `mcp.server.mcpserver.MCPServer`, and the separately
-    published `fastmcp` distribution does not import against mcp 2.0 at all. sentrykit keeps
-    the `fastmcp` name for the module, the extra and the DSN — those are stable, and the
-    ecosystem still says "FastMCP" — but nothing in it imports that package.
+!!! note "`sentrykit[mcp]` installs `mcp>=2,<3`, and nothing else"
+    The extra, the `sentrykit.integrations.mcp` module and the `mcp://` DSN all name that one
+    distribution. Two names you may meet elsewhere are not it: mcp 2.0 renamed its own
+    ergonomic server class `mcp.server.fastmcp.FastMCP` → `mcp.server.mcpserver.MCPServer`, so
+    a 1.x snippet imports a class that is gone; and the separately published `fastmcp` project
+    is a different library, which dropped `mcp` as a dependency and carries its own
+    tool-authorization parameter. You need neither to use this page.
 
 ## The model proposes; the policy narrows
 
@@ -98,7 +99,7 @@ from mcp.server.mcpserver import MCPServer
 
 from sentrykit import configure, install
 from sentrykit.decorator import protect
-from sentrykit.integrations.fastmcp import FastMCPProvider, governed_tool, protect_server
+from sentrykit.integrations.mcp import MCPProvider, governed_tool, protect_server
 
 
 @protect(action="orders.search", resource='Tool::"orders"')
@@ -114,7 +115,7 @@ def search_orders(region: str, limit: int) -> dict[str, object]:
 
 def create_server() -> MCPServer:
     store = build_grants()
-    provider = FastMCPProvider(grants=store)
+    provider = MCPProvider(grants=store)
     install(POLICY_TEXT, grant_store=store, context_provider=provider)
 
     server = MCPServer("orders")
@@ -157,7 +158,7 @@ resolves the OAuth `(client, issuer, subject)` identity from the ambient access 
 ```python
 from mcp.server.mcpserver import authenticated_principal
 
-provider = FastMCPProvider(identify=authenticated_principal, grants=store)
+provider = MCPProvider(identify=authenticated_principal, grants=store)
 ```
 
 A provider built with no `identify` logs one `WARNING` when it is constructed, naming itself
@@ -336,7 +337,7 @@ pixi run -e agent run-mcp
 
 ## Running the examples
 
-`examples/fastmcp_server/` and `examples/pydantic_ai_agent/` govern the same orders-and-refunds
+`examples/mcp_server/` and `examples/pydantic_ai_agent/` govern the same orders-and-refunds
 desk the web examples do — the same three principals, the same grant data, the same reviewed
 policy directory — at an agent boundary instead of an HTTP one. Seven governed tools, plus one
 protected callable that is deliberately registered as no tool at all.
@@ -605,9 +606,9 @@ names the derived action verbatim:
 ```python
 result = await client.call_tool("desk_status", {}, meta=ALICE)
 print(result.structured_content["_authz"]["action"])
-# -> Action::"examples.fastmcp_server.service.desk_status"
+# -> Action::"examples.mcp_server.service.desk_status"
 print(result.structured_content["_authz"]["resource"])
-# -> Resource::"examples.fastmcp_server.service.desk_status"
+# -> Resource::"examples.mcp_server.service.desk_status"
 ```
 
 Convenient, and fragile in one specific way: renaming or moving the function changes the id the

@@ -16,7 +16,7 @@
 - **Core runtime deps are minimal:** `cedarpy`, `pydantic`, `pydantic-settings`,
   `typing-extensions`. Nothing else in the base install.
 - Optional extras gate every integration and backend:
-  - `sentrykit[fastapi]`, `sentrykit[flask]`, `sentrykit[fastmcp]`, `sentrykit[pydantic-ai]`
+  - `sentrykit[fastapi]`, `sentrykit[flask]`, `sentrykit[mcp]`, `sentrykit[pydantic-ai]`
   - convenience: `sentrykit[web]`, `sentrykit[agents]`, `sentrykit[all]`
 - A missing extra must produce a clear, actionable ImportError message (e.g. "install
   `sentrykit[fastapi]`"), never a raw `ModuleNotFoundError` from deep in the code.

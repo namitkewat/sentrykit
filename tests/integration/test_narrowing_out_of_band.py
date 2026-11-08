@@ -49,15 +49,15 @@ from sentrykit import ArgumentConstraint, Entity, EntityRef, protect
 from sentrykit.integrations.base import NARROWED_ARGUMENTS_HEADER, NARROWED_HEADER
 from sentrykit.integrations.fastapi import FastAPIProvider
 from sentrykit.integrations.fastapi import protect_app as protect_fastapi
-from sentrykit.integrations.fastmcp import (
-    NARROWED_ARGUMENTS_META_KEY,
-    NARROWED_META_KEY,
-    FastMCPProvider,
-    protect_server,
-)
-from sentrykit.integrations.fastmcp import governed_tool as mcp_governed_tool
 from sentrykit.integrations.flask import FlaskProvider
 from sentrykit.integrations.flask import protect_app as protect_flask
+from sentrykit.integrations.mcp import (
+    NARROWED_ARGUMENTS_META_KEY,
+    NARROWED_META_KEY,
+    MCPProvider,
+    protect_server,
+)
+from sentrykit.integrations.mcp import governed_tool as mcp_governed_tool
 from sentrykit.integrations.pydantic_ai import PydanticAIProvider
 from sentrykit.integrations.pydantic_ai import governed_tool as agent_governed_tool
 from sentrykit.stores.base import GrantSpec
@@ -193,7 +193,7 @@ def test_a_list_returning_flask_route_that_narrowed_nothing_sends_no_headers() -
 
 def _mcp_server() -> MCPServer:
     store = _store()
-    provider = FastMCPProvider(grants=store)
+    provider = MCPProvider(grants=store)
     sentrykit.install(POLICY, entities=list(ENTITIES), grant_store=store, context_provider=provider)
     server = MCPServer("orders")
 

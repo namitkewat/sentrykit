@@ -274,9 +274,9 @@ is not the one that enforces — rejected outright). Filtering only, with no dis
 (security by obscurity). No filtering (correct but wasteful, and it leaks the shape of other
 principals' entitlements to every caller).
 
-## ADR-018 — The agent providers target mcp 2.0; `fastmcp` is a name we keep, not a package we import
-**Decision.** `sentrykit.integrations.fastmcp`, the `sentrykit[fastmcp]` extra and the
-`fastmcp://` DSN keep their names. What they are built against is `mcp>=2,<3` —
+## ADR-018 — The agent providers target mcp 2.0, and the integration is named after it
+**Decision.** `sentrykit.integrations.mcp`, the `sentrykit[mcp]` extra and the
+`mcp://` DSN keep their names. What they are built against is `mcp>=2,<3` —
 `mcp.server.mcpserver.MCPServer` and `mcp.server.context.ServerMiddleware`. Nothing in
 sentrykit imports the standalone `fastmcp` distribution.
 **Why.** mcp 2.0 renamed `mcp.server.fastmcp.FastMCP` to `MCPServer`, and the separately
@@ -289,6 +289,50 @@ and avoids a broken environment for anyone who reads the module name as an instr
 **Alternatives.** Rename everything to `mcpserver` (churns the DSN and the extra for no
 behavioural gain, and the ecosystem still says "FastMCP"). Support both packages (the
 standalone one does not import; there is nothing to support).
+
+**Amended 2026-11-08 — the name is `mcp`, and the borrowed spelling is gone everywhere.** The
+original decision rested on two premises, and the ecosystem moved under both.
+
+*What changed.* `fastmcp` 4.x is no longer merely a package we do not import. It ships its own
+`auth=` parameter on `@mcp.tool` — tool-call authorization, declared at the registration site.
+That is sentrykit's own primitive, so `sentrykit[fastmcp]` had stopped reading as a borrowed
+convention and started reading as a claim about a direct competitor's integration surface. The
+second premise was that the names were committed to. They were committed to by this
+repository's own plan, entry point and docs — not by any release: 0.2.0 is unpublished, so the
+set of users whose imports a rename would break is empty.
+
+*What was decided.* The extra, the module, the class, the DSN and the entry point are spelled
+after the one distribution they name: `sentrykit[mcp]`, `sentrykit.integrations.mcp`,
+`MCPProvider`, `mcp://`. Three reasons beyond the collision. First, it restores a convention
+this repository already follows everywhere else — `fastapi`, `flask` and `pydantic-ai` each
+name the distribution their extra installs, and `fastmcp` was the only registry name that
+pointed at a package sentrykit does not depend on. Second, `docs/agents.md` had to carry a note
+titled "`sentrykit[fastmcp]` does not install `fastmcp`"; a name needing a disclaimer inside
+the install block is the wrong name, and the rename retires the disclaimer rather than
+rewording it. Third, `mcp` names the protocol, which no single vendor can capture the way
+`fastmcp` captured "FastMCP". `mcpserver` was rejected again, for a sharper reason than last
+time: it tracks another project's internal module path, which is exactly the kind of name that
+gets renamed a second time. Verified before committing to it — a module at
+`sentrykit/integrations/mcp.py` imports the top-level `mcp` with no shadowing, since absolute
+imports are the Python 3 default.
+
+*No deprecated alias.* Argued both ways. For: the ecosystem still says "FastMCP", so a reader
+may guess `fastmcp://`, and an alias turns their failure into a success. Against, and
+decisive: there are no users, so the alias protects nobody, while costing four permanent shims
+(extra, module, entry point, DSN name) that each need a test, a documented line and a
+deprecation cycle they never earned. Worse, an alias reintroduces the defect it is meant to
+soften — a resolving `fastmcp://` keeps that spelling in the registry listing, in copied
+`pip install` strings and in error messages, permanently pointing at a competitor's primitive.
+A guess that works teaches the wrong name. A guess that fails teaches the right one, and the
+registry already fails informatively: `no context provider is registered as 'fastmcp';
+available: fastapi, flask, mcp, pydantic-ai`.
+
+*What still spells `fastmcp`, deliberately.* The mcp 1.x class name `mcp.server.fastmcp.FastMCP`,
+cited as the thing mcp 2.0 renamed. One line in the module docstring and in `docs/agents.md`
+saying the separately published project is a different library and is not installed by the
+extra — now a clarification rather than a defence of a borrowed name. And
+`test_the_standalone_fastmcp_project_is_never_imported`, which keeps checking mechanically that
+the declared requirement is `mcp<3,>=2` and that nothing in the module came from `fastmcp`.
 
 ## ADR-019 — An agent tool advertises omittable arguments, and carries its refusal out in an `MCPError`
 **Decision.** A protected callable is registered as an agent tool through a shim

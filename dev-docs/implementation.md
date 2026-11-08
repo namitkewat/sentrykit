@@ -14,7 +14,7 @@ src/sentrykit/
   envelope.py        masking.py       audit.py          registry.py        cli.py
   stores/  base.py  filesystem.py  memory.py  jsonl.py  composite.py
   policy/  loader.py  pack/  (cedar policies + schema, as data)
-  integrations/  base.py  fastapi.py  flask.py  fastmcp.py  pydantic_ai.py
+  integrations/  base.py  fastapi.py  flask.py  mcp.py  pydantic_ai.py
 ```
 
 ---
@@ -170,17 +170,19 @@ dependency cannot establish context**, so no sync-dependency form is shipped.
 
 ---
 
-## Phase 4 — Agent providers: FastMCP + Pydantic-AI — **done**
+## Phase 4 — Agent providers: MCP + Pydantic-AI — **done**
 
 Delivered as described. Working notes in `notes/phase-4-research.md`; the decisions it forced
-are ADR-017 (the manifest-filtering invariant), ADR-018 (mcp 2.0 is the target, `fastmcp` is a
-name we keep) and ADR-019 (omittable arguments, and a refusal carried out in an `MCPError`).
+are ADR-017 (the manifest-filtering invariant), ADR-018 (mcp 2.0 is the target, and what the
+integration is named) and ADR-019 (omittable arguments, and a refusal carried out in an
+`MCPError`).
 
 Four things landed differently from the plan below, each measured rather than assumed:
 
 - **There is no `FastMCP`.** mcp 2.0 renamed it `mcp.server.mcpserver.MCPServer`, and the
-  standalone `fastmcp` distribution does not import against mcp 2.0 at all. The module, the
-  extra and the DSN keep the `fastmcp` name; nothing imports that package (ADR-018).
+  separately published `fastmcp` project does not import against mcp 2.0 at all. The module,
+  the extra and the DSN are spelled `mcp` after the one distribution they name; nothing
+  imports that other package (ADR-018, amended).
 - **A tool's advertised schema had to change.** Both frameworks validate a proposal against it
   *before* dispatch, so an argument marked `required` can never be omitted — and per-principal
   default injection was therefore unreachable from an agent. `integrations/tools.proposable`
@@ -207,19 +209,19 @@ that sort of thing in Phase 5 too.
 filtering, demonstrating that nested relationships are resolved by policy, not the model.
 
 **Deliverables.**
-- `integrations/fastmcp.py` — protect tool handlers (and/or server middleware intercepting
+- `integrations/mcp.py` — protect tool handlers (and/or server middleware intercepting
   tool dispatch); establish principal from the MCP auth context; **`list_tools` filtering**
   so tools/argument shapes a principal is not entitled to are hidden from the model.
 - `integrations/pydantic_ai.py` — bridge `RunContext.deps` → `establish(...)`; protect
   `@agent.tool` functions; surface `_authz` in tool results.
-- `examples/fastmcp_server/` — a small FastMCP server exposing 2–3 protected tools, one of
+- `examples/mcp_server/` — a small MCP tool server exposing 2–3 protected tools, one of
   which is only invocable when a **multi-hop relationship** holds (e.g. principal may act on
   a resource only via a delegation/team edge). This is the showcase for relationship
   resolution offloaded to Cedar.
 - `examples/pydantic_ai_agent/` — an agent whose tools are protected and whose principal is
   the human the agent acts for (on-behalf-of / delegation).
 
-**Sub-agent split.** (a) fastmcp integration + server example + list_tools filtering; (b)
+**Sub-agent split.** (a) mcp integration + server example + list_tools filtering; (b)
 pydantic_ai integration + agent example; (c) tests for both.
 
 **Tests.** simulate proposed tool calls: entitled call runs with filtered args + defaults;
@@ -228,7 +230,7 @@ multi-hop scenario allows the call only when the relationship edge exists and de
 otherwise; the agent's on-behalf-of principal is enforced.
 
 **Acceptance.** `pixi run -e agent test-integration` green; `run-mcp` and `run-agent`
-work; extras `sentrykit[fastmcp]` / `sentrykit[pydantic-ai]` resolve.
+work; extras `sentrykit[mcp]` / `sentrykit[pydantic-ai]` resolve.
 
 ---
 

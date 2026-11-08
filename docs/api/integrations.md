@@ -37,10 +37,10 @@ are the same refusal. See [web frameworks](../web-frameworks.md) and [agents](..
    :show-inheritance:
 ```
 
-## `sentrykit.integrations.fastmcp`
+## `sentrykit.integrations.mcp`
 
 ```{eval-rst}
-.. automodule:: sentrykit.integrations.fastmcp
+.. automodule:: sentrykit.integrations.mcp
    :members:
    :show-inheritance:
 ```
