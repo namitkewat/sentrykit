@@ -22,8 +22,21 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
-import mcp
 import pytest
+
+# This module is the one place that exercises all four providers in a single file, so it needs
+# both extras present and is skipped wherever either is missing -- the `web` environment has no
+# `mcp`, the `agent` environment has no `fastapi`, and `default` has neither. Without these
+# guards the module raises at *collection*, which pytest reports as an error rather than a
+# skip, and an error during collection interrupts the whole run: three of the four environment
+# gates were red from the moment this file landed, and each of them was red for a module that
+# simply cannot run there.
+pytest.importorskip("mcp")
+pytest.importorskip("pydantic_ai")
+pytest.importorskip("fastapi")
+pytest.importorskip("flask")
+
+import mcp
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from flask import Flask, jsonify
