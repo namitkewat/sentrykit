@@ -152,6 +152,33 @@ def test_repointing_a_record_at_a_different_predecessor_changes_its_own_hash(
 
 
 @pytest.mark.unit
+def test_a_record_with_no_signature_defaults_hashes_a_payload_the_key_is_absent_from(
+    make_record: RecordFactory,
+) -> None:
+    """``payload`` is the canonical pre-image, so every key it emits joins the integrity claim.
+
+    Every record already in a deployed log hashed a payload with no ``signature_defaults`` key
+    in it. A key that appeared even at its default would change every one of those digests and
+    turn an intact log into a broken one on the next read. Omitting it when empty costs
+    nothing, because a tuple that is *set* is in the payload — so it can be neither stripped
+    off a record that reported one nor invented on a record that did not.
+    """
+    fixed = {"record_id": "rec-same", "invocation_id": "inv-same"}
+    clean = make_record(**fixed).chained(prev_hash=GENESIS_HASH, sequence=0)
+    filled = make_record(**fixed, signature_defaults=("limit",)).chained(
+        prev_hash=GENESIS_HASH, sequence=0
+    )
+
+    assert "signature_defaults" not in clean.payload()
+    assert filled.payload()["signature_defaults"] == ["limit"]
+    assert clean.record_hash != filled.record_hash
+    assert clean.verify()
+    assert filled.verify()
+    assert not filled.model_copy(update={"signature_defaults": ()}).verify()
+    assert not clean.model_copy(update={"signature_defaults": ("limit",)}).verify()
+
+
+@pytest.mark.unit
 def test_editing_a_record_after_it_was_hashed_no_longer_verifies(
     make_record: RecordFactory,
 ) -> None:
@@ -372,6 +399,33 @@ def test_a_refusal_is_recorded_as_carefully_as_an_allow() -> None:
     assert written.outcome == "denied"
     assert written.reason == "Denied by an explicit forbid policy"
     assert written.determining_policies == ("suspended",)
+
+
+@pytest.mark.unit
+def test_the_names_a_signature_filled_reach_the_sink_while_their_values_do_not() -> None:
+    """Names only, so there is nothing here for the masker to do and nothing to leak.
+
+    The value that landed in the slot is the application's own literal rather than anything
+    the caller or the policy chose, and what an auditor needs is the name: it is the only
+    thing on the record that says this call ran on a value nobody selected. ``processed``
+    stays what it has always been, the set sentrykit decided to pass.
+    """
+    sink = InMemoryAuditSink()
+    trail = AuditTrail(sink, masker=_masker())
+
+    trail.record(
+        build_facts(
+            invocation=_invocation(),
+            decision=ALLOWED,
+            outcome="allowed",
+            allowed=True,
+            processed={"customer_id": "c-1"},
+            signature_defaults=("limit",),
+        )
+    )
+
+    assert sink.records[0].signature_defaults == ("limit",)
+    assert "limit" not in sink.records[0].processed
 
 
 @pytest.mark.unit

@@ -244,10 +244,17 @@ def test_a_leniently_dropped_argument_never_carries_its_raw_value_into_the_sink(
     """The rejection explains itself by carrying the value that was refused.
 
     The allow-set that refused it is a real permitted account, not a placeholder, because a
-    search for the raw strings that went in can only find what actually went in.
+    search for the raw strings that went in can only find what actually went in. It is also
+    the default, so this is a genuine reject-and-refill: without one, the only value left for
+    a governed argument would be the signature's, which the allow-set refuses, and the call
+    would be refused instead of narrowed.
     """
     constrained = _governed(
-        account=ArgumentConstraint(allow=(RAW_PERMITTED_ACCOUNT,), policy="grant-accounts")
+        account=ArgumentConstraint(
+            allow=(RAW_PERMITTED_ACCOUNT,),
+            default=RAW_PERMITTED_ACCOUNT,
+            policy="grant-accounts",
+        )
     )
 
     _decide(audited, constrained)
@@ -314,7 +321,11 @@ def test_a_bound_in_a_described_constraint_reaches_the_sink_as_written(
     constraints were walked and masked from one that was never walked at all.
     """
     constrained = _governed(
-        account=ArgumentConstraint(allow=(RAW_PERMITTED_ACCOUNT,), policy="grant-accounts"),
+        account=ArgumentConstraint(
+            allow=(RAW_PERMITTED_ACCOUNT,),
+            default=RAW_PERMITTED_ACCOUNT,
+            policy="grant-accounts",
+        ),
         limit=ArgumentConstraint(minimum=1, maximum=50, policy="grant-page-size"),
     )
 

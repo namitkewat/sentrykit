@@ -141,6 +141,59 @@ class ArgumentRejected(SentrykitError):
         super().__init__(f"argument {name!r} rejected: {reason}")
 
 
+class SignatureDefaultRejected(SentrykitError):
+    """Raised when the only value left for a governed argument is one the policy refuses.
+
+    The argument has a constraint, nothing the caller supplied survived it, no policy default
+    applies — and the callable's own signature default does not satisfy the constraint either.
+    Python would otherwise fill the slot from that default, which is how a bound could be
+    exceeded by a value no rule ever saw.
+
+    This is the same rule a *policy* default has always been held to: a default is checked
+    against the constraint that governs it, so omitting an argument is not a way around that
+    rule. A signature default is a default from a different source, and it answers to the
+    same check.
+
+    ``declared`` says whose mistake it is. When it is true the refusing rule came from an
+    argument ceiling — reviewed, version-controlled policy text — so the operator's policy file
+    and their application code disagree about the same parameter, and every caller of the
+    action is affected equally. When it is false the rule came from this principal's own grant
+    data, so the refusal is specific to them and is ordinary authorization rather than a
+    misconfiguration.
+
+    Not a :class:`ConfigurationError` even in the ``declared`` case, for two reasons: it
+    refuses one call rather than failing the wiring, and there is no moment at which it could
+    fail the wiring instead, since nothing enumerates protected callables for a policy load to
+    check against. Classifying it with configuration faults would also make it unqueryable in
+    the audit trail, where it has its own outcome.
+    """
+
+    def __init__(
+        self, name: str, reason: str, policy: str | None = None, *, declared: bool = False
+    ) -> None:
+        """Record the refusal.
+
+        Args:
+            name: The governed parameter with no usable value.
+            reason: Why the signature default was refused, from the rejection that produced
+                it — the rule's own sentence, so the caller reads the same explanation they
+                would have got had they proposed the value themselves.
+            policy: Id of the grant or the reviewed policy that carried the constraint.
+            declared: Whether that constraint came from an argument ceiling rather than from
+                grant data.
+        """
+        self.name = name
+        self.reason = reason
+        self.policy = policy
+        self.declared = declared
+        source = "a reviewed argument ceiling" if declared else "this principal's grant"
+        super().__init__(
+            f"argument {name!r} has no value that may be used: nothing the caller supplied "
+            f"survived, no policy default applies, and the callable's own default is refused "
+            f"by {source} ({reason})"
+        )
+
+
 class NoValidArguments(SentrykitError):
     """Raised when the caller supplied arguments and the policy rejected every one of them.
 

@@ -30,6 +30,7 @@ from sentrykit.errors import (
     ConfigurationError,
     DefaultUnavailable,
     NoValidArguments,
+    SignatureDefaultRejected,
     ValidationFailed,
 )
 from sentrykit.masking import Masker
@@ -598,6 +599,407 @@ def test_a_signature_without_var_keyword_still_skips_an_unlisted_default(
 
     assert "page" not in plan.processed
     assert "page" not in plan.defaults_applied
+
+
+# --- the callable's own default, answering to the constraint that governs it -----------
+#
+# Everything above decides what sentrykit *passes*. What Python does with a parameter it was
+# passed nothing for is fill the slot from the signature, and that value is the one a grant
+# never saw: a proposal above a bound ran at the signature's number, which can be *higher*
+# than the caller asked for, and an omitted argument ran at a denied value under a clean
+# allow with nothing rejected at all.
+#
+# So these assert on what the callable received. Asserting on ``processed`` is precisely what
+# missed it, because the name is absent from ``processed`` whether the value that landed in
+# the slot was checked or not.
+
+
+def _limit_grant(constraint: ArgumentConstraint) -> Principal:
+    """Entitled to search, governing ``limit`` and nothing else.
+
+    ``search_orders`` declares ``limit: int = 10``, so the bound each test chooses is what
+    decides whether the signature's own 10 is a value this principal may have.
+    """
+    return Principal(
+        id="dana",
+        roles=("support",),
+        constraints={
+            'Action::"tool.search_orders"': ConstraintSet(arguments={"limit": constraint})
+        },
+    )
+
+
+def _audited(policy_engine: PolicyEngine) -> tuple[Governor, InMemoryAuditSink]:
+    """A governor whose records the test can read back."""
+    sink = InMemoryAuditSink()
+    return Governor(policy_engine, audit=AuditTrail(sink, masker=Masker(key=b"k"))), sink
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "proposed",
+    [{"customer_id": "c-1", "limit": 500}, {"customer_id": "c-1"}],
+    ids=["proposed-and-rejected", "never-proposed"],
+)
+def test_a_signature_default_the_grant_will_not_accept_refuses_the_call(
+    governor: Governor,
+    search_spec: ArgumentSpec,
+    proposed: dict[str, object],
+) -> None:
+    """Asking for 500 and omitting it entirely arrive at the same place: 10, which is refused.
+
+    Both shapes matter. The first is the one that reads backwards -- the caller asked for more
+    than they may have and the signature would have handed them 10 anyway -- and the second is
+    the one that says omitting an argument is not a way around the rule on it, whichever side
+    supplies the value.
+    """
+    with pytest.raises(SignatureDefaultRejected) as caught:
+        governor.plan(
+            search_spec,
+            principal=_limit_grant(ArgumentConstraint(maximum=5, policy="grant-limit")),
+            action=SEARCH_ACTION,
+            resource=ORDERS_TOOL,
+            proposed=proposed,
+        )
+
+    assert caught.value.name == "limit"
+    assert caught.value.policy == "grant-limit"
+    # The rule's own sentence, so the caller reads the same explanation they would have got
+    # had they proposed 10 themselves.
+    assert caught.value.reason == "Value is above the maximum of 5"
+    # Grant data, not reviewed policy text, so this is ordinary authorization for one
+    # principal rather than a policy file disagreeing with the application's own code.
+    assert caught.value.declared is False
+    assert _CALLED == []
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "proposed",
+    [{"customer_id": "c-1", "limit": 500}, {"customer_id": "c-1"}],
+    ids=["proposed-and-rejected", "never-proposed"],
+)
+def test_a_signature_default_the_grant_accepts_reaches_the_callable_unchanged(
+    governor: Governor,
+    search_spec: ArgumentSpec,
+    proposed: dict[str, object],
+) -> None:
+    """Checked and accepted, so the call runs exactly as it always did -- and now says so.
+
+    Nothing is added to ``processed`` or to ``defaults_applied``. Python still supplies the
+    value, sentrykit only declined to override it, and recording it as a policy default would
+    claim a decision nobody made. ``signature_defaults`` carries the name instead.
+    """
+    plan = governor.plan(
+        search_spec,
+        principal=_limit_grant(ArgumentConstraint(maximum=50, policy="grant-limit")),
+        action=SEARCH_ACTION,
+        resource=ORDERS_TOOL,
+        proposed=proposed,
+    )
+
+    governor.invoke(search_orders, plan)
+
+    assert _CALLED == [{"customer_id": "c-1", "limit": 10, "region": "eu-west"}]
+    assert "limit" not in plan.processed
+    assert "limit" not in plan.defaults_applied
+    assert plan.signature_defaults == ("limit",)
+
+
+@pytest.mark.unit
+def test_an_accepted_signature_default_is_reported_on_an_otherwise_clean_allow(
+    governor: Governor,
+    search_spec: ArgumentSpec,
+) -> None:
+    """The half of this that was invisible rather than merely unchecked.
+
+    Nothing was proposed for ``limit`` and nothing was rejected, so ``rejected`` is empty and
+    ``narrowing`` has nothing to report -- and the call still ran on a value the caller never
+    chose. ``signature_defaults`` is the only field that says so.
+    """
+    plan = governor.plan(
+        search_spec,
+        principal=_limit_grant(ArgumentConstraint(maximum=50, policy="grant-limit")),
+        action=SEARCH_ACTION,
+        resource=ORDERS_TOOL,
+        proposed={"customer_id": "c-1"},
+    )
+    envelope = plan.envelope()
+
+    assert plan.rejected == ()
+    assert plan.narrowing() == ((), ())
+    assert envelope is not None
+    assert envelope.narrowed is False
+    assert envelope.signature_defaults == ("limit",)
+
+
+@pytest.mark.unit
+def test_an_accepted_signature_default_is_named_on_the_audit_record(
+    policy_engine: PolicyEngine,
+    search_spec: ArgumentSpec,
+) -> None:
+    """Names, never values: the value is the application's own literal, the name is the fact."""
+    audited, sink = _audited(policy_engine)
+
+    audited.plan(
+        search_spec,
+        principal=_limit_grant(ArgumentConstraint(maximum=50, policy="grant-limit")),
+        action=SEARCH_ACTION,
+        resource=ORDERS_TOOL,
+        proposed={"customer_id": "c-1", "limit": 500},
+    )
+
+    assert sink.records[0].outcome == "allowed"
+    assert sink.records[0].signature_defaults == ("limit",)
+    assert "limit" not in sink.records[0].processed
+
+
+@pytest.mark.unit
+def test_a_refused_signature_default_is_recorded_under_its_own_outcome(
+    policy_engine: PolicyEngine,
+    search_spec: ArgumentSpec,
+) -> None:
+    """Queryable as itself, because it is neither a denial nor an argument the caller sent."""
+    audited, sink = _audited(policy_engine)
+
+    with pytest.raises(SignatureDefaultRejected):
+        audited.plan(
+            search_spec,
+            principal=_limit_grant(ArgumentConstraint(maximum=5, policy="grant-limit")),
+            action=SEARCH_ACTION,
+            resource=ORDERS_TOOL,
+            proposed={"customer_id": "c-1", "limit": 500},
+        )
+
+    assert sink.records[0].outcome == "signature-default-rejected"
+    assert sink.records[0].decision == "deny"
+    # The gate itself permitted the call, so the record carries the permit that decided it
+    # alongside a refusal the argument layer above Cedar's answer produced.
+    assert sink.records[0].determining_policies == ("support-may-search",)
+    assert "limit" in str(sink.records[0].reason)
+
+
+@pytest.mark.unit
+def test_a_usable_policy_default_is_injected_rather_than_left_to_the_signature(
+    governor: Governor,
+    search_spec: ArgumentSpec,
+) -> None:
+    """Reject-and-refill is unchanged: the principal's own default fills the gap it left.
+
+    There is then no gap for the signature to fill, so ``signature_defaults`` stays empty and
+    the narrowing fields read exactly as they did before -- refilled, and vouched for.
+    """
+    plan = governor.plan(
+        search_spec,
+        principal=_limit_grant(ArgumentConstraint(maximum=10, default=7, policy="grant-limit")),
+        action=SEARCH_ACTION,
+        resource=ORDERS_TOOL,
+        proposed={"customer_id": "c-1", "limit": 500},
+    )
+
+    governor.invoke(search_orders, plan)
+
+    assert _CALLED == [{"customer_id": "c-1", "limit": 7, "region": "eu-west"}]
+    assert plan.processed["limit"] == 7
+    assert plan.defaults_applied == {"limit": 7}
+    assert plan.signature_defaults == ()
+    assert plan.narrowing() == (("limit",), ())
+
+
+@pytest.mark.unit
+def test_a_required_argument_with_no_usable_value_keeps_the_error_it_always_raised(
+    governor: Governor,
+    search_spec: ArgumentSpec,
+) -> None:
+    """The check runs last, and that order is load-bearing rather than incidental.
+
+    This grant leaves ``limit`` both required and unsatisfiable, so two rules could refuse it.
+    A deployment that has always seen ``DefaultUnavailable`` here must keep seeing it; the
+    newer refusal is for the case nothing else catches.
+    """
+    with pytest.raises(DefaultUnavailable) as caught:
+        governor.plan(
+            search_spec,
+            principal=_limit_grant(
+                ArgumentConstraint(maximum=1, required=True, policy="grant-limit")
+            ),
+            action=SEARCH_ACTION,
+            resource=ORDERS_TOOL,
+            proposed={"customer_id": "c-1", "limit": 500},
+        )
+
+    assert caught.value.name == "limit"
+    assert _CALLED == []
+
+
+@pytest.mark.unit
+def test_a_parameter_the_signature_gives_no_default_is_left_to_the_older_rules(
+    governor: Governor,
+    search_spec: ArgumentSpec,
+) -> None:
+    """``customer_id`` has no Python default, so there is nothing for the check to read."""
+    with pytest.raises(DefaultUnavailable) as caught:
+        governor.plan(
+            search_spec,
+            principal=Principal(
+                id="dana",
+                roles=("support",),
+                constraints={
+                    'Action::"tool.search_orders"': ConstraintSet(
+                        arguments={
+                            "customer_id": ArgumentConstraint(
+                                allow=("c-1",), policy="grant-customer"
+                            )
+                        }
+                    )
+                },
+            ),
+            action=SEARCH_ACTION,
+            resource=ORDERS_TOOL,
+            proposed={"customer_id": "c-999", "limit": 3},
+        )
+
+    assert caught.value.name == "customer_id"
+    assert _CALLED == []
+
+
+@pytest.mark.unit
+def test_a_var_keyword_argument_has_no_signature_default_to_check(governor: Governor) -> None:
+    """A name the signature never spells cannot carry a default, so nothing is refused.
+
+    The argument is simply gone, which is what a constraint with no default has always done
+    for a ``**kwargs`` name. The guard matters because the check reads the signature by name.
+    """
+
+    def flexible_search(customer_id: str, **extra: object) -> dict[str, object]:
+        call = {"customer_id": customer_id, **extra}
+        _CALLED.append(call)
+        return dict(call)
+
+    plan = governor.plan(
+        ArgumentSpec.from_callable(flexible_search),
+        principal=Principal(
+            id="dana",
+            roles=("support",),
+            constraints={
+                'Action::"tool.search_orders"': ConstraintSet(
+                    arguments={"page": ArgumentConstraint(maximum=10, policy="grant-page")}
+                )
+            },
+        ),
+        action=SEARCH_ACTION,
+        resource=ORDERS_TOOL,
+        proposed={"customer_id": "c-1", "page": 99},
+    )
+
+    governor.invoke(flexible_search, plan)
+
+    assert plan.signature_defaults == ()
+    assert _CALLED == [{"customer_id": "c-1"}]
+
+
+# --- the same gap, with a deny-set and a default nobody wants --------------------------
+#
+# The bound is the readable half of this; the deny-set is the half that hurts. A grant that
+# forbids ``"prod"`` over a callable whose parameter defaults to ``"prod"`` wiped prod both
+# when the caller proposed it and when they left it out -- and in the second case the envelope
+# reported a clean allow with nothing rejected.
+#
+# This section brings its own gate because the fixture policy set has no permit for the
+# action, and only the argument layer is under test here.
+
+WIPE_ACTION = EntityRef("Action", "tool.wipe")
+DEPLOYS = EntityRef("Tool", "deploys")
+
+
+def wipe(target: str = "prod", confirm: bool = False) -> dict[str, object]:
+    """A dangerous signature default on a parameter policy has something to say about."""
+    call = {"target": target, "confirm": confirm}
+    _CALLED.append(call)
+    return dict(call)
+
+
+def _wipe_governor() -> Governor:
+    """A gate that permits the action outright, so the refusal can only come from the args."""
+    return Governor(PolicyEngine("permit (principal, action, resource);", (Entity(DEPLOYS),)))
+
+
+def _prod_is_denied() -> Principal:
+    """Forbids the one value ``wipe`` falls back to when nothing else is left."""
+    return Principal(
+        id="dana",
+        constraints={
+            'Action::"tool.wipe"': ConstraintSet(
+                arguments={"target": ArgumentConstraint(deny=("prod",), policy="grant-no-prod")}
+            )
+        },
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "proposed",
+    [{"target": "prod", "confirm": True}, {"confirm": True}],
+    ids=["proposed-and-rejected", "never-proposed"],
+)
+def test_a_denied_signature_default_never_reaches_the_callable(
+    proposed: dict[str, object],
+) -> None:
+    """The finding, in the shape where it costs something: prod is not wiped either way."""
+    with pytest.raises(SignatureDefaultRejected) as caught:
+        _wipe_governor().plan(
+            ArgumentSpec.from_callable(wipe),
+            principal=_prod_is_denied(),
+            action=WIPE_ACTION,
+            resource=DEPLOYS,
+            proposed=proposed,
+        )
+
+    assert caught.value.name == "target"
+    assert _CALLED == []
+
+
+@pytest.mark.unit
+def test_a_lone_denied_argument_is_still_refused_by_the_rule_that_always_refused_it() -> None:
+    """Worth pinning so the newer refusal is not mistaken for the one that fires here.
+
+    With ``target`` the only argument proposed, every proposed argument was rejected and
+    ``NoValidArguments`` refuses before the signature is ever consulted. That is unchanged,
+    and it is why the tests above send a second argument that survives.
+    """
+    with pytest.raises(NoValidArguments):
+        _wipe_governor().plan(
+            ArgumentSpec.from_callable(wipe),
+            principal=_prod_is_denied(),
+            action=WIPE_ACTION,
+            resource=DEPLOYS,
+            proposed={"target": "prod"},
+        )
+
+    assert _CALLED == []
+
+
+@pytest.mark.unit
+def test_an_ungoverned_parameter_keeps_its_signature_default_without_comment() -> None:
+    """No rule governs ``target``, so sentrykit has nothing to say about it and says nothing.
+
+    The alarming default is the application's own business. Policing a parameter nobody
+    constrained would make the check a lint rule on signatures rather than an authorization
+    decision, and would refuse calls no policy objects to.
+    """
+    governor = _wipe_governor()
+    plan = governor.plan(
+        ArgumentSpec.from_callable(wipe),
+        principal=Principal(id="dana"),
+        action=WIPE_ACTION,
+        resource=DEPLOYS,
+        proposed={"confirm": True},
+    )
+
+    governor.invoke(wipe, plan)
+
+    assert _CALLED == [{"target": "prod", "confirm": True}]
+    assert plan.signature_defaults == ()
 
 
 # --- arg_handling ---------------------------------------------------------------------

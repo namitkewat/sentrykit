@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import pytest
 
+from sentrykit.audit import AuditTrail
 from sentrykit.cedar import Entity, EntityRef
 from sentrykit.config import configure
 from sentrykit.constraints import ArgumentConstraint, ConstraintSet, parse_ceiling
@@ -28,8 +29,11 @@ from sentrykit.errors import (
     ConfigurationError,
     DefaultUnavailable,
     NoValidArguments,
+    SignatureDefaultRejected,
 )
+from sentrykit.masking import Masker
 from sentrykit.stores.base import PolicyBundle
+from sentrykit.stores.memory import InMemoryAuditSink
 
 SEARCH_ACTION = EntityRef("Action", "tool.search_orders")
 ORDERS_TOOL = EntityRef("Tool", "orders")
@@ -42,9 +46,24 @@ CEILING = (
 )
 """One permit carrying the ceiling from the policies page, escaped as Cedar requires."""
 
+_CALLED: list[dict[str, object]] = []
+"""Every argument set a protected callable in this module actually ran with.
+
+A plan says what sentrykit decided to pass; it does not say what Python then put in the
+slots it was passed nothing for. Only the call itself does, so the tests that care about a
+signature default read this rather than ``plan.processed``.
+"""
+
 
 def search_orders(limit: int = 10, region: str = "eu") -> dict[str, object]:
-    return {"limit": limit, "region": region}
+    call = {"limit": limit, "region": region}
+    _CALLED.append(call)
+    return dict(call)
+
+
+@pytest.fixture(autouse=True)
+def _forget_calls() -> None:
+    _CALLED.clear()
 
 
 @pytest.fixture
@@ -52,9 +71,9 @@ def spec() -> ArgumentSpec:
     return ArgumentSpec.from_callable(search_orders)
 
 
-def _governor(policies: str) -> Governor:
+def _governor(policies: str, *, audit: AuditTrail | None = None) -> Governor:
     bundle = PolicyBundle.from_text(policies, entities=(Entity(ORDERS_TOOL),))
-    return Governor(bundle.engine(), bundle=bundle)
+    return Governor(bundle.engine(), bundle=bundle, audit=audit)
 
 
 def _principal(**constraints: ArgumentConstraint) -> Principal:
@@ -120,7 +139,8 @@ def test_a_proposal_within_the_ceiling_passes_through_untouched(spec: ArgumentSp
 @pytest.mark.unit
 def test_a_ceiling_applies_with_no_grant_at_all(spec: ArgumentSpec) -> None:
     """The point of putting it in the policy: it binds every principal the permit reaches."""
-    plan = _governor(CEILING).plan(
+    governor = _governor(CEILING)
+    plan = governor.plan(
         spec,
         principal=Principal(id="alice"),
         action=SEARCH_ACTION,
@@ -128,8 +148,16 @@ def test_a_ceiling_applies_with_no_grant_at_all(spec: ArgumentSpec) -> None:
         proposed={"region": "cn", "limit": 5},
     )
 
+    governor.invoke(search_orders, plan)
+
     assert "region" not in plan.processed
     assert [item.name for item in plan.rejected] == ["region"]
+    # ``processed`` is only half the answer, and on its own it is the half that hides this:
+    # with no grant there is nothing to refill ``region``, so Python filled the slot from the
+    # signature. ``"eu"`` is inside the declared allow-set, which is why the call runs at all
+    # -- and the name is reported, because the caller did not choose that value.
+    assert _CALLED == [{"limit": 5, "region": "eu"}]
+    assert plan.signature_defaults == ("region",)
 
 
 # --- a ceiling only narrows --------------------------------------------------------------
@@ -266,6 +294,163 @@ def test_a_proposal_with_nothing_left_standing_is_refused_rather_than_narrowed(
         )
 
     assert caught.value.allowed["limit"]["maximum"] == 100
+
+
+# --- a ceiling reaches the callable's own default too -------------------------------------
+#
+# A ceiling says what *anybody* may pass, so the one value it must not miss is the one nobody
+# passes: with no grant to refill a rejected argument, Python fills the slot from the
+# signature. Until that value answered to the ceiling, a declared maximum of 10 over a
+# parameter defaulting to 1000 ran the body at 1000 -- more than the caller had asked for,
+# from a file whose whole purpose is to state the maximum.
+#
+# A ceiling refusing the default is told apart from a grant refusing it, because the two are
+# different problems for different people. A ceiling is reviewed, version-controlled text, so
+# the disagreement is between an operator's policy file and their own code and it reaches
+# every caller of the action; a grant is one principal's data.
+
+CAPPED = (
+    '\n@id("search-is-capped")\n'
+    '@constraints("{\\"limit\\": {\\"maximum\\": 10}}")\n'
+    "permit (principal, action, resource);\n"
+)
+"""A declared bound well below the wide signature default below it."""
+
+NO_PROD = (
+    '\n@id("nobody-may-wipe-prod")\n'
+    '@constraints("{\\"target\\": {\\"deny\\": [\\"prod\\"]}}")\n'
+    "permit (principal, action, resource);\n"
+)
+"""The deny-set half: the value forbidden here is the one the signature falls back to."""
+
+WIPE_ACTION = EntityRef("Action", "tool.wipe")
+
+
+def search_with_a_wide_default(q: str = "", limit: int = 1000) -> dict[str, object]:
+    """Its own default is far above anything :data:`CAPPED` permits."""
+    call = {"q": q, "limit": limit}
+    _CALLED.append(call)
+    return dict(call)
+
+
+def search_with_a_modest_default(q: str = "", limit: int = 5) -> dict[str, object]:
+    """Its own default is inside :data:`CAPPED`, so the ceiling has no quarrel with it."""
+    call = {"q": q, "limit": limit}
+    _CALLED.append(call)
+    return dict(call)
+
+
+def wipe(target: str = "prod", confirm: bool = False) -> dict[str, object]:
+    """``confirm`` is ungoverned, so it survives and the call reaches the signature check."""
+    call = {"target": target, "confirm": confirm}
+    _CALLED.append(call)
+    return dict(call)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "proposed",
+    [{"q": "x", "limit": 500}, {"q": "x"}],
+    ids=["proposed-and-rejected", "never-proposed"],
+)
+def test_a_signature_default_above_a_declared_ceiling_refuses_the_call(
+    proposed: dict[str, object],
+) -> None:
+    """Asked for 500 or asked for nothing, the slot would have taken 1000 either way."""
+    with pytest.raises(SignatureDefaultRejected) as caught:
+        _governor(CAPPED).plan(
+            ArgumentSpec.from_callable(search_with_a_wide_default),
+            principal=Principal(id="alice"),
+            action=SEARCH_ACTION,
+            resource=ORDERS_TOOL,
+            proposed=proposed,
+        )
+
+    assert caught.value.name == "limit"
+    assert caught.value.declared is True
+    assert caught.value.policy == "search-is-capped"
+    assert _CALLED == []
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "proposed",
+    [{"q": "x", "limit": 500}, {"q": "x"}],
+    ids=["proposed-and-rejected", "never-proposed"],
+)
+def test_a_signature_default_the_ceiling_accepts_runs_the_call_and_names_it(
+    proposed: dict[str, object],
+) -> None:
+    """Inside the declared bound, so the call runs on it -- reported, and still Python's own.
+
+    ``processed`` is the set sentrykit decided to pass and the name is deliberately not in it:
+    the ceiling checked this value and declined to replace it, which is a different fact from
+    a default policy supplied.
+    """
+    sink = InMemoryAuditSink()
+    governor = _governor(CAPPED, audit=AuditTrail(sink, masker=Masker(key=b"k")))
+    plan = governor.plan(
+        ArgumentSpec.from_callable(search_with_a_modest_default),
+        principal=Principal(id="alice"),
+        action=SEARCH_ACTION,
+        resource=ORDERS_TOOL,
+        proposed=proposed,
+    )
+    envelope = plan.envelope()
+
+    governor.invoke(search_with_a_modest_default, plan)
+
+    assert _CALLED == [{"q": "x", "limit": 5}]
+    assert "limit" not in plan.processed
+    assert plan.defaults_applied == {}
+    assert envelope is not None
+    assert envelope.signature_defaults == ("limit",)
+    assert sink.records[0].signature_defaults == ("limit",)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "proposed",
+    [{"target": "prod", "confirm": True}, {"confirm": True}],
+    ids=["proposed-and-rejected", "never-proposed"],
+)
+def test_a_declared_deny_set_also_binds_the_callables_own_default(
+    proposed: dict[str, object],
+) -> None:
+    """The costly shape: a reviewed file forbids ``prod`` and the parameter defaults to it."""
+    with pytest.raises(SignatureDefaultRejected) as caught:
+        _governor(NO_PROD).plan(
+            ArgumentSpec.from_callable(wipe),
+            principal=Principal(id="alice"),
+            action=WIPE_ACTION,
+            resource=ORDERS_TOOL,
+            proposed=proposed,
+        )
+
+    assert caught.value.name == "target"
+    assert caught.value.declared is True
+    assert _CALLED == []
+
+
+@pytest.mark.unit
+def test_a_ceiling_and_a_grant_that_both_refuse_the_default_report_the_reviewed_one() -> None:
+    """Ceilings are checked first so the provenance survives the intersection.
+
+    Both layers refuse 1000 here, and the intersected set no longer remembers which side a
+    rule came from. Reporting the grant would send an operator looking through per-principal
+    data for a conflict that is in their policy file and affects everyone.
+    """
+    with pytest.raises(SignatureDefaultRejected) as caught:
+        _governor(CAPPED).plan(
+            ArgumentSpec.from_callable(search_with_a_wide_default),
+            principal=_principal(limit=ArgumentConstraint(maximum=20, policy="grant-limit")),
+            action=SEARCH_ACTION,
+            resource=ORDERS_TOOL,
+            proposed={"q": "x", "limit": 500},
+        )
+
+    assert caught.value.declared is True
+    assert caught.value.policy == "search-is-capped"
 
 
 # --- composing with the forbid backstop ---------------------------------------------------

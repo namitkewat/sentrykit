@@ -147,6 +147,7 @@ def test_a_clean_allow_renders_without_empty_sections() -> None:
     assert rendered["action"] == 'Action::"tool.ping"'
     assert "rejected" not in rendered
     assert "defaults_applied" not in rendered
+    assert "signature_defaults" not in rendered
     assert "trace" not in rendered
     assert "resource" not in rendered
 
@@ -311,6 +312,42 @@ def test_a_mixed_narrowing_separates_what_policy_supplied_from_what_it_did_not()
 
     assert "unverified" in guidance
     assert "region did come from this principal's own entitlement." in guidance
+
+
+# --- signature_defaults: the slot sentrykit declined to fill ---------------------------
+#
+# When nothing the caller proposed survived and policy had no default either, the value the
+# callable ran on came from its own signature. The envelope used to have no way to say that,
+# so an argument the policy checked and accepted read identically to one it had never seen.
+# The field carries names only, which is what makes it safe at every verbosity.
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("verbosity", ["summary", "verbose", "debug"])
+def test_the_names_a_signature_filled_survive_every_verbosity_that_reports_at_all(
+    verbosity: Verbosity,
+) -> None:
+    """A parameter name is not a value, so there is nothing here for verbosity to withhold."""
+    envelope = _envelope(verbosity, signature_defaults=("limit",))
+
+    assert envelope is not None
+    assert envelope.as_dict()["signature_defaults"] == ["limit"]
+
+
+@pytest.mark.unit
+def test_summary_withholds_the_values_but_not_the_names_a_signature_filled() -> None:
+    """The contrast that makes the field worth having at ``summary`` at all.
+
+    ``processed`` is trimmed away entirely here, so a caller at this verbosity learns nothing
+    about the arguments from it. ``signature_defaults`` is what tells them one of those
+    arguments was not chosen by anybody -- the fact, without the value.
+    """
+    envelope = _envelope("summary", signature_defaults=("limit",))
+
+    assert envelope is not None
+    rendered = envelope.as_dict()
+    assert "processed" not in rendered
+    assert rendered["signature_defaults"] == ["limit"]
 
 
 # --- the recorder: the channel that survives a copied context -------------------------

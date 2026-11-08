@@ -85,6 +85,7 @@ from sentrykit.errors import (
     NoValidArguments,
     ReservedKey,
     SentrykitError,
+    SignatureDefaultRejected,
     ValidationFailed,
 )
 from sentrykit.masking import Masker, Sensitive
@@ -157,6 +158,7 @@ __all__ = [
     "Sensitive",
     "SentrykitError",
     "Settings",
+    "SignatureDefaultRejected",
     "TemplateLink",
     "ValidationFailed",
     "__version__",

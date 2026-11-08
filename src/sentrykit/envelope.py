@@ -88,13 +88,22 @@ class AuthzEnvelope(BaseModel):
         action: The action that was authorized.
         resource: The resource it was authorized against.
         principal: The acting principal's uid. Omitted below ``verbose``.
-        processed: The arguments the callable actually ran with. Omitted below ``verbose``.
+        processed: The argument set the policy decided and sentrykit passed. A parameter
+            left to the callable's own default is absent here and named in
+            ``signature_defaults`` instead. Omitted below ``verbose``.
         rejected: Arguments the policy refused, with reasons. Values are included only at
             ``verbose`` and above.
         defaults_applied: Arguments filled in from the principal's defaults. Below
             ``verbose`` the keys are still the argument names but every value is ``None``,
             so the field keeps one shape at every verbosity and a caller can always read
             ``defaults_applied.keys()``.
+        signature_defaults: Governed parameters whose value came from the callable's own
+            signature — the caller proposed none that survived, policy supplied none, and the
+            constraint was checked against the application's own default and accepted it.
+            Names only, never values. Present at every verbosity, because the point of the
+            field is that this case used to be invisible: from the argument layer's point of
+            view nothing happened, so a clean allow was reported over a value no policy chose.
+            A call where that default was *refused* does not appear here; it is a refusal.
         narrowed: Whether the call ran with a value the caller did not propose — the
             reject-and-refill outcome. Distinct from ``rejected`` being non-empty: a
             rejection that left the argument with the caller's own surviving value is not
@@ -126,6 +135,7 @@ class AuthzEnvelope(BaseModel):
     processed: dict[str, object] = Field(default_factory=dict)
     rejected: tuple[RejectedArgument, ...] = ()
     defaults_applied: dict[str, object] = Field(default_factory=dict)
+    signature_defaults: tuple[str, ...] = ()
     narrowed: bool = False
     narrowed_arguments: tuple[str, ...] = ()
     guidance: str | None = None
@@ -228,6 +238,7 @@ def build_envelope(
     processed: Mapping[str, object],
     rejected: tuple[RejectedArgument, ...],
     defaults_applied: Mapping[str, object],
+    signature_defaults: Sequence[str] = (),
     narrowed_arguments: Sequence[str] = (),
     narrowed_without_replacement: Sequence[str] = (),
     obligations: tuple[str, ...] = (),
@@ -256,6 +267,9 @@ def build_envelope(
         processed: Final arguments the call ran with.
         rejected: Arguments the policy refused.
         defaults_applied: Arguments filled in from policy defaults.
+        signature_defaults: Governed parameters the callable's own signature default filled,
+            after the constraint checked and accepted it. Names only, and not trimmed by
+            verbosity for the same reason ``narrowed_arguments`` is not.
         narrowed_arguments: Parameter names whose proposed value did not survive. Sets
             :attr:`AuthzEnvelope.narrowed` and drives the guidance sentence. Not trimmed by
             verbosity: these names already appear on ``rejected`` at every verbosity.
@@ -305,6 +319,10 @@ def build_envelope(
         processed=processed_out,
         rejected=rejected_out,
         defaults_applied=defaults_out,
+        # Not trimmed by verbosity: these are parameter names, which `rejected` and
+        # `defaults_applied` already carry at every verbosity, and the whole point of the
+        # field is to stop this case being silent.
+        signature_defaults=tuple(signature_defaults),
         narrowed=bool(narrowed_arguments),
         narrowed_arguments=tuple(narrowed_arguments),
         guidance=(

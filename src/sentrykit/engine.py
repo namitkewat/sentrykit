@@ -46,6 +46,7 @@ from sentrykit.errors import (
     NoValidArguments,
     ReservedKey,
     SentrykitError,
+    SignatureDefaultRejected,
     ValidationFailed,
 )
 from sentrykit.masking import Masker, MaskStrategyName, sensitive_fields
@@ -108,6 +109,7 @@ _REFUSAL_OUTCOMES: Final[dict[type[BaseException], AuditOutcome]] = {
     ArgumentRejected: "arguments-rejected",
     NoValidArguments: "no-valid-arguments",
     DefaultUnavailable: "default-unavailable",
+    SignatureDefaultRejected: "signature-default-rejected",
     ValidationFailed: "validation-failed",
 }
 """How each typed refusal is classified in the audit trail.
@@ -373,6 +375,11 @@ class Plan:
         processed: The final arguments, filtered, defaulted and validated.
         rejected: Arguments the policy refused.
         defaults_applied: Arguments filled in from the principal's defaults.
+        signature_defaults: Governed parameters whose value came from the callable's own
+            signature, after the constraint that governs them checked it and accepted it.
+            Deliberately *not* merged into :attr:`processed`: that is the set sentrykit
+            decided and passed, and a signature-sourced value is one it declined to fill, so
+            folding them together would lose the distinction. Names only.
         obligations: Obligations the policy attached.
         trace: Debug detail, populated only at ``debug`` verbosity.
     """
@@ -384,6 +391,7 @@ class Plan:
     processed: dict[str, object] = field(default_factory=dict)
     rejected: tuple[RejectedArgument, ...] = ()
     defaults_applied: dict[str, object] = field(default_factory=dict)
+    signature_defaults: tuple[str, ...] = ()
     obligations: tuple[str, ...] = ()
     trace: dict[str, object] = field(default_factory=dict)
 
@@ -434,6 +442,7 @@ class Plan:
             processed=self.processed,
             rejected=self.rejected,
             defaults_applied=self.defaults_applied,
+            signature_defaults=self.signature_defaults,
             narrowed_arguments=narrowed,
             narrowed_without_replacement=unsupplied,
             obligations=self.obligations,
@@ -674,11 +683,36 @@ class Governor:
 
             missing = self._missing_arguments(spec, constraints, arguments)
             if missing:
+                unknown = sorted(
+                    name
+                    for name in missing
+                    if name not in spec.parameters and not spec.accepts_var_keyword
+                )
+                if unknown:
+                    # The operator's actual mistake, which the refusal alone does not name: a
+                    # grant or a reviewed ceiling requires an argument this callable has no
+                    # parameter for. One transposed character -- ``limti`` for ``limit`` --
+                    # refuses every call to the action, and the error names an argument that
+                    # cannot exist. The refusal stands; the reason is now on the record.
+                    _LOGGER.error(
+                        "A required constraint names an argument the callable does not accept",
+                        extra={**context, "arguments": unknown, "callable": spec.name},
+                    )
                 _LOGGER.info(
                     "Required argument has no value and no default",
                     extra={**context, "arguments": list(missing)},
                 )
                 raise DefaultUnavailable(missing[0])
+
+            # The slot nobody filled. Everything above decides what sentrykit *passes*; what
+            # Python does with a parameter it was passed nothing for is fill it from the
+            # signature -- a value no constraint had ever seen. ADR-027's rule is that a
+            # default answers to the constraint that governs it; this applies the same rule
+            # to a default from the other source. Last, so a call that some other rule
+            # already refuses keeps the error it has always raised.
+            signature_defaults = self._check_signature_defaults(
+                spec, constraints, ceilings, arguments, context
+            )
 
             processed = spec.validate(arguments)
         except SentrykitError as exc:
@@ -713,6 +747,7 @@ class Governor:
             processed=processed,
             rejected=rejected,
             defaults_applied=defaults_applied,
+            signature_defaults=signature_defaults,
             obligations=obligations,
             trace=trace,
         )
@@ -916,6 +951,90 @@ class Governor:
             )
 
     @staticmethod
+    def _check_signature_defaults(
+        spec: ArgumentSpec,
+        constraints: ConstraintSet,
+        ceilings: Sequence[ConstraintSet],
+        arguments: Mapping[str, object],
+        context: Mapping[str, object],
+    ) -> tuple[str, ...]:
+        """Hold the callable's own default to the constraint that governs its parameter.
+
+        Runs on the gap the rest of the pipeline leaves: a parameter with a constraint, no
+        surviving caller value and no policy default. ``arguments`` has no entry for it, so
+        :meth:`ArgumentSpec.validate` and :meth:`ArgumentSpec.split` both omit it and Python
+        fills the slot from the signature. That value had never been checked, which is how a
+        declared bound could be exceeded — and exceeded *upward*, since a caller asking for
+        more than a ceiling allows got the signature's number instead of the ceiling's.
+
+        Nothing here changes ``arguments``. A default that satisfies its constraint is
+        reported and left to Python exactly as before, so a correct deployment runs
+        identically; one that does not is refused.
+
+        Ceilings are checked first and separately, because the two sources mean different
+        things to whoever has to act on the refusal. A ceiling lives in reviewed,
+        version-controlled policy text, so a conflict with the signature is a disagreement
+        between an operator's policy file and their own code, it affects every caller of the
+        action equally, and it is worth saying so in those terms. A grant is per-principal
+        mutable data, so the same conflict there is ordinary authorization.
+
+        Args:
+            spec: The target callable's argument spec, read for its signature defaults.
+            constraints: The resolved grant-intersect-ceiling set.
+            ceilings: The ceilings on their own, for the provenance distinction above.
+            arguments: The completed argument mapping, after defaults were injected.
+            context: Log context for the operational channel.
+
+        Returns:
+            The governed parameters whose signature default was checked and accepted.
+
+        Raises:
+            SignatureDefaultRejected: If a governed parameter's only available value is one
+                the constraint refuses.
+        """
+        gaps = {
+            name: parameter.default
+            for name, constraint in constraints.arguments.items()
+            if name not in arguments
+            # ``bool(constraint)`` is not the test: an empty constraint governs nothing, but
+            # ``arguments`` is keyed by name and a name present here with no rules cannot
+            # refuse anything either, so ``check`` returning ``None`` covers both.
+            and (parameter := spec.signature.parameters.get(name)) is not None
+            and parameter.default is not inspect.Parameter.empty
+        }
+        if not gaps:
+            return ()
+
+        for ceiling in ceilings:
+            for name, default in gaps.items():
+                declared = ceiling.arguments.get(name)
+                if declared is None:
+                    continue
+                rejection = declared.check(name, default)
+                if rejection is not None:
+                    _LOGGER.error(
+                        "A declared ceiling and the callable's own default disagree",
+                        extra={**context, "argument": name, "rule": rejection.rule},
+                    )
+                    raise SignatureDefaultRejected(
+                        name, rejection.reason, declared.policy, declared=True
+                    )
+
+        accepted: list[str] = []
+        for name, default in gaps.items():
+            constraint = constraints.arguments[name]
+            rejection = constraint.check(name, default)
+            if rejection is None:
+                accepted.append(name)
+                continue
+            _LOGGER.info(
+                "No value remains for a governed argument",
+                extra={**context, "argument": name, "rule": rejection.rule},
+            )
+            raise SignatureDefaultRejected(name, rejection.reason, constraint.policy)
+        return tuple(accepted)
+
+    @staticmethod
     def _missing_arguments(
         spec: ArgumentSpec,
         constraints: ConstraintSet,
@@ -937,6 +1056,13 @@ class Governor:
             names the first hole a reader would notice.
         """
         missing = {name for name in spec.required if name not in arguments}
+        # Deliberately NOT filtered by the signature, unlike ``inject_defaults``. That filter
+        # exists so a stale grant cannot make a call fail with an unexpected keyword
+        # argument, which is a different concern: a ``required`` rule naming a parameter the
+        # callable does not accept can never be satisfied, and refusing is the fail-closed
+        # answer. Dropping it would mean an operator's rule silently did not apply -- the
+        # same class of fault as a governed argument falling through to its signature
+        # default. What the operator needs is a diagnosis, which is below, not leniency.
         missing.update(constraints.missing_required(arguments))
         if not missing:
             return ()
@@ -1015,6 +1141,7 @@ class Governor:
                 processed=plan.processed,
                 rejected=plan.rejected,
                 defaults_applied=plan.defaults_applied,
+                signature_defaults=plan.signature_defaults,
                 obligations=plan.obligations,
                 declared_sensitive=self._declared_sensitive(plan.spec),
             )

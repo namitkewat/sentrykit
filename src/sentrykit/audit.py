@@ -75,6 +75,7 @@ AuditOutcome = Literal[
     "arguments-rejected",
     "no-valid-arguments",
     "default-unavailable",
+    "signature-default-rejected",
     "validation-failed",
     "granted",
     "revoked",
@@ -227,9 +228,19 @@ class AuthzAuditRecord(BaseModel):
         outcome: The finer-grained reason, see :data:`AuditOutcome`.
         reason: One sentence, for a human reading the log.
         proposed: What the caller asked for, masked. Untrusted input, recorded as evidence.
-        processed: What the callable actually ran with, masked.
+        processed: The final argument set the policy decided and sentrykit passed,
+            masked. A parameter it left to the callable's own default is absent here and
+            named in :attr:`signature_defaults` instead.
         rejected: Arguments the policy refused, with reasons and masked values.
         defaults_applied: Arguments filled in from the principal's grants, masked.
+        signature_defaults: Governed parameters whose value came from the callable's own
+            signature rather than from the caller or from policy — names only, never values,
+            because the value is the application's own literal and the name is what an
+            auditor needs. :attr:`processed` does not carry these, by design: it is the set
+            sentrykit decided, and blurring the two would cost the distinction
+            :attr:`defaults_applied` exists to make. A non-empty tuple means the policy
+            checked that value and accepted it; a call where it was *refused* is a refusal,
+            with its own outcome.
         obligations: Obligations the determining policies attached.
         determining_policies: The policies that decided it.
         provenance: Where each determining policy came from.
@@ -269,6 +280,7 @@ class AuthzAuditRecord(BaseModel):
     processed: dict[str, object] = Field(default_factory=dict)
     rejected: tuple[RejectedArgument, ...] = ()
     defaults_applied: dict[str, object] = Field(default_factory=dict)
+    signature_defaults: tuple[str, ...] = ()
 
     obligations: tuple[str, ...] = ()
     determining_policies: tuple[str, ...] = ()
@@ -289,13 +301,17 @@ class AuthzAuditRecord(BaseModel):
         :attr:`prev_hash` **is** covered, which is what binds the chain: re-pointing a record
         at a different predecessor changes its own hash too.
 
-        :attr:`dropped_since_last_write` is covered only when it is set, and that asymmetry
-        is deliberate. A log written before the field existed hashed a payload without the
-        key, so a key that always appeared — even at its default — would change every one of
-        those digests and make an existing log fail re-verification. Omitting it at zero is
-        still tamper-evident in both directions: forging a count to zero drops the key and
-        forging one onto a clean record adds it, and either way the payload, and so the
-        hash, is no longer the one that was written.
+        :attr:`dropped_since_last_write` and :attr:`signature_defaults` are covered only when
+        they are set, and that asymmetry is deliberate. A log written before a field existed
+        hashed a payload without the key, so a key that always appeared — even at its default
+        — would change every one of those digests and make an existing log fail
+        re-verification. Omitting an unset one is still tamper-evident in both directions:
+        forging a count to zero drops the key and forging one onto a clean record adds it, and
+        either way the payload, and so the hash, is no longer the one that was written.
+
+        Any field added here from now on follows the same rule, and the reason is worth
+        keeping in mind rather than re-deriving: this method is the canonical pre-image, so
+        every key it emits is part of the integrity claim for every record ever written.
         """
         # ``warnings=False`` because a record must never raise or nag about the decision it
         # describes; anything pydantic cannot render in JSON mode is caught by
@@ -304,6 +320,8 @@ class AuthzAuditRecord(BaseModel):
         rendered.pop("record_hash", None)
         if not self.dropped_since_last_write:
             rendered.pop("dropped_since_last_write", None)
+        if not self.signature_defaults:
+            rendered.pop("signature_defaults", None)
         return rendered
 
     def compute_hash(self) -> str:
@@ -499,6 +517,8 @@ class DecisionFacts:
         processed: The final argument set, when the call proceeded.
         rejected: Arguments the policy refused.
         defaults_applied: Arguments filled from the principal's grants.
+        signature_defaults: Governed parameters the callable's own signature default filled,
+            having been checked against the constraint and accepted. Names only.
         obligations: Obligations from the determining policies.
         declared_sensitive: :func:`~sentrykit.masking.sensitive_fields` for the protected
             callable, so a signature-level ``Sensitive`` marker is honored.
@@ -513,6 +533,7 @@ class DecisionFacts:
     processed: Mapping[str, object] = field(default_factory=dict)
     rejected: tuple[RejectedArgument, ...] = ()
     defaults_applied: Mapping[str, object] = field(default_factory=dict)
+    signature_defaults: tuple[str, ...] = ()
     obligations: tuple[str, ...] = ()
     declared_sensitive: Mapping[str, MaskStrategyName | None] = field(default_factory=dict)
     engine_errors: tuple[str, ...] = ()
@@ -787,6 +808,8 @@ class AuditTrail:
             processed=masker.mask_mapping(facts.processed, plan),
             rejected=masker.mask_rejections(facts.rejected, plan),
             defaults_applied=masker.mask_mapping(facts.defaults_applied, plan),
+            # Names, not values, so there is nothing here for the masker to do.
+            signature_defaults=facts.signature_defaults,
             obligations=facts.obligations,
             determining_policies=determining,
             provenance=provenance,
@@ -902,6 +925,7 @@ def build_facts(
     processed: Mapping[str, object] | None = None,
     rejected: Sequence[RejectedArgument] = (),
     defaults_applied: Mapping[str, object] | None = None,
+    signature_defaults: Sequence[str] = (),
     obligations: Sequence[str] = (),
     declared_sensitive: Mapping[str, MaskStrategyName | None] | None = None,
 ) -> DecisionFacts:
@@ -919,6 +943,7 @@ def build_facts(
         processed: The final argument set, when the call proceeded.
         rejected: Arguments the policy refused.
         defaults_applied: Arguments filled from the principal's grants.
+        signature_defaults: Governed parameters the callable's own default filled.
         obligations: Obligations from the determining policies.
         declared_sensitive: The callable's ``Sensitive`` markers.
 
@@ -935,6 +960,7 @@ def build_facts(
         processed=dict(processed or {}),
         rejected=tuple(rejected),
         defaults_applied=dict(defaults_applied or {}),
+        signature_defaults=tuple(signature_defaults),
         obligations=tuple(obligations),
         declared_sensitive=dict(declared_sensitive or {}),
         engine_errors=tuple(decision.errors),
