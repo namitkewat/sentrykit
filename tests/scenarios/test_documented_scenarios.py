@@ -42,6 +42,7 @@ from sentrykit.stores.memory import InMemoryAuditSink
 ROOT: Final = Path(__file__).resolve().parents[2]
 DOCS_PAGE: Final = ROOT / "docs" / "scenarios.md"
 README: Final = ROOT / "examples" / "scenarios" / "README.md"
+ROOT_README: Final = ROOT / "README.md"
 
 PAGES: Final = (DOCS_PAGE, README)
 """Both pages carry the comparison, and both have to carry the same one."""
@@ -51,6 +52,18 @@ TRAIL_OPENS_WITH: Final = "   #  scenario"
 
 README_TRAIL_ROWS: Final = ("   4  laundered-handle", "   5  laundered-handle")
 """The two trail lines the README quotes: the confused deputy, as evidence."""
+
+ROOT_README_SECTION: Final = "### What that is worth, measured rather than asserted"
+"""The heading of the root README's four-row summary of the suite."""
+
+ROOT_README_SCENARIOS: Final = (
+    "oversized-limit",
+    "injected-instruction",
+    "refused-signature-default",
+    "laundered-handle",
+)
+"""Which four the root README summarises. It labels them in prose rather than by key, because
+it is a landing page -- so they are named here instead, and the figures are what gets checked."""
 
 
 @pytest.fixture(autouse=True)
@@ -235,3 +248,28 @@ def _sink_of(verdicts: tuple[Verdict, ...]) -> InMemoryAuditSink:
         for record in verdict.records:
             sink.write(record)
     return sink
+
+
+@pytest.mark.scenario
+def test_the_root_readme_summary_carries_the_figures_the_suite_produces() -> None:
+    """The landing page quotes four of the nine, and a landing page is read the most.
+
+    It labels its rows in prose rather than by key, so the rows cannot be matched the way the
+    two full tables are. The figures can be, and they are the part that goes stale.
+    """
+    verdicts = {verdict.scenario.key: verdict for verdict in _verdicts()}
+    text = ROOT_README.read_text(encoding="utf-8")
+    start = text.index(ROOT_README_SECTION)
+    section = text[start : text.index("\n## ", start)]
+
+    for key in ROOT_README_SCENARIOS:
+        verdict = verdicts[key]
+        for arm in (verdict.ungoverned, verdict.governed):
+            if arm.refused is not None:
+                assert "refused" in section, f"{key}: the {arm.label} arm is refused, unsaid"
+                continue
+            for count in _counts(arm.effect):
+                assert count in section, (
+                    f"{key}: the {arm.label} arm reported {count} and the section does not "
+                    f"mention it"
+                )

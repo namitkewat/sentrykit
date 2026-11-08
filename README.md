@@ -314,6 +314,28 @@ one edge and the access is gone, because the relationship *is* the authorization
 Cedar's strength and sentrykit inherits it — it is the foundation the argument layer stands on,
 and a ceiling can be declared on exactly that permit.
 
+### What that is worth, measured rather than asserted
+
+Nine named attacks, each run **twice** against the same seeded database and the same function
+body — once past the policy, once around it:
+
+```bash
+pixi run run-scenarios
+```
+
+| | proposed | ungoverned | governed |
+| --- | --- | --- | --- |
+| exfiltration by `limit` | `limit=100000` | 81 orders | 10 orders |
+| an instruction planted in a ticket thread | another tenant, `limit=5000` | 25 orders, another tenant's | 5 orders, the caller's own tenant |
+| a destructive call with no arguments | `cancel_open_orders()` | 81 orders cancelled | refused: the signature's own default is denied |
+| a state handle presented by somebody else | an export id from a narrowed call | 81 orders | **81 orders** |
+
+The comparison is kept fair mechanically: one module holds the plain functions, another applies
+`@protect` to those same function objects, so neither arm has a body of its own and there is
+nothing to drift. Three of the nine the gate does not win, and they are in the suite on
+purpose — an authorization layer that ships only the cases it wins is describing a feature
+rather than a boundary. See [docs/scenarios.md](docs/scenarios.md).
+
 ## Every decision is auditable
 
 Point sentrykit at a sink and each decision — allow *and* refusal — becomes one hash-chained
