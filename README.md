@@ -63,7 +63,7 @@ policy engine, that argument layer is the part you would otherwise assemble your
 pip install sentrykit                 # core
 pip install "sentrykit[fastapi]"      # + FastAPI provider
 pip install "sentrykit[flask]"        # + Flask provider
-pip install "sentrykit[mcp]"      # + MCP tool-server provider
+pip install "sentrykit[mcp]"          # + MCP tool-server provider
 pip install "sentrykit[pydantic-ai]"  # + Pydantic-AI provider
 pip install "sentrykit[all]"          # everything
 ```

@@ -8,7 +8,7 @@ function's body knows it is being invoked by a language model.
 Two integrations ship, behind two extras:
 
 ```bash
-pip install "sentrykit[mcp]"        # MCP tool servers
+pip install "sentrykit[mcp]"            # MCP tool servers
 pip install "sentrykit[pydantic-ai]"    # Pydantic-AI agents
 ```
 

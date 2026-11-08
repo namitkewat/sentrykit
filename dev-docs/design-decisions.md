@@ -274,7 +274,7 @@ is not the one that enforces — rejected outright). Filtering only, with no dis
 (security by obscurity). No filtering (correct but wasteful, and it leaks the shape of other
 principals' entitlements to every caller).
 
-## ADR-018 — The agent providers target mcp 2.0, and the integration is named after it
+## ADR-018 — The agent providers target mcp 2.0; `fastmcp` is a name we keep, not a package we import
 **Decision.** `sentrykit.integrations.mcp`, the `sentrykit[mcp]` extra and the
 `mcp://` DSN keep their names. What they are built against is `mcp>=2,<3` —
 `mcp.server.mcpserver.MCPServer` and `mcp.server.context.ServerMiddleware`. Nothing in
@@ -324,7 +324,7 @@ deprecation cycle they never earned. Worse, an alias reintroduces the defect it 
 soften — a resolving `fastmcp://` keeps that spelling in the registry listing, in copied
 `pip install` strings and in error messages, permanently pointing at a competitor's primitive.
 A guess that works teaches the wrong name. A guess that fails teaches the right one, and the
-registry already fails informatively: `no context provider is registered as 'fastmcp';
+registry already fails informatively: `no context_provider is registered as 'fastmcp';
 available: fastapi, flask, mcp, pydantic-ai`.
 
 *What still spells `fastmcp`, deliberately.* The mcp 1.x class name `mcp.server.fastmcp.FastMCP`,

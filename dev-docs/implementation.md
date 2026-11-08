@@ -173,9 +173,9 @@ dependency cannot establish context**, so no sync-dependency form is shipped.
 ## Phase 4 — Agent providers: MCP + Pydantic-AI — **done**
 
 Delivered as described. Working notes in `notes/phase-4-research.md`; the decisions it forced
-are ADR-017 (the manifest-filtering invariant), ADR-018 (mcp 2.0 is the target, and what the
-integration is named) and ADR-019 (omittable arguments, and a refusal carried out in an
-`MCPError`).
+are ADR-017 (the manifest-filtering invariant), ADR-018 (mcp 2.0 is the target; its amendment
+settles what the integration is named) and ADR-019 (omittable arguments, and a refusal carried
+out in an `MCPError`).
 
 Four things landed differently from the plan below, each measured rather than assumed:
 
