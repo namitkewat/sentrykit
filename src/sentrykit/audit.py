@@ -10,13 +10,17 @@ An audit log has to survive scrutiny, which means four properties this module ow
 * **Tamper-evident.** Each record carries the previous record's hash, so altering any record
   invalidates every record after it. Detection, not prevention; prevention is the sink's job
   (S3 Object Lock, WORM).
-* **Safe to keep forever.** Sensitive values are masked *before* the write, never after.
+* **Safe to keep forever.** A *decision's* sensitive values are masked before the write and
+  never after: its arguments, the principal's attributes, and the allow-sets, deny-sets and
+  patterns of the constraints that governed it. A grant mutation is the exception, and is
+  written as it stands — nothing on that path declares which of its fields are sensitive, so
+  there is no plan to mask by, and an attribute grant's value reaches the sink in the clear.
 
-That last property is structural rather than conventional: :class:`AuditTrail` is the only
-thing in sentrykit that calls :meth:`~sentrykit.stores.base.AuditSink.write`, and it masks on
-the way in. A unit test asserts that statically — the audit-side analogue of the import scan
-that keeps web frameworks out of the core — so a future caller that reaches around it fails
-the suite rather than the compliance review.
+Masking is structural rather than conventional: :class:`AuditTrail` is the only thing in
+sentrykit that calls :meth:`~sentrykit.stores.base.AuditSink.write`, and it masks on the way
+in. A unit test asserts that statically — the audit-side analogue of the import scan that
+keeps web frameworks out of the core — so a future caller that reaches around it fails the
+suite rather than the compliance review.
 """
 
 from __future__ import annotations
@@ -24,6 +28,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import threading
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -92,6 +97,19 @@ treats a mutation exactly like a decision — the admin surface is governed by t
 and belongs in the same query (architecture §5).
 """
 
+_VALUE_BEARING_RULES: Final[frozenset[str]] = frozenset({"allow", "deny", "pattern"})
+"""The rules of a described constraint that hold values rather than describe a shape.
+
+An allow-set enumerates the very values the constraint exists to fence off — a permitted
+peer's tenant id is as sensitive as the caller's own — and a per-principal ``pattern`` can
+embed one as a literal, so both are masked before the write.
+
+``minimum`` and ``maximum`` are deliberately absent: a bound is a rule, not a value, and an
+auditor has to be able to read what the principal was permitted to pass as well as what they
+tried to. So are ``policy``, ``required`` and ``has_default``, which carry no caller data in
+the first place.
+"""
+
 
 def canonical_json(payload: Mapping[str, object]) -> bytes:
     """Render a payload to the exact bytes the chain hashes.
@@ -132,9 +150,12 @@ class PrincipalSnapshot(BaseModel):
             a multi-hop relationship was resolved through.
         attributes: Effective Cedar attributes, masked.
         constraints: The argument constraints in force, by action, as
-            :meth:`~sentrykit.constraints.ConstraintSet.describe` renders them. Values are
-            described rather than dumped, so a constraint's allow-set does not smuggle raw
-            data into the record.
+            :meth:`~sentrykit.constraints.ConstraintSet.describe` renders them — which
+            withholds the default *value* but emits every other rule as written.
+            :meth:`of` therefore does not mask them; :class:`AuditTrail` does, masking the
+            rules that carry values — the allow-set, the deny-set and the pattern — under
+            the name of the argument they govern. ``minimum`` and ``maximum`` reach the sink
+            as written, because a bound is a rule rather than a value.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -151,9 +172,11 @@ class PrincipalSnapshot(BaseModel):
     def of(cls, principal: Principal) -> PrincipalSnapshot:
         """Snapshot a principal. Does **not** mask — :class:`AuditTrail` does that.
 
-        Constraints are *described* rather than dumped: an allow-set can hold the very
-        values the constraint exists to protect, and ``describe`` already omits the default
-        value for that reason.
+        That includes the constraints. They arrive *described* rather than dumped, which
+        withholds the default value, but an allow-set, a deny-set and a pattern still hold
+        the very values the constraint exists to fence off. :class:`AuditTrail` masks those
+        three on the way to the sink and leaves the bounds as written — so a caller using
+        this snapshot for anything else is holding raw values and has to treat them as such.
         """
         return cls(
             uid=str(principal.uid),
@@ -206,6 +229,19 @@ class AuthzAuditRecord(BaseModel):
         masked: Which fields were masked and with which strategy. Without this an auditor
             cannot tell an ``hmac:...`` string from a value that genuinely looked like one.
         grant: The grant record, for ``kind="mutation"``.
+        dropped_since_last_write: How many records were built, masked and then refused by the
+            sink between the previous record that landed and this one. Zero on all but a
+            vanishing number of records.
+
+            A non-zero value is the only thing that tells a quiet log from a log with a hole
+            in it. The chain advances solely on a successful write, so the records either
+            side of a sink outage link perfectly and :func:`verify_chain` calls the run
+            intact — which is true, nothing was altered, and is also exactly what a caller
+            probing the policy boundary while the sink was down would want it to say. So a
+            contiguous chain across this record does **not** mean nothing happened before it:
+            this count says how much did. It is covered by :attr:`record_hash` whenever it is
+            set, which puts the admission on the channel that counts as evidence rather than
+            in an operational log nobody can prove anything from afterwards.
         prev_hash: The previous record's :attr:`record_hash`, or :data:`GENESIS_HASH`.
         record_hash: This record's digest, over everything above.
     """
@@ -242,6 +278,7 @@ class AuthzAuditRecord(BaseModel):
 
     masked: dict[str, MaskStrategyName] = Field(default_factory=dict)
     grant: dict[str, object] | None = None
+    dropped_since_last_write: int = 0
 
     prev_hash: str = GENESIS_HASH
     record_hash: str = ""
@@ -251,24 +288,48 @@ class AuthzAuditRecord(BaseModel):
 
         :attr:`prev_hash` **is** covered, which is what binds the chain: re-pointing a record
         at a different predecessor changes its own hash too.
+
+        :attr:`dropped_since_last_write` is covered only when it is set, and that asymmetry
+        is deliberate. A log written before the field existed hashed a payload without the
+        key, so a key that always appeared — even at its default — would change every one of
+        those digests and make an existing log fail re-verification. Omitting it at zero is
+        still tamper-evident in both directions: forging a count to zero drops the key and
+        forging one onto a clean record adds it, and either way the payload, and so the
+        hash, is no longer the one that was written.
         """
         # ``warnings=False`` because a record must never raise or nag about the decision it
         # describes; anything pydantic cannot render in JSON mode is caught by
         # :func:`canonical_json`'s ``default=repr`` instead.
         rendered: dict[str, object] = self.model_dump(mode="json", warnings=False)
         rendered.pop("record_hash", None)
+        if not self.dropped_since_last_write:
+            rendered.pop("dropped_since_last_write", None)
         return rendered
 
     def compute_hash(self) -> str:
         """Compute this record's digest from :meth:`payload`."""
         return hashlib.sha256(canonical_json(self.payload())).hexdigest()
 
-    def chained(self, *, prev_hash: str, sequence: int) -> AuthzAuditRecord:
+    def chained(
+        self,
+        *,
+        prev_hash: str,
+        sequence: int,
+        dropped_since_last_write: int = 0,
+    ) -> AuthzAuditRecord:
         """Return a copy positioned in a chain, with :attr:`record_hash` computed.
+
+        All three arguments are the record's position in the log rather than anything the
+        decision knew, which is why the loss count arrives here and not at build time: it is
+        only knowable once the preceding writes have been attempted. Carrying it through this
+        method is what keeps it inside the digest — a count applied after the hash was
+        computed could be stripped off without trace, and a count applied by a second
+        ``model_copy`` at the call site would put chain state in two places.
 
         Args:
             prev_hash: The predecessor's hash, or :data:`GENESIS_HASH` for the first record.
             sequence: Position in the chain.
+            dropped_since_last_write: Records the sink refused since the last one it accepted.
 
         Returns:
             The chained record, ready to write.
@@ -276,7 +337,12 @@ class AuthzAuditRecord(BaseModel):
         # Two copies rather than one mutation: the model is frozen, and it has to stay that
         # way for "a written record cannot be edited in place" to be a property of the type.
         positioned = self.model_copy(
-            update={"prev_hash": prev_hash, "sequence": sequence, "record_hash": ""}
+            update={
+                "prev_hash": prev_hash,
+                "sequence": sequence,
+                "dropped_since_last_write": dropped_since_last_write,
+                "record_hash": "",
+            }
         )
         return positioned.model_copy(update={"record_hash": positioned.compute_hash()})
 
@@ -357,6 +423,65 @@ def _is_sequence_number(value: object) -> TypeGuard[int]:
     return isinstance(value, int) and not isinstance(value, bool)
 
 
+def _mask_described_rules(
+    argument: str,
+    rules: Mapping[str, object],
+    masker: Masker,
+    strategy: MaskStrategyName,
+) -> dict[str, object]:
+    """Mask the value-bearing rules of one described constraint, leaving the rest alone.
+
+    Every value is masked under ``argument`` rather than under the rule's name, which is what
+    keeps an allow-set comparable with the same value masked as an argument: a digest in the
+    set still answers "was what the caller proposed something they were permitted to pass"
+    long after neither string can be read.
+
+    A rule whose value is not the list :meth:`~sentrykit.constraints.ConstraintSet.describe`
+    renders is masked whole rather than member by member. The value ends up unreadable either
+    way, so that is the direction a shape surprise should fall in.
+    """
+    masked: dict[str, object] = {}
+    for rule, value in rules.items():
+        if rule not in _VALUE_BEARING_RULES:
+            masked[rule] = value
+        elif isinstance(value, list):
+            masked[rule] = [masker.mask_value(argument, member, strategy) for member in value]
+        else:
+            masked[rule] = masker.mask_value(argument, value, strategy)
+    return masked
+
+
+def _mask_described_constraints(
+    constraints: Mapping[str, object],
+    masker: Masker,
+    plan: Mapping[str, MaskStrategyName],
+) -> dict[str, object]:
+    """Mask every described constraint whose argument ``plan`` names.
+
+    ``describe`` renders ``{action: {argument: {rule: value}}}`` and a masking plan is keyed
+    by argument name, so the rules governing an argument and the argument itself mask under
+    the same key with nothing in between.
+
+    Anything not shaped that way falls through unchanged, for the reason
+    :func:`canonical_json` falls back to ``repr``: an audit record must not be able to fail
+    the decision it describes.
+    """
+    masked: dict[str, object] = {}
+    for action, described in constraints.items():
+        if not isinstance(described, Mapping):
+            masked[action] = described
+            continue
+        masked[action] = {
+            argument: (
+                _mask_described_rules(argument, rules, masker, plan[argument])
+                if argument in plan and isinstance(rules, Mapping)
+                else rules
+            )
+            for argument, rules in described.items()
+        }
+    return masked
+
+
 @dataclass(frozen=True, slots=True)
 class DecisionFacts:
     """Everything the engine knows about one decision, handed to the trail.
@@ -414,7 +539,16 @@ class AuditTrail:
             ``fail_mode`` — "can't prove it, don't do it".
     """
 
-    __slots__ = ("_bundle", "_masker", "_prev_hash", "_sequence", "_sink", "_strict")
+    __slots__ = (
+        "_bundle",
+        "_dropped",
+        "_lock",
+        "_masker",
+        "_prev_hash",
+        "_sequence",
+        "_sink",
+        "_strict",
+    )
 
     def __init__(
         self,
@@ -430,6 +564,15 @@ class AuditTrail:
         self._strict = strict
         self._prev_hash: str = GENESIS_HASH
         self._sequence: int = 0
+        # Starts at zero and is never resumed from the sink: a dropped record by definition
+        # never reached it, so there is nothing there to read. The consequence is worth being
+        # plain about — a process that dies while its sink is down takes its unreported count
+        # with it. This narrows the window in which a loss is invisible; it does not close it.
+        self._dropped: int = 0
+        # One trail is shared by every thread the host serves a request on, and advancing the
+        # chain is read-modify-write state. Taken in :meth:`_append` only: nothing can reach a
+        # trail before its constructor returns, so :meth:`_resume` needs no protection.
+        self._lock = threading.Lock()
         if sink is not None:
             self._resume(sink)
 
@@ -530,9 +673,13 @@ class AuditTrail:
             return None
         masker = self._require_masker()
         # A mutation has no callable signature and no determining policies, so nothing
-        # declares which of its fields are sensitive. The values still pass through the
-        # masker rather than around it, so the day a plan can be derived here, this call site
-        # is already the one that applies it.
+        # declares which of its fields are sensitive and this plan comes back empty every
+        # time. The consequence, stated rather than left to be discovered: a mutation record
+        # reaches the sink unmasked -- an attribute grant's raw ``value``, the actor's own
+        # snapshot attributes, the grant's own described constraint. The values still pass
+        # through the masker rather than around it, so the day a plan can be derived here
+        # this call site is already the one that applies it; deriving one is a design change,
+        # not an oversight at this line.
         plan = masker.plan()
         record = AuthzAuditRecord(
             record_id=uuid4().hex,
@@ -569,16 +716,25 @@ class AuditTrail:
         masker: Masker,
         plan: Mapping[str, MaskStrategyName],
     ) -> PrincipalSnapshot:
-        """Snapshot a principal with its attributes masked.
+        """Snapshot a principal with its attributes and its constraints masked.
 
         :meth:`PrincipalSnapshot.of` deliberately does not mask, so that the masking step
         lives on this side of the sink boundary with every other one.
+
+        Both halves run off the same plan and in the same copy. An attribute and the
+        allow-set that governs the argument of the same name are the same secret in two
+        shapes, and masking one without the other writes it in the clear two fields from its
+        own digest — into a sink where it cannot be withdrawn.
         """
         snapshot = PrincipalSnapshot.of(principal)
         if not plan:
+            # Nothing was declared sensitive, so there is nothing either half could mask.
             return snapshot
         return snapshot.model_copy(
-            update={"attributes": masker.mask_mapping(snapshot.attributes, plan)}
+            update={
+                "attributes": masker.mask_mapping(snapshot.attributes, plan),
+                "constraints": _mask_described_constraints(snapshot.constraints, masker, plan),
+            }
         )
 
     def _mask(self, facts: DecisionFacts) -> tuple[AuthzAuditRecord, dict[str, object]]:
@@ -652,6 +808,15 @@ class AuditTrail:
         The single ``sink.write`` call in sentrykit. Everything upstream of this line has
         already masked; nothing downstream of it is allowed to unmask.
 
+        Serialized on one lock, because the chain is read-modify-write state and a host puts
+        concurrent requests on threads sharing one trail.
+
+        Also counts what the sink would not take. A refused record is lost, and because the
+        chain advances only on success the records either side of the loss link cleanly — so
+        the next record to land carries the count out in
+        :attr:`AuthzAuditRecord.dropped_since_last_write`, and the hole stops being invisible
+        to everyone but whoever was reading the operational log at the time.
+
         Returns:
             The chained record. It is returned even when a non-strict write failed, because
             the record still describes the decision — but the chain does not advance, so the
@@ -663,27 +828,49 @@ class AuditTrail:
         sink = self._sink
         if sink is None:  # pragma: no cover - callers check ``enabled`` first
             return record
-        chained = record.chained(prev_hash=self._prev_hash, sequence=self._sequence)
-        try:
-            sink.write(chained)
-        except AuditUnavailable as exc:
-            self._report_failure(chained, exc)
-            if self._strict:
-                raise
-            return chained
-        except Exception as exc:
-            # A sink is third-party code. Whatever it raises, the decision path has to
-            # classify it as "this could not be proven" rather than let it surface as an
-            # unrelated failure of the protected call.
-            failure = AuditUnavailable(getattr(sink, "name", "unknown"), str(exc) or repr(exc))
-            self._report_failure(chained, failure)
-            if self._strict:
-                raise failure from exc
-            return chained
-        # Advanced only on success: a record the sink refused is not in the log, so the next
-        # one must link to the last that actually landed rather than to a phantom.
-        self._prev_hash = chained.record_hash
-        self._sequence += 1
+        # Chaining and writing are one critical section, not two, and that choice has a price:
+        # audit writes are fully serialized, so a sink that forces a durability call per record
+        # — ``jsonl://path?fsync=true`` — puts every authorization decision in the process
+        # behind that call. It is still the right boundary. Holding the lock only long enough
+        # to reserve ``(prev_hash, sequence)`` would buy the concurrency back at the cost of
+        # both properties the chain has: records would land in an order their links do not
+        # describe, and a refused write could no longer leave the chain where it was, because
+        # the next record would already have linked past it.
+        with self._lock:
+            chained = record.chained(
+                prev_hash=self._prev_hash,
+                sequence=self._sequence,
+                dropped_since_last_write=self._dropped,
+            )
+            try:
+                sink.write(chained)
+            except AuditUnavailable as exc:
+                # Counted under both fail modes. Strict refuses the governed call as well, but
+                # a strict failure on a decision that was *already* being refused is swallowed
+                # by the caller rather than surfaced — it must not replace the precise refusal
+                # the caller needs — and that is exactly the loss this count exists to carry.
+                self._dropped += 1
+                self._report_failure(chained, exc)
+                if self._strict:
+                    raise
+                return chained
+            except Exception as exc:
+                # A sink is third-party code. Whatever it raises, the decision path has to
+                # classify it as "this could not be proven" rather than let it surface as an
+                # unrelated failure of the protected call.
+                failure = AuditUnavailable(getattr(sink, "name", "unknown"), str(exc) or repr(exc))
+                self._dropped += 1
+                self._report_failure(chained, failure)
+                if self._strict:
+                    raise failure from exc
+                return chained
+            # Advanced only on success: a record the sink refused is not in the log, so the
+            # next one must link to the last that actually landed rather than to a phantom.
+            # The count clears here and only here, so it reads "since the last record that
+            # landed" and no loss is reported by two records.
+            self._prev_hash = chained.record_hash
+            self._sequence += 1
+            self._dropped = 0
         return chained
 
     @staticmethod
