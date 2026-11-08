@@ -31,5 +31,10 @@ venv/
 *.audit.jsonl
 secrets.local.*
 
+# The example apps' demo database, when SENTRYKIT_DEMO_DB points at a file rather than
+# letting it live in memory. Seeded from code and reproducible, so there is nothing here
+# worth committing and a stale copy is worse than none.
+examples/.demo/
+
 # Local research workspace (not shipped, not committed)
 /research/

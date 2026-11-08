@@ -39,6 +39,18 @@ mcp = ">=2,<3"
 pydantic-ai = "*"
 anyio = ">=4.3"
 
+# ---- Feature: the example apps' own data layer -----------------------------
+# The examples query a seeded SQLite database so that a narrowed argument changes a real
+# result set rather than a literal. That needs an ORM, and the ORM must not reach the
+# library: `sentrykit` itself reads no database and `pyproject.toml` ships no such extra.
+#
+# It is a *feature* rather than a line in `dev` so the reason it exists is written where the
+# dependency is, and it is attached to every environment because the documented-example tests
+# import the example apps in all of them. Nothing in `src/` may import it -- the import scan
+# in `tests/unit/test_core_imports.py` is what keeps that true.
+[feature.demo.pypi-dependencies]
+sqlalchemy = ">=2.0"
+
 # ---- Feature: dev / test / docs --------------------------------------------
 [feature.dev.pypi-dependencies]
 pytest = ">=8.1"
@@ -92,23 +104,23 @@ python = "3.13.*"
 
 [environments]
 # The four a developer types. Python floats to the newest the manifest allows.
-default = ["core", "dev"]
-web = ["core", "web", "dev"]
-agent = ["core", "agent", "dev"]
-all = ["core", "web", "agent", "dev"]
+default = ["core", "demo", "dev"]
+web = ["core", "demo", "web", "dev"]
+agent = ["core", "demo", "agent", "dev"]
+all = ["core", "demo", "web", "agent", "dev"]
 # The twelve the CI matrix runs: every feature set against every supported interpreter.
-py311-default = ["py311", "core", "dev"]
-py311-web = ["py311", "core", "web", "dev"]
-py311-agent = ["py311", "core", "agent", "dev"]
-py311-all = ["py311", "core", "web", "agent", "dev"]
-py312-default = ["py312", "core", "dev"]
-py312-web = ["py312", "core", "web", "dev"]
-py312-agent = ["py312", "core", "agent", "dev"]
-py312-all = ["py312", "core", "web", "agent", "dev"]
-py313-default = ["py313", "core", "dev"]
-py313-web = ["py313", "core", "web", "dev"]
-py313-agent = ["py313", "core", "agent", "dev"]
-py313-all = ["py313", "core", "web", "agent", "dev"]
+py311-default = ["py311", "core", "demo", "dev"]
+py311-web = ["py311", "core", "demo", "web", "dev"]
+py311-agent = ["py311", "core", "demo", "agent", "dev"]
+py311-all = ["py311", "core", "demo", "web", "agent", "dev"]
+py312-default = ["py312", "core", "demo", "dev"]
+py312-web = ["py312", "core", "demo", "web", "dev"]
+py312-agent = ["py312", "core", "demo", "agent", "dev"]
+py312-all = ["py312", "core", "demo", "web", "agent", "dev"]
+py313-default = ["py313", "core", "demo", "dev"]
+py313-web = ["py313", "core", "demo", "web", "dev"]
+py313-agent = ["py313", "core", "demo", "agent", "dev"]
+py313-all = ["py313", "core", "demo", "web", "agent", "dev"]
 
 # ---------------------------------------------------------------------------
 # Governance tasks — run with `pixi run <name>` (add `-e web|agent|all` as needed).
