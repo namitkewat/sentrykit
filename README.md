@@ -1,5 +1,12 @@
 # sentrykit
 
+[![CI](https://github.com/namitkewat/sentrykit/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/namitkewat/sentrykit/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/namitkewat/sentrykit?include_prereleases&display_name=tag&sort=semver)](https://github.com/namitkewat/sentrykit/releases)
+[![PyPI](https://img.shields.io/pypi/v/sentrykit.svg)](https://pypi.org/project/sentrykit/)
+[![Python](https://img.shields.io/pypi/pyversions/sentrykit.svg)](https://pypi.org/project/sentrykit/)
+[![Docs](https://img.shields.io/badge/docs-latest-blue.svg)](https://namitkewat.github.io/sentrykit/)
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://github.com/namitkewat/sentrykit/blob/main/LICENSE)
+
 Framework-agnostic **authorization** for Python, built on
 [AWS Cedar](https://www.cedarpolicy.com/). Clip a `@protect` decorator onto any callable — a
 web route, a plain function, an agent tool — and sentrykit decides, per call, whether the
@@ -72,7 +79,7 @@ pip install "sentrykit[all]"          # everything
 The only pinned core dependency worth knowing about is **`cedarpy >= 4.8, < 5`**: the engine
 parses a policy set, an entity graph and a schema once at wiring time and reuses the handles,
 and releases below 4.8 do not expose those. See
-[which cedarpy](docs/quickstart.md#which-cedarpy).
+[which cedarpy](https://namitkewat.github.io/sentrykit/quickstart.html#which-cedarpy).
 
 ## The idea in 20 seconds
 
@@ -177,7 +184,7 @@ cannot check is a misspelled argument name: nothing here imports your applicatio
 ceiling against the callable's signature. A failed evaluation reports no determining policies
 and therefore no ceilings, so a policy set that declares any ceiling refuses an engine failure
 under `fail_mode="open"` too, rather than proceeding unbounded. See
-[docs/policies.md](docs/policies.md).
+[docs/policies.md](https://namitkewat.github.io/sentrykit/policies.html).
 
 ### A constraint nothing can satisfy is refused when it is written
 
@@ -200,7 +207,7 @@ present to fix it.
 The same reasoning covers defaults at the call. A default is checked against its own constraint
 and withheld if it fails, so omitting an argument is not a way around the rule that governs it.
 The rules, how they resolve per `(principal, action)`, and their sharp edges are written up in
-[docs/concepts.md](docs/concepts.md).
+[docs/concepts.md](https://namitkewat.github.io/sentrykit/concepts.html).
 
 ### Guard an HTTP route — same decorator, one extra line
 
@@ -242,7 +249,7 @@ Two runnable apps — one orders-and-refunds desk built twice, with the same sev
 callables, the same reviewed `.cedar` directory and the same grant data on both frameworks —
 live in `examples/fastapi_app/` and `examples/flask_app/`. Each drives 22 requests through its
 own test client and prints what policy did to every one before it starts serving. See
-[docs/web-frameworks.md](docs/web-frameworks.md).
+[docs/web-frameworks.md](https://namitkewat.github.io/sentrykit/web-frameworks.html).
 
 ### Guard an agent's tools — same decorator, and the model is told what it may attempt
 
@@ -291,7 +298,7 @@ deterministic stand-in otherwise, and every authorization outcome is identical e
 decision is made from the principal and the proposed arguments, never from which model proposed
 them.
 Setting `SENTRYKIT_OLLAMA_URL` to an empty value turns the search off without opening a socket.
-See [docs/agents.md](docs/agents.md).
+See [docs/agents.md](https://namitkewat.github.io/sentrykit/agents.html).
 
 ### Relationships are Cedar's job, and this composes with them
 
@@ -335,7 +342,7 @@ The comparison is kept fair mechanically: one module holds the plain functions, 
 `@protect` to those same function objects, so neither arm has a body of its own and there is
 nothing to drift. Three of the nine the gate does not win, and they are in the suite on
 purpose — an authorization layer that ships only the cases it wins is describing a feature
-rather than a boundary. See [docs/scenarios.md](docs/scenarios.md).
+rather than a boundary. See [docs/scenarios.md](https://namitkewat.github.io/sentrykit/scenarios.html).
 
 ## Every decision is auditable
 
@@ -408,7 +415,7 @@ with establish(ana, channel="web", break_glass=True, justification="incident 447
     open_vault(item="master-key")
 ```
 
-See [docs/policies.md](docs/policies.md).
+See [docs/policies.md](https://namitkewat.github.io/sentrykit/policies.html).
 
 ## A command line for the parts an API is the wrong shape for
 
@@ -438,7 +445,7 @@ the decision and the mutation; a refused one leaves the refusal and an untouched
 **outcome** rather than allow/deny, because allow/deny folds six materially different refusals
 into one bucket and both admin mutations into the other.
 
-See [docs/audit.md](docs/audit.md).
+See [docs/audit.md](https://namitkewat.github.io/sentrykit/audit.html).
 
 ## Everything on the outside is a plugin
 
@@ -471,8 +478,8 @@ pixi run -e all check   # format-check, lint, typecheck, tests+coverage, docs
 `pixi run setup` installs pre-commit hooks into `.git/hooks`, so the repository has to be a
 git repository first — on a fresh clone it already is.
 
-The user docs cover [policies and grants](docs/policies.md),
-[audit and masking](docs/audit.md), and [writing a plugin](docs/plugins.md).
+The user docs cover [policies and grants](https://namitkewat.github.io/sentrykit/policies.html),
+[audit and masking](https://namitkewat.github.io/sentrykit/audit.html), and [writing a plugin](https://namitkewat.github.io/sentrykit/plugins.html).
 
 `pixi run docs` builds them into HTML, a PDF, and `llms.txt` / `llms-full.txt` — the four
 documentation artifacts every release attaches. There is no hosted site: the documentation
@@ -480,7 +487,7 @@ travels with the release it describes, so a reader always has the version they i
 
 ## Security
 
-[SECURITY.md](SECURITY.md) has the disclosure contact and, more usefully, an explicit account
+[SECURITY.md](https://github.com/namitkewat/sentrykit/blob/main/SECURITY.md) has the disclosure contact and, more usefully, an explicit account
 of **what sentrykit defends and what it does not**. The short version: it authorizes the
 action before the side effect and records a hash-chained trail of every decision. It does
 not sandbox a tool body — once a call is authorized, the function runs with your process's
