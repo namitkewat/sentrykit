@@ -7,9 +7,9 @@ All notable changes to this project are documented here. Format follows
 
 <!-- Add an entry in the *fix & document* step of each loop iteration. -->
 
-## [0.1.0] - 2026-11-09
+## [0.1.1] - 2026-11-09
 
-The first release.
+The first stable release, and the whole library.
 
 sentrykit is a self-hosted, framework-agnostic authorization layer for Python, built on
 [AWS Cedar](https://www.cedarpolicy.com/). Clip one `@protect` decorator onto any callable — a
@@ -18,8 +18,12 @@ invoke it, **which arguments they may pass**, and **which defaults to inject whe
 none**, then writes a masked, hash-chained record of what it decided. The caller proposes; the
 policy decides, and what it decides includes the arguments, not only the call.
 
-Version numbers below this one appear in the project's development history. None was ever tagged
-or published, so this is the first release anyone can install, and it is the whole library.
+`0.1.0rc1` published this same library, to prove the release chain end to end; nothing under
+`src/` changed between it and this release. `0.1.0` is skipped rather than released — a wheel
+under that filename was built on a developer machine and uploaded to the test index while the
+chain was being proved, and since the chain verifies that an index serves the exact artifact the
+run just built, a number whose test-index copy came from somewhere else can never pass it.
+Version numbers below `0.1.0rc1` belong to the development history and were never published.
 
 ### Added
 
@@ -137,5 +141,7 @@ or published, so this is the first release anyone can install, and it is the who
   package, `py.typed` in the wheel, and the docstrings the API reference is generated from. The
   extras install only what a boundary needs — `fastapi`, `flask`, `mcp`, `pydantic-ai`, `web`,
   `agents`, `all` — and the one core pin worth knowing about is `cedarpy >= 4.8, < 5`, the floor
-  exposing the parse-once API the engine is built on. Each release attaches the documentation as
-  HTML, a PDF, `llms.txt` and `llms-full.txt`, the last meant to be sufficient on its own.
+  exposing the parse-once API the engine is built on. The documentation is published twice: as a
+  browsable site tracking the current code, and attached to each release as HTML, a PDF,
+  `llms.txt` and `llms-full.txt` — the last meant to be sufficient on its own — frozen at the
+  version you installed.

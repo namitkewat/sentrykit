@@ -74,8 +74,17 @@ appear in `[project.optional-dependencies]`.
    `twine check` on what it built first, so an artifact no index would accept fails here
    rather than at the upload.
 5. `pixi run build` produces wheel + sdist.
-6. Optionally rehearse on the test index: `pixi run publish-test`, then install the result
-   back out in **two steps**, never one.
+6. Optionally rehearse on the test index — **under a version number you are willing to
+   lose.** `pixi run publish-test` uploads a *locally built* wheel, and the chain's smoke
+   test compares the sha256 of what the index serves against the artifact the release run
+   built on its own runner. Those two are not byte-identical, and `publish-test` in the
+   workflow carries `skip-existing: true`, so the real upload is a no-op rather than a
+   replacement: the index keeps serving the local wheel, and that version can never pass
+   the chain again. It is not recoverable by deleting the file either, because an index
+   does not re-accept a filename it has already held. This is how `0.1.0` was lost, and
+   why the first final release is `0.1.1`. Rehearse under an unused throwaway number, or
+   skip the step — `release-check` already covers everything about the artifact that does
+   not need an index. Then install the result back out in **two steps**, never one.
 
    ```bash
    pip download --no-cache-dir --index-url https://test.pypi.org/simple/ \

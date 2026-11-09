@@ -16,21 +16,33 @@ expanded — and reading that output is also what buys control of page **order**
 other thing the extension cannot give. Concepts belong before the API reference; alphabetical
 is not a reading order.
 
-The documentation ships as release assets rather than as a hosted site, so there is no
-site to link to. Link targets therefore name **sibling assets on the same release**:
-`llms-full.txt` plus a fragment for the prose, and the HTML archive for anyone who would
-rather read a rendered page. Nothing here points at a URL that does not exist.
+The documentation is published twice over — at the root of the hosted site, and as assets
+on each release — and one generated file has to be correct in both. Relative link targets
+therefore name **siblings of this file**, which holds either way: `llms-full.txt` plus a
+fragment for the prose, and the PDF beside it. The rendered HTML is the one entry whose
+location differs between the two, so it is an absolute URL to the site, which is reachable
+from a release asset as well. `DOCS_BASE_URL` supplies that address, with the same fallback
+`docs/conf.py` uses, so the two agree by construction rather than by being kept in step.
+Nothing here points at a path that does not exist in the copy being read.
 
 Run after `sphinx-build -b markdown docs dist/docs/markdown` — `pixi run docs-llms` does both.
 """
 
 from __future__ import annotations
 
+import os
 import re
 import sys
 from importlib import metadata
 from pathlib import Path
 from typing import Final, NamedTuple
+
+#: The documentation site. The Pages workflow exports `DOCS_BASE_URL`; a release build
+#: has no such step and falls back, exactly as `docs/conf.py` does, so both builds name
+#: the same address and the two published copies of this file stay identical.
+SITE_URL: Final = (
+    os.environ.get("DOCS_BASE_URL") or "https://namitkewat.github.io/sentrykit/"
+).rstrip("/") + "/"
 
 ROOT: Final = Path(__file__).resolve().parent.parent
 """Repository root, derived from this file so the script runs from any working directory."""
@@ -383,12 +395,12 @@ def build_index(contents: dict[str, str], titles: dict[str, str], version: str) 
         "defaults to inject, with every decision written to a masked, hash-chained audit "
         "trail. The caller proposes; the Cedar policy decides.",
         "",
-        "This project publishes its documentation as release assets rather than on a website. "
-        "Every link below names a **sibling asset "
-        "of this file on the same release**: the guide and reference entries point into "
-        "`llms-full.txt`, which carries the complete text; the entries under Optional name "
-        f"the rendered HTML archive (`{archive}`, paths given after the archive name) and the "
-        "PDF.",
+        "This file is published twice: at the root of the documentation site, and as an asset "
+        "on every release. Every relative link below names a **sibling of this file**, which "
+        "holds in either copy — the guide and reference entries point into `llms-full.txt`, "
+        "which carries the complete text, and the PDF sits beside it. A release additionally "
+        f"carries the rendered HTML as `{archive}`, which the site serves as ordinary pages "
+        "instead.",
     ]
 
     for section in dict.fromkeys(page.section for page in PAGES):
@@ -407,8 +419,8 @@ def build_index(contents: dict[str, str], titles: dict[str, str], version: str) 
             "",
             "## Optional",
             "",
-            f"- [Rendered HTML]({archive}/index.html): The same documentation as a browsable "
-            "site, for a human reader.",
+            f"- [Rendered HTML]({SITE_URL}): The same documentation as a browsable site, for "
+            "a human reader.",
             "- [PDF](sentrykit.pdf): The same documentation as one printable file.",
             "- [Full text](llms-full.txt): Every page above concatenated, which is what the "
             "links in this file point into.",
