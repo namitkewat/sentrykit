@@ -2,14 +2,18 @@
 
 ## Reporting a vulnerability
 
-Email **namitkewat@gmail.com** with `sentrykit security` in the subject. Please include:
+Report it privately through GitHub: **Security → Report a vulnerability** on this repository
+opens a private thread with the maintainer, keeps the report together with the fix, and can
+become a published advisory once a release carries that fix. If you would rather not go
+through GitHub, email **namitkewat@gmail.com** with `sentrykit security` in the subject.
+Either way, please include:
 
 - what an attacker can do that they should not be able to do;
 - the smallest reproduction you have — a policy set, a grant, and a call is usually enough;
 - the sentrykit version, the Python version, and which integration (if any) is in play.
 
-Please report privately first rather than opening a public issue, and give a reasonable window
-for a fix before disclosing. You will get an acknowledgement, and an honest answer about
+Please keep it out of the public issue tracker until there is a fix, and give a reasonable
+window for one before disclosing. You will get an acknowledgement, and an honest answer about
 whether the behaviour is a bug or a documented limitation — the second is a real outcome here,
 because several things that *look* like holes are boundaries this library deliberately does not
 cross. Those are listed below, and finding one of them documented is not a brush-off; it means
