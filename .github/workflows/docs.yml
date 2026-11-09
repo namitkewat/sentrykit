@@ -9,19 +9,34 @@ name: docs
 #
 # It tracks `main` rather than the latest tag, so the site documents the code as it stands
 # and can describe something not yet on PyPI. That is the right default for a pre-1.0
-# project — a reader following the repository wants the current behaviour — and the
+# project -- a reader following the repository wants the current behaviour -- and the
 # versioned snapshot is the release asset, which does not move.
+#
+# Conventions here (SHA-pinned actions, a pinned runner, `persist-credentials: false`,
+# permissions elevated per job) match the sibling iceberg-ops repository so that one set of
+# habits covers both. The other three workflows still pin by tag; see
+# `dev-docs/packaging-standards.md`.
 on:
   push:
     branches: [main]
+    # Only the inputs that can change a page. The API reference is generated from docstrings,
+    # so `src/**` belongs here; `llms.txt` is assembled by a script, so that script does too.
+    paths:
+      - "docs/**"
+      - "src/sentrykit/**"
+      - "scripts/build_llms_txt.py"
+      - "README.md"
+      - "CHANGELOG.md"
+      - "pyproject.toml"
+      - "pixi.toml"
+      - "pixi.lock"
+      - ".github/workflows/docs.yml"
   workflow_dispatch:
 
-# `pages: write` and `id-token: write` are what the deployment needs; nothing here writes to
-# the repository itself.
+# Read-only by default. Only the deploy job is given the Pages and OIDC rights, so the job
+# that runs the documentation build -- the one executing project code -- cannot publish.
 permissions:
   contents: read
-  pages: write
-  id-token: write
 
 # One deployment at a time, and never cancel one part-way: `deploy-pages` swaps a live URL
 # over to a new artifact, so a run killed mid-swap is a question about what the site is now
@@ -34,11 +49,17 @@ concurrency:
 jobs:
   build:
     name: build the site
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The build needs no credentials, and leaving the token in `.git/config` would
+          # hand it to every tool the documentation build happens to run.
+          persist-credentials: false
 
-      - uses: prefix-dev/setup-pixi@v0
+      - name: Set up pixi
+        uses: prefix-dev/setup-pixi@9936258fee697aff89b3fed6ca1f80a382ef694e # v0.11.3
         with:
           # `all`, for the same reason the release builds the documentation there: `conf.py`
           # mocks whichever frameworks are absent, so building anywhere else would publish
@@ -47,12 +68,20 @@ jobs:
           locked: true
           cache: true
 
+      - name: Configure Pages
+        id: pages
+        uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
+
       # The aggregate, not `docs-html` alone, and that choice closes a known gap. `pixi run
       # check` builds only the HTML, so a PDF that no longer renders and an `llms.txt` that
-      # has gone stale are both invisible to CI — each has slipped through once already.
-      # Building all four on every push to `main` turns either failure into a red workflow
-      # here rather than a discovery at the next release.
+      # has gone stale are both invisible to CI -- each has slipped through once already.
+      # Building all four on every push that can change a page turns either failure into a
+      # red workflow here rather than a discovery at the next release.
       - name: Build the documentation
+        env:
+          # The deployed base URL, so `conf.py` does not have to hard-code one. Its own
+          # fallback covers a local build, where there is no Pages step to ask.
+          DOCS_BASE_URL: ${{ steps.pages.outputs.base_url }}
         run: pixi run -e all docs
 
       - name: Assemble the site
@@ -68,34 +97,38 @@ jobs:
 
           # Sphinx writes `_static/`, and a leading underscore makes Jekyll skip a directory.
           # The Actions deployment path does not run Jekyll at all, so this is belt and
-          # braces — but it costs one empty file and removes the question permanently.
+          # braces -- but it costs one empty file and removes the question permanently.
           touch dist/docs/html/.nojekyll
 
           # Fail here rather than publishing a site missing a file somebody will go looking
-          # for. `upload-pages-artifact` is happy to upload whatever it finds.
-          for required in index.html llms.txt llms-full.txt sentrykit.pdf .nojekyll; do
-            if [ ! -s "dist/docs/html/${required}" ] && [ "${required}" != ".nojekyll" ]; then
+          # for: `upload-pages-artifact` uploads whatever it finds, without an opinion.
+          for required in index.html llms.txt llms-full.txt sentrykit.pdf; do
+            if [ ! -s "dist/docs/html/${required}" ]; then
               echo "::error::the assembled site is missing ${required}"
               exit 1
             fi
           done
 
           du -sh dist/docs/html
-          ls -l dist/docs/html
 
-      - uses: actions/upload-pages-artifact@v3
+      - name: Upload the Pages artifact
+        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         with:
           path: dist/docs/html
 
   deploy:
     name: deploy to Pages
     needs: build
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    permissions:
+      pages: write # publish the uploaded Pages artifact
+      id-token: write # the OIDC token that proves the deployment's origin
     # The environment is what carries the deployment's URL into the Actions UI, so the run
     # links to the page it just published.
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
-      - id: deployment
-        uses: actions/deploy-pages@v4
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1

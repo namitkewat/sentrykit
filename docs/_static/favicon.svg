@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-labelledby="t">
+  <title id="t">sentrykit</title>
+  <!-- The same gate, cut to what survives 16 pixels: one argument through, one refused.
+       The third line and the thinner strokes of the full logo close up at this size. -->
+  <style>
+    svg { --pri: #4f46e5; --ok: #0d9488; --no: #e11d48; }
+    @media (prefers-color-scheme: dark) {
+      svg { --pri: #818cf8; --ok: #2dd4bf; --no: #fb7185; }
+    }
+  </style>
+  <g fill="none" stroke-width="9" stroke-linecap="round">
+    <path style="stroke: var(--pri)" d="M42 8V56" />
+    <path style="stroke: var(--ok)" d="M7 22H53" />
+    <path style="stroke: var(--no)" d="M7 44H25" />
+  </g>
+  <circle style="fill: var(--no)" cx="34" cy="44" r="5.5" />
+</svg>

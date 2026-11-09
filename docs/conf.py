@@ -1,7 +1,8 @@
 """Sphinx configuration for the sentrykit documentation.
 
-The documentation ships as release assets rather than as a hosted site, so that a reader
-always has the version they installed. One source tree therefore has to feed three
+The documentation is published twice: to a site that tracks ``main``, and as release assets so
+that a reader also has the version they installed, frozen. One source tree therefore has to
+feed three
 builders — ``html`` for people, ``rinoh`` for the PDF, and ``markdown`` as the intermediate that
 ``scripts/build_llms_txt.py`` flattens into ``llms.txt`` and ``llms-full.txt``. Everything
 below is chosen to keep those three in agreement.
@@ -19,6 +20,7 @@ differently before docutils ever sees them. Nothing here is written by hand twic
 from __future__ import annotations
 
 import importlib.util
+import os
 import re
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, ClassVar, Final
@@ -166,19 +168,39 @@ napoleon_include_init_with_doc = False
 napoleon_use_ivar = True
 
 # --- HTML -------------------------------------------------------------------
-# furo: a single-project theme with no configuration surface to get wrong. `html_static_path`
-# is left empty on purpose — pointing it at a directory that does not exist is a warning, and
-# every warning here is a failed gate.
+# furo: a single-project theme with no configuration surface to get wrong.
 
 html_theme = "furo"
 html_title = f"{project} {version}"
-html_static_path: list[str] = []
+html_static_path: list[str] = ["_static"]
+
+# Two logo files rather than one, because furo has its own light/dark toggle and a single
+# SVG cannot follow it: an `<img>`-loaded SVG resolves `prefers-color-scheme` against the
+# operating system, so one file would show light ink on furo's dark sidebar for any reader
+# who flipped the theme by hand. `light_logo` and `dark_logo` follow the toggle instead.
+#
+# The favicon is the opposite case and is the single theme-aware file, since browser chrome
+# does follow the system setting. It is also a simplified drawing: the full mark's third
+# argument line closes up at 16 pixels.
+html_theme_options = {
+    "light_logo": "logo-light.svg",
+    "dark_logo": "logo-dark.svg",
+    "source_repository": "https://github.com/namitkewat/sentrykit/",
+    "source_branch": "main",
+    "source_directory": "docs/",
+}
+html_favicon = "_static/favicon.svg"
 
 # The published site's address, which makes every page emit a `rel="canonical"` link. The
 # same HTML is also zipped onto each GitHub release and read from disk, so without this the
 # copies compete with the site for the same search results. Harmless when a reader opens the
 # build locally: a canonical link is a hint about where a page lives, not a redirect.
-html_baseurl = "https://namitkewat.github.io/sentrykit/"
+#
+# The Pages workflow passes the URL it is actually deploying to, so the value is not written
+# down in two places; the fallback is what a local build and the release build use.
+html_baseurl = os.environ.get("DOCS_BASE_URL") or "https://namitkewat.github.io/sentrykit/"
+if not html_baseurl.endswith("/"):
+    html_baseurl += "/"
 
 # --- PDF (rinohtype) --------------------------------------------------------
 # Pure Python with bundled fonts, so `pixi run docs-pdf` works on a laptop and on a runner
