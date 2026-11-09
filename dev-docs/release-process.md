@@ -80,10 +80,10 @@ What the smoke test cannot prove:
 If you want the full extras matrix against *exactly* the file the index served, the script
 takes it: `python scripts/release_check.py --skip-build --dist <the download directory>`.
 
-**The PyPI upload.** That PyPI accepted the same artifact. It does not make the project page
-coherent: `Homepage`, `Source` and `Changelog` point into this repository, and while it is
-private those links fail for the reader who installed the package. That is recorded as an
-open decision in `packaging-standards.md` rather than silently patched.
+**The PyPI upload.** That PyPI accepted the same artifact, and nothing beyond that. It does
+not open the project page, follow its links, or check that the description renders —
+`twine check` upstream is what looks at the description, and the three project URLs are
+verified by hand against `raw.githubusercontent.com` rather than by any gate in this chain.
 
 ---
 

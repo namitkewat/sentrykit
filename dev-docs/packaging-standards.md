@@ -141,20 +141,22 @@ Two things that are nobody's commit to make:
 - **Two Trusted Publishers, not one.** PyPI and TestPyPI are separate Warehouse instances with
   separate accounts, and the release chain uploads to both — so each needs its own publisher,
   each naming this repository, `release.yml`, and the environment that job runs in: `pypi` and
-  `testpypi` respectively. Create them as **pending publishers**: that is the form for a
-  project name that does not exist on the index yet, which is exactly the first release's
-  situation, and the publisher converts to an ordinary one when the first upload lands. Until
-  both exist the corresponding job fails closed with the index's own error — the right failure,
-  and not a green release. Optionally attach a required reviewer to `pypi` alone: it is the
-  irreversible step, and `testpypi` is better left unattended so the gate in front of PyPI
-  runs without a human in it.
-- **The project URLs resolve, which now needs only the push.** `Homepage`, `Source` and
-  `Changelog` point into this repository. It is public, so the first two resolve; `Changelog`
-  is `blob/main/CHANGELOG.md` and needs `main` to exist on the remote, which it does not until
-  somebody pushes. Check it with the **raw** URL, never the `blob/` one: GitHub answers a
-  missing blob path with a soft-404 page under status **200**, so a `blob/` link that is
-  completely broken looks healthy to anything that reads status codes.
-  `https://raw.githubusercontent.com/<owner>/<repo>/main/CHANGELOG.md` answers honestly.
+  `testpypi` respectively. **Which form to use differs per index, and the wrong form
+  authorizes nothing**: a *pending* publisher is for a project name the index does not carry
+  yet, while an index that already has the project takes a publisher on the project itself.
+  Rehearsing on the test index creates the project there, so the two end up needing different
+  forms — `release-process.md` has the table and says where each form lives. Until both exist
+  the corresponding job fails closed with the index's own error — the right failure, and not
+  a green release. Optionally attach a required reviewer to `pypi` alone: it is the irreversible
+  step, and `testpypi` is better left unattended so the gate in front of PyPI runs without a
+  human in it.
+- **The project URLs resolve.** `Homepage`, `Source` and `Changelog` point into this
+  repository, which is public with `main` pushed, so all three answer. The check behind that
+  is worth keeping for the next URL somebody adds: use the **raw** URL, never the `blob/` one.
+  GitHub answers a missing blob path with a soft-404 page under status **200**, so a `blob/`
+  link that is completely broken looks healthy to anything reading status codes — a link
+  check built on `blob/` cannot fail.
+  `https://raw.githubusercontent.com/<owner>/<repo>/main/<path>` answers honestly.
 
 ### Keeping the published dependency range honest
 `ci.yml` runs every job `locked: true`, so CI tests the dependency set contributors have. The
