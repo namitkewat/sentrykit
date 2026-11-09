@@ -26,9 +26,10 @@ entity hierarchy.
 | **A command line** | `sentrykit policy validate`, `grant` / `revoke`, and `audit-report` — with the admin surface governed by the very policy it administers. |
 | **Plugins everywhere** | Policy sources, grant stores, audit sinks and framework providers are all [Protocol + DSN + entry point](plugins.md), so a third-party backend is indistinguishable from a built-in. |
 
-**Status.** Version 0.2.0. Everything above is implemented and tested. This is a pre-1.0
-library: the public API is typed, documented and covered, but it has not yet been through a
-release cycle. The audit sinks that ship write to memory and to an append-only JSONL file; a
+**Status.** Version 0.1.0, the first release. Everything above is implemented and tested, and
+this is a pre-1.0 library: the public API is typed, documented and covered, and it has not yet
+had to survive anybody else's upgrade. The audit sinks that ship write to memory and to an
+append-only JSONL file; a
 durable write-once backend (S3 Object Lock, an Iceberg table) is a `Protocol` away rather
 than shipped, which matters because until you wire one up the hash chain *detects* tampering
 rather than preventing it. [Audit & compliance](audit.md) covers the chain, and
