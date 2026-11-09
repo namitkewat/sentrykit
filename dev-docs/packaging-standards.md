@@ -106,9 +106,19 @@ appear in `[project.optional-dependencies]`.
    `load_pack()` returns policy text — the shipped Cedar pack is package *data*, and a
    build-backend rule that ships only `*.py` is invisible until somebody calls it.
 
-   **A version is spent on the test index as permanently as on the real one**, so a rehearsal
-   that has to be repeated needs a new version — rehearse once, late, on the artifact you
-   intend to ship.
+   **Rehearse with a throwaway version — never the one you intend to ship.** Use an `rc` or a
+   `.devN`. Two reasons, and the second one is what makes this a rule rather than a preference.
+   A version is spent on the test index as permanently as on the real one, so a rehearsal that
+   has to be repeated needs a new number anyway. And the artifact a local rehearsal uploads is
+   **not** the artifact CI will build: measured here, a wheel built on Windows and a wheel built
+   on the Linux runner from the identical commit had different sha256 digests. So rehearsing the
+   shipping version locally leaves the test index holding a *different* build of it, after which
+   the release chain's own `skip-existing` makes the upload a no-op and the digest comparison in
+   `smoke-test` correctly fails — and that version can never pass the pipeline, because its
+   filename is permanently reserved and cannot be replaced.
+
+   That is not hypothetical: it is how 0.1.0 came to be unusable through the chain on the test
+   index, and why the first version to go through it end to end was an `rc`.
 7. Tag the release with a plain version tag; the release commit follows the commit rule (no
    tooling attribution). From there the workflow runs the chain itself — GitHub release, then
    TestPyPI, then an install of the published artifact back out of TestPyPI, and only then

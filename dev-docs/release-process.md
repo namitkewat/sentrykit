@@ -95,9 +95,17 @@ not a green release.
 
 **1. Two Trusted Publishers — one on PyPI, one on TestPyPI.** They are separate Warehouse
 instances with separate accounts, and neither publisher authorizes anything on the other.
-Because sentrykit has never been released, both are created as *pending* publishers (under
-*Your account → Publishing*) rather than attached to an existing project. Each form takes the
-same four values:
+The two are created in **different places**, and following the wrong one produces a publisher
+that authorizes nothing:
+
+- **PyPI** has no `sentrykit` project, so its publisher is a *pending* publisher, created under
+  *Your account → Publishing*. It converts to an ordinary one when the first upload lands.
+- **TestPyPI** already has the project, because it was used to rehearse. Its publisher is added
+  to the **existing project**, under *Manage project → Publishing*. The pending-publisher form
+  will refuse a name that is already taken.
+
+Check before reaching for a form: if `https://<index>/pypi/sentrykit/json` answers 200, the
+project exists and the publisher belongs on it. Each form takes the same four values:
 
 | field | PyPI | TestPyPI |
 | --- | --- | --- |
