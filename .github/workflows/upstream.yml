@@ -28,6 +28,11 @@ on:
       - "pixi.lock"
       - ".github/workflows/upstream.yml"
 
+# Conventions here (every `uses:` pinned to a commit SHA with the version it names, a pinned
+# runner, `persist-credentials: false`, permissions elevated per job) match `docs.yml` and the
+# sibling iceberg-ops repository, so one set of habits covers both; see
+# `dev-docs/packaging-standards.md`.
+
 permissions:
   contents: read
 
@@ -38,16 +43,20 @@ concurrency:
 jobs:
   unlocked:
     name: check (all, freshly resolved)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           # `tests/unit/test_commit_history.py` re-checks every commit message in history, and
           # on a shallow clone it can see one commit and skips -- a check that reports success
           # after inspecting nothing is worse than no check.
           fetch-depth: 0
+          # Depth is what that test needs; the token is not. `pixi update` resolves from the
+          # package indexes and the diff below is local, so nothing here authenticates to this
+          # repository.
+          persist-credentials: false
 
-      - uses: prefix-dev/setup-pixi@v0
+      - uses: prefix-dev/setup-pixi@9936258fee697aff89b3fed6ca1f80a382ef694e # v0.11.3
         with:
           environments: all
           # Installed from the lock first, then updated. Solving from scratch with no cache

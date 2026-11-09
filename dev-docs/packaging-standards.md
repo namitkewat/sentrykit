@@ -63,6 +63,57 @@ the `dev` feature only — never imported by, linked into, or shipped inside the
 like `ruff` or `mypy` — so it does not reach sentrykit's Apache-2.0 licensing. It must never
 appear in `[project.optional-dependencies]`.
 
+## Workflow conventions
+All four workflows — `ci.yml`, `docs.yml`, `release.yml`, `upstream.yml` — follow one set of
+rules, matching the sibling `namitkewat/iceberg-ops` repository so that one set of habits
+covers both:
+
+- **Every `uses:` is pinned to a full commit SHA**, with a trailing `# vX.Y.Z` comment naming
+  the release that SHA is. A tag is a mutable pointer the action's owner can move, so a tag
+  pin means a third party can change what runs in a job holding `contents: write` and an OIDC
+  token, without a commit here. The comment is what keeps the pin readable — a bare SHA says
+  nothing about how far behind it is.
+- **`runs-on` names an image**, `ubuntu-24.04`, not `ubuntu-latest`. `ubuntu-latest` moves to
+  the next LTS on GitHub's schedule, which turns a runner migration into a surprise on
+  whichever run happens to be next — including a release run.
+- **`persist-credentials: false` on every checkout.** No workflow pushes, comments or commits;
+  the one step that writes to the repository, `gh release create`, authenticates from `GH_TOKEN`
+  in its own step environment. So no job needs the token in `.git/config`, where it would be
+  within reach of every tool the gate, the build and the documentation build happen to run.
+  `fetch-depth: 0` is independent of it, and stays: `tests/unit/test_commit_history.py` needs
+  the history, not credentials.
+- **Permissions are read-only at the top level and elevated per job.** `release.yml` grants
+  `contents: write` to the `release` job alone, and `docs.yml` grants `pages: write` and
+  `id-token: write` to `deploy` alone. The job that executes project code is therefore never
+  the job that can publish.
+
+To resolve a pin, ask GitHub what the tag points at rather than copying a SHA from a web page:
+
+```bash
+gh api repos/actions/checkout/commits/v4 --jq .sha
+```
+
+and read the exact release back out of the tag list, since a major tag and the patch release it
+currently points at share one commit:
+
+```bash
+gh api 'repos/actions/checkout/tags?per_page=100' --paginate   --jq '.[] | select(.commit.sha=="<sha>") | .name'
+```
+
+**Re-pinning within a major is routine; crossing a major is its own change.** Moving a pin
+forward inside the major already in use keeps behaviour identical and needs no more than a
+green run. Crossing a major does not: the action's breaking changes have to be read, and the
+release chain has been proved end to end exactly once, on the versions it is pinned to. So a
+major bump is a separate commit with its own evidence — a dispatch rehearsal of `release.yml`
+at minimum — rather than a line changed in passing.
+
+That rule is why the pins are not uniform across the four files. `docs.yml` was written fresh
+against the current `actions/checkout` and `actions/setup-python`; the other three carry the
+majors their jobs have always run, so `actions/checkout` is pinned at v4 in three files and v7
+in `docs.yml`. The divergence is deliberate, not an oversight: `docs.yml` publishes a site that
+is rebuilt on every push and cheap to re-prove, while the release chain's majors are behind a
+bump nobody has yet paid the rehearsal for.
+
 ## Release checklist
 1. `pixi run -e all check` is green — and so are `default`, `web` and `agent`.
 2. Version bumped in `src/sentrykit/__init__.py`; `CHANGELOG.md` updated. The tag must match
