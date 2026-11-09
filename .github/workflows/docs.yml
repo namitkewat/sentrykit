@@ -1,0 +1,101 @@
+name: docs
+
+# The published documentation site, rebuilt from `main`.
+#
+# The release workflow attaches the same four documentation outputs to every release, which
+# serves the reader who downloaded one. This workflow serves the reader who has not: a
+# browsable copy of the current documentation at a stable URL, with the PDF and both
+# `llms.txt` files beside it.
+#
+# It tracks `main` rather than the latest tag, so the site documents the code as it stands
+# and can describe something not yet on PyPI. That is the right default for a pre-1.0
+# project — a reader following the repository wants the current behaviour — and the
+# versioned snapshot is the release asset, which does not move.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# `pages: write` and `id-token: write` are what the deployment needs; nothing here writes to
+# the repository itself.
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# One deployment at a time, and never cancel one part-way: `deploy-pages` swaps a live URL
+# over to a new artifact, so a run killed mid-swap is a question about what the site is now
+# serving. A superseded build is cheap by comparison, which is why this group does not
+# cancel in progress the way `ci.yml`'s does.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: build the site
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: prefix-dev/setup-pixi@v0
+        with:
+          # `all`, for the same reason the release builds the documentation there: `conf.py`
+          # mocks whichever frameworks are absent, so building anywhere else would publish
+          # pages documenting mocks instead of the real signatures.
+          environments: all
+          locked: true
+          cache: true
+
+      # The aggregate, not `docs-html` alone, and that choice closes a known gap. `pixi run
+      # check` builds only the HTML, so a PDF that no longer renders and an `llms.txt` that
+      # has gone stale are both invisible to CI — each has slipped through once already.
+      # Building all four on every push to `main` turns either failure into a red workflow
+      # here rather than a discovery at the next release.
+      - name: Build the documentation
+        run: pixi run -e all docs
+
+      - name: Assemble the site
+        run: |
+          set -euo pipefail
+
+          # The PDF and both llms.txt files travel with the site. The site root is where a
+          # client looks for `llms.txt`, which is the point of generating one at all; a copy
+          # that only ever existed as a release asset is a copy nothing can find.
+          cp dist/docs/pdf/sentrykit.pdf dist/docs/html/sentrykit.pdf
+          cp dist/docs/llms.txt dist/docs/html/llms.txt
+          cp dist/docs/llms-full.txt dist/docs/html/llms-full.txt
+
+          # Sphinx writes `_static/`, and a leading underscore makes Jekyll skip a directory.
+          # The Actions deployment path does not run Jekyll at all, so this is belt and
+          # braces — but it costs one empty file and removes the question permanently.
+          touch dist/docs/html/.nojekyll
+
+          # Fail here rather than publishing a site missing a file somebody will go looking
+          # for. `upload-pages-artifact` is happy to upload whatever it finds.
+          for required in index.html llms.txt llms-full.txt sentrykit.pdf .nojekyll; do
+            if [ ! -s "dist/docs/html/${required}" ] && [ "${required}" != ".nojekyll" ]; then
+              echo "::error::the assembled site is missing ${required}"
+              exit 1
+            fi
+          done
+
+          du -sh dist/docs/html
+          ls -l dist/docs/html
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist/docs/html
+
+  deploy:
+    name: deploy to Pages
+    needs: build
+    runs-on: ubuntu-latest
+    # The environment is what carries the deployment's URL into the Actions UI, so the run
+    # links to the page it just published.
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

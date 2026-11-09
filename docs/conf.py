@@ -174,6 +174,12 @@ html_theme = "furo"
 html_title = f"{project} {version}"
 html_static_path: list[str] = []
 
+# The published site's address, which makes every page emit a `rel="canonical"` link. The
+# same HTML is also zipped onto each GitHub release and read from disk, so without this the
+# copies compete with the site for the same search results. Harmless when a reader opens the
+# build locally: a canonical link is a hint about where a page lives, not a redirect.
+html_baseurl = "https://namitkewat.github.io/sentrykit/"
+
 # --- PDF (rinohtype) --------------------------------------------------------
 # Pure Python with bundled fonts, so `pixi run docs-pdf` works on a laptop and on a runner
 # without a LaTeX toolchain. `target` is the filename stem, which is what pins the release

@@ -37,8 +37,10 @@ A release goes to two places. The **distribution** goes to PyPI, published by th
 workflow's own `publish` job from a `v*` tag — see ADR-037 for why that job is separate, why it
 authenticates by Trusted Publishing rather than a stored token, and what has to be configured
 on PyPI once for it to work. Everything a reader needs that PyPI has no place for — the HTML,
-the PDF and both `llms.txt` files — is attached to the **GitHub release**, since there is no
-hosted documentation site and the docs travel with the release they describe.
+the PDF and both `llms.txt` files — is attached to the **GitHub release**, so the docs travel
+with the release they describe. The same four outputs are also published to the documentation
+site, which tracks `main` rather than the latest tag — so the release copy is the frozen one,
+and it is what a reader on an older version wants.
 
 Six assets go on the release, and every one of them is attached:
 

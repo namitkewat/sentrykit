@@ -167,11 +167,14 @@ the sentence.
 
 ## 3. The docs are Sphinx, and they produce four artifacts
 
-There is no hosted documentation *site*. Documentation is a set of **files attached to each
-release**, so that a reader always has the version they installed rather than whatever is
-current, and the toolchain is chosen for that. This began as a constraint — the repository was
-private and had nowhere to host one — and outlived it: the repository is public now, a site is
-possible, and shipping the docs with the artifact they describe is still the better default.
+Documentation is delivered **twice**, and the two answer different questions. The files
+attached to each release are the version a reader installed, frozen. The published site at
+<https://namitkewat.github.io/sentrykit/> is the current state of `main`, rebuilt on every push
+by `.github/workflows/docs.yml`. Neither replaces the other: somebody running 0.1.x should not
+be reading about an unreleased change, and somebody deciding whether to install anything at all
+should not have to download a zip first. The release assets came first, when the repository was
+private and had nowhere to host a site; the toolchain below is unchanged by the site existing,
+because the site publishes the same four outputs.
 
 | what | how | why |
 | --- | --- | --- |
