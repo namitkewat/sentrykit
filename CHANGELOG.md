@@ -13,6 +13,36 @@ than asserted.
 
 ### Added
 
+- **A working path from this repository to PyPI, which there was not one of before.** The
+  release workflow built every asset, verified the set and created a GitHub release, and never
+  contacted an index. There is now a separate `publish` job: reachable only from a `v*` tag,
+  never from a manual dispatch, running after the gate and the asset check have both passed,
+  and authenticated by **Trusted Publishing** rather than an API token in repository secrets —
+  so there is no long-lived credential to leak or rotate. It is named into a `pypi` deployment
+  environment, which lets a required reviewer be put in front of the one irreversible action
+  here without editing the workflow.
+
+  It also needed an `outputs:` block on the `release` job. A step output is scoped to its own
+  job, so without it the publish job's `needs.release.outputs.publish` resolves to an empty
+  string, the `if` comparing that to `'true'` is false, and every release would skip
+  publishing while saying nothing about why.
+
+  Locally there are three tasks — `pixi run dist-check`, `publish-test` and `publish` — each
+  reading its repository, user and token from `~/.pypirc`, and none taking a credential on a
+  command line. `twine` is a dev dependency for the first time; its absence is why none of
+  this was caught before.
+- **`upstream`, a workflow that tests the dependency set users actually get.** Every job in
+  `ci.yml` runs `locked: true`, deliberately, so CI tests the dependency set contributors
+  have. The cost is that the combination a user resolves is the one combination nothing tests:
+  the lock pins `cedarpy` 4.8.7 while `pip install` takes the newest in `>=4.8,<5`. The new
+  workflow re-resolves every dependency to its newest allowed version, prints what moved, and
+  runs the same gate — weekly, and on any pull request touching a dependency declaration.
+  Unlocking `ci.yml` would have traded a real guarantee for this one, and a thirteenth matrix
+  job would not help, because an upstream release is not an event in this repository and has
+  to be looked for on a schedule.
+
+  It is not `continue-on-error`. A job allowed to fail renders as a pass, which is how a
+  warning becomes a rumour.
 - **An attack/defence suite that runs every scenario twice, with and without the gate.**
   `examples/scenarios/` proposes nine named attacks — exfiltration by `limit`, an instruction
   planted in a ticket thread, a cross-tenant probe, a state handle presented by somebody else
@@ -292,6 +322,32 @@ than asserted.
 
 ### Fixed
 
+- **The built wheel was not publishable, and the first defect made every other one moot.**
+  `twine check` refused it outright: hatchling 1.32 defaults to `Metadata-Version: 2.5`, and
+  `packaging` 25 — which twine validates with, and which every consumer that reads metadata
+  uses — knows versions up to 2.4 and rejects 2.5 as invalid. The artifact was unreadable to
+  the tooling that publishes and installs it, whatever it contained. Both build targets now
+  pin core metadata 2.4, the version PEP 639 landed in, so `License-Expression` and
+  `License-File` are carried either way; the pin is written to be removed once `packaging`
+  learns 2.5.
+
+  Second, the licence was declared twice and incompatibly — an SPDX `license` expression
+  beside a legacy `License ::` trove classifier, which PEP 639 forbids and PyPI rejects. The
+  classifier is gone. The expression is the licence.
+
+  Both are now verified rather than asserted: `scripts/release_check.py` runs `twine check` on
+  the exact artifacts it just built, before the extras, because an extra that installs cleanly
+  out of a wheel no index will accept is a wheel nobody will install. The artifacts were also
+  rehearsed end to end on the test index — uploaded, downloaded back, installed with every
+  extra, and `load_pack()` asked for policy text, since the shipped Cedar pack is package
+  *data* and a build rule that ships only `*.py` is invisible until something reads it.
+
+  `dev-docs/packaging-standards.md` carries the rehearsal procedure, including the part that
+  is counter-intuitive: a two-index `pip install` from the test index does not work, **in
+  either order**. The test index carries an abandoned placeholder `fastapi` whose sdist does
+  not build, and an extra index is not a fallback — pip unions the candidates and picks by
+  version, so the placeholder wins whichever flag named it. Downloading the file and
+  installing that is the form that tests the artifact instead of an index race.
 - **A documentation page could be added and silently left out of `llms.txt` and
   `llms-full.txt`.** `scripts/build_llms_txt.py` holds the corpus as a hand-written tuple,
   because that tuple is the only place the reading order is decided — and it checked one

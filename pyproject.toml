@@ -19,7 +19,8 @@ keywords = [
 classifiers = [
   "Development Status :: 3 - Alpha",
   "Intended Audience :: Developers",
-  "License :: OSI Approved :: Apache Software License",
+  # No `License ::` classifier. PEP 639 forbids one beside the SPDX `license` expression
+  # above, and PyPI rejects an upload carrying both. The expression is the licence.
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
   "Programming Language :: Python :: 3.13",
@@ -81,8 +82,18 @@ Changelog = "https://github.com/namitkewat/sentrykit/blob/main/CHANGELOG.md"
 [tool.hatch.version]
 path = "src/sentrykit/__init__.py"
 
+# Core metadata 2.4 rather than hatchling's default, which is currently 2.5. 2.5 is newer
+# than anything `packaging` understands -- 25.0 knows up to 2.4 -- so a 2.5 artifact is
+# refused by `twine check` and by every consumer that validates metadata, which made the
+# wheel unpublishable regardless of what it contained. 2.4 is the version PEP 639 landed in,
+# so `License-Expression` and `License-File` are carried either way and nothing is lost.
+# Remove these two lines once `packaging` ships 2.5 support.
 [tool.hatch.build.targets.wheel]
+core-metadata-version = "2.4"
 packages = ["src/sentrykit"]
+
+[tool.hatch.build.targets.sdist]
+core-metadata-version = "2.4"
 
 # --- Ruff -------------------------------------------------------------------
 [tool.ruff]

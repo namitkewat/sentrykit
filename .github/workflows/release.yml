@@ -26,6 +26,15 @@ concurrency:
 jobs:
   release:
     runs-on: ubuntu-latest
+
+    # Exposed to the `publish` job below. A step output is scoped to its own job, so without
+    # these two lines `needs.release.outputs.publish` resolves to an empty string -- and an
+    # `if` comparing an empty string to 'true' is false, which means the publish job would be
+    # skipped on every release and nothing would say why.
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      publish: ${{ steps.version.outputs.publish }}
+
     steps:
       # A manual run has no tag, so it has no version contract to check anything against.
       # Rather than inventing one, publishing stays exclusively the `v*` tag path and a
@@ -159,6 +168,18 @@ jobs:
 
       # Uploaded on real runs too, not just rehearsals: the artifact is what makes a failed
       # or half-published release inspectable without rebuilding it.
+      # Two artifacts rather than one, and the split is load-bearing. The publisher action
+      # uploads *every* file in the directory it is pointed at, so the distribution has to
+      # travel on its own: a single artifact carrying the docs as well would have the publish
+      # job trying to upload a PDF to an index.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sentrykit-dist-${{ steps.version.outputs.version }}
+          if-no-files-found: error
+          path: |
+            dist/sentrykit-${{ steps.version.outputs.version }}-py3-none-any.whl
+            dist/sentrykit-${{ steps.version.outputs.version }}.tar.gz
+
       - uses: actions/upload-artifact@v4
         with:
           name: sentrykit-release-assets-${{ steps.version.outputs.version }}
@@ -215,3 +236,48 @@ jobs:
           fi
 
           gh release create "${GITHUB_REF_NAME}" "${args[@]}" "${assets[@]}"
+
+  # A separate job, for one reason: it is the only thing here that cannot be undone. A
+  # GitHub release can be deleted and re-created; an index will not accept a version twice,
+  # even after the file is removed. So publishing is isolated, runs only after the gate, the
+  # build and the asset check have all passed, and is reachable only from a `v*` tag --
+  # `publish` is false for every manual dispatch, which the first step of the job above
+  # refuses outright anyway.
+  publish:
+    name: publish to PyPI
+    needs: release
+    if: ${{ needs.release.outputs.publish == 'true' }}
+    runs-on: ubuntu-latest
+
+    # Names a deployment environment rather than relying on the tag alone. Attaching a
+    # required reviewer to `pypi` in the repository settings puts a human between pushing a
+    # tag and an irreversible upload, which is the cheapest possible safeguard for the one
+    # action in this repository that has no undo. Nothing here depends on that reviewer
+    # existing -- it is a setting the maintainer can add without touching this file.
+    environment:
+      name: pypi
+      url: https://pypi.org/p/sentrykit
+
+    permissions:
+      # Trusted Publishing: the runner mints a short-lived OIDC token that PyPI exchanges
+      # for upload rights. No API token is stored in repository secrets, so there is nothing
+      # to leak, nothing to rotate, and no long-lived credential that outlives the job.
+      # Requires a one-time publisher configured on PyPI for this repository, workflow
+      # filename and environment name; until that exists this job fails closed with a clear
+      # error from PyPI rather than uploading anything.
+      id-token: write
+      contents: read
+
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: sentrykit-dist-${{ needs.release.outputs.version }}
+          path: dist
+
+      # Built once, in the job above, and published here. Re-building would produce a second
+      # artifact that nothing had checked and that nobody attached to the release, so the
+      # file on the index and the file on the release page could differ.
+      - name: List what will be uploaded
+        run: ls -l dist
+
+      - uses: pypa/gh-action-pypi-publish@release/v1

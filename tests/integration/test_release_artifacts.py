@@ -90,6 +90,22 @@ def names(wheel: zipfile.ZipFile) -> list[str]:
 
 
 @pytest.fixture(scope="module")
+def metadata(wheel: zipfile.ZipFile) -> bytes:
+    """The wheel's ``METADATA``, unparsed.
+
+    Returns:
+        The raw bytes, because the assertions below are about what the file *says* and one of
+        them is about whether it parses at all.
+
+    Raises:
+        AssertionError: If the wheel carries none, which no builder should produce.
+    """
+    found = [name for name in wheel.namelist() if name.endswith(".dist-info/METADATA")]
+    assert found, "the wheel carries no METADATA"
+    return wheel.read(found[0])
+
+
+@pytest.fixture(scope="module")
 def entry_points(wheel: zipfile.ZipFile) -> configparser.ConfigParser:
     """The wheel's ``entry_points.txt``, parsed.
 
@@ -163,3 +179,52 @@ def test_the_shipped_pack_is_reachable_as_a_policy_source(
         entry_points.get("sentrykit.policy_sources", "pack")
         == "sentrykit.policy.loader:PackPolicySource"
     )
+
+
+# --- the metadata, which decides whether anything can be published at all ----------------------
+
+
+@pytest.mark.integration
+def test_the_metadata_parses_under_the_library_every_publisher_validates_with(
+    metadata: bytes,
+) -> None:
+    """The check that was missing, and whose absence made the wheel unpublishable.
+
+    `packaging` is what `twine check` validates with and what consumers read metadata with, so
+    "does `packaging` accept this" is the operative question rather than a stylistic one. It
+    did not: hatchling defaults to a core metadata version newer than any `packaging` release
+    understands, which is rejected outright. The wheel imported perfectly and no index would
+    have taken it.
+
+    Asserted through the public parser rather than against a literal version string. Pinning
+    the number here would make this test a copy of the setting it is supposed to be checking,
+    and it would start failing for the right reason -- `packaging` learning a newer version --
+    on the day the pin in `pyproject.toml` could be removed.
+    """
+    from packaging.metadata import Metadata
+
+    # Raises InvalidMetadata when the version is one it does not know, which is the case this
+    # exists for, and also when a field is malformed.
+    parsed = Metadata.from_email(metadata, validate=True)
+
+    assert parsed.name == "sentrykit"
+
+
+@pytest.mark.integration
+def test_the_wheel_declares_its_licence_exactly_once(metadata: bytes) -> None:
+    """One licence declaration, in the form PEP 639 specifies.
+
+    An SPDX expression and a legacy `License ::` trove classifier may not both appear -- PEP
+    639 forbids it and PyPI rejects the upload -- and this wheel carried both. The failure is
+    worth a test rather than a comment because neither declaration is wrong on its own, so a
+    reader adding the classifier back for tidiness would be restoring something that reads
+    entirely reasonable and refuses to publish.
+    """
+    text = metadata.decode("utf-8")
+    lines = text.splitlines()
+
+    expressions = [line for line in lines if line.startswith("License-Expression:")]
+    classifiers = [line for line in lines if line.startswith("Classifier: License ::")]
+
+    assert expressions == ["License-Expression: Apache-2.0"]
+    assert not classifiers, f"PEP 639 forbids these beside the expression: {classifiers}"

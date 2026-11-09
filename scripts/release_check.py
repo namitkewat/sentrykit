@@ -110,6 +110,38 @@ def run(command: list[str], *, label: str) -> subprocess.CompletedProcess[str]:
     )
 
 
+def check_metadata(*artifacts: Path) -> None:
+    """Refuse artifacts whose metadata no index would accept, before testing what is in them.
+
+    This runs before the extras because it answers a cheaper and more fundamental question. An
+    extra that installs correctly out of a wheel nothing will accept is a wheel nobody will
+    ever install, and the failure mode is silent: the build succeeds, the tests pass, the
+    artifact is produced, and the fault surfaces at the one moment there is no going back,
+    against an index that will not let that version be uploaded twice.
+
+    It is `twine check`, handed the exact paths that were just built rather than a glob.
+    `dist/` is gitignored and accumulates whatever anybody drops in it, and `twine` treats an
+    unrecognised file as a fatal unknown distribution format -- so a glob turns somebody's
+    stray note into a failed release check.
+
+    Args:
+        *artifacts: The built distributions to check.
+
+    Raises:
+        SystemExit: If `twine` rejects any of them, or is not importable. Not a soft failure:
+            the whole point is to stop here rather than at the upload.
+    """
+    completed = run(
+        [sys.executable, "-m", "twine", "check", *(str(path) for path in artifacts)],
+        label=f"checking the metadata of {', '.join(path.name for path in artifacts)}",
+    )
+    if completed.returncode != 0:
+        print(completed.stdout, file=sys.stderr)
+        print(completed.stderr, file=sys.stderr)
+        raise SystemExit("release check: `twine check` rejected the built distribution")
+    print("  metadata accepted by twine")
+
+
 def build_distribution(dist: Path) -> tuple[Path, Path]:
     """Build the wheel and the sdist, and insist both appeared.
 
@@ -291,9 +323,12 @@ def main() -> int:
             )
             return 1
         wheel = wheels[0]
+        sdists = sorted(dist.glob("*.tar.gz"))
         print(f"  reusing {wheel.name}")
+        check_metadata(wheel, *sdists)
     else:
-        wheel, _ = build_distribution(dist)
+        wheel, sdist = build_distribution(dist)
+        check_metadata(wheel, sdist)
 
     results = [check_extra(extra, EXTRAS[extra], wheel) for extra in requested]
     print_table(results)

@@ -1183,3 +1183,72 @@ inside the argument filter, which is a pure function today and is on the path of
 makes a decision depend on a database the audit record cannot pin a hash of; and it hands the
 grant store a callable reference, which is data an admin surface would then be mutating into
 executable behaviour. Policies-as-code, grants-as-data draws the line the other way round.
+
+## ADR-037 — The publish path: metadata pinned to 2.4, published by a tag through Trusted Publishing
+**Decision.** Four things, and they are separable. The core metadata version both build
+targets emit is pinned to **2.4** rather than left at hatchling's default. The `License ::`
+trove classifier is **removed**, leaving the PEP 639 SPDX expression as the sole licence
+declaration. Publishing to PyPI is a **separate job** in the release workflow, reachable only
+from a `v*` tag, authenticated by **Trusted Publishing** rather than a stored API token, and
+named into a deployment environment so a human approval can be attached without editing the
+workflow. And `twine check` runs **inside `scripts/release_check.py`**, on the exact artifacts
+it just built, rather than as a workflow step.
+
+**Why the metadata version had to be pinned.** hatchling 1.32 defaults to `Metadata-Version:
+2.5`. `packaging` 25.0 — which `twine` validates with, and which every consumer that reads
+metadata uses — knows versions up to 2.4 and rejects 2.5 as invalid outright. So the wheel this
+repository built was not merely unconventional, it was **unreadable to the tooling that
+publishes and installs it**: `twine check` failed with `'2.5' is not a valid metadata version`
+before any upload was attempted. Nothing in the repository caught it, because nothing in the
+repository ran `twine` — it was not a dependency of any environment. 2.4 is the version PEP 639
+landed in, so `License-Expression` and `License-File` are carried either way and the pin costs
+nothing but a line in each build target. It is written to be removed once `packaging` ships 2.5
+support, and the comment says so.
+
+**Why the classifier went rather than the expression.** PEP 639 forbids a `License ::`
+classifier beside an SPDX `license` expression, and PyPI rejects an upload carrying both. One
+of them had to go, and the expression is the machine-readable one the ecosystem is moving to.
+A reader loses nothing: the licence is in the metadata, in `LICENSE`, and on the project page
+either way.
+
+**Why publishing is its own job.** It is the only irreversible action in this repository. A
+GitHub release can be deleted and re-created; an index will not accept a version twice, and
+deleting a file does not free its version number. So it is isolated behind `needs:`, runs only
+after the gate, the build and the asset verification have all passed, and is unreachable from a
+manual dispatch. The `release` job had to grow an `outputs:` block for that `needs:` condition
+to mean anything — a step output is scoped to its own job, so the condition would otherwise
+compare an empty string to `'true'`, skip every publish, and say nothing about why.
+
+**Why Trusted Publishing rather than the token that already exists.** A local `~/.pypirc`
+token is the right tool for a human publishing from their own machine and the wrong one for
+CI: it is long-lived, it sits in repository secrets where every workflow can read it, and
+rotating it is a task somebody has to remember. OIDC mints a credential scoped to one workflow
+run. It needs a one-time publisher configured on PyPI naming the repository, the workflow
+filename and the environment; until that exists the job fails closed with PyPI's own error
+rather than uploading anything, which is the correct failure.
+
+**Why the unlocked check is a separate weekly workflow.** Every job in `ci.yml` runs
+`locked: true`, deliberately — CI should test the dependency set contributors have, not a
+silently re-solved one. The cost is that the combination users actually get is the one
+combination nothing tests: the lock pins `cedarpy` 4.8.7 while `pip install` resolves the
+newest in `>=4.8,<5`. Unlocking CI would trade a real guarantee for this one; adding a
+thirteenth matrix job would not help, because an upstream release is not an event in this
+repository and has to be looked for on a schedule. A `schedule:` on `ci.yml` would run the
+whole matrix with it, so it is its own file, which also runs on any pull request touching a
+dependency declaration. It is **not** `continue-on-error`: a job allowed to fail renders as a
+pass, which is how a warning becomes a rumour.
+
+**Why `twine check` lives in the script and not in the workflow.** Three reasons, and the
+third is the one that decided it. It runs locally and in CI from one definition. It runs
+*before* the extras, because an extra that installs cleanly out of a wheel no index will
+accept is a wheel nobody will install. And the script knows the exact paths it just built,
+where a workflow step would reach for `dist/*` — a gitignored directory that accumulates
+whatever anybody drops in it, and twine treats an unrecognised file as a fatal unknown
+distribution format.
+
+**Not decided here: the project URLs.** `Homepage`, `Source` and `Changelog` point into a
+repository that is private, so every link on the project page would 404 for the reader who
+installed the package. That is a question about whether the project goes public rather than a
+packaging fault, it is the maintainer's to answer, and it blocks neither a rehearsal nor the
+machinery above. It is recorded in `CHANGELOG.md` as outstanding rather than quietly fixed in
+one direction.

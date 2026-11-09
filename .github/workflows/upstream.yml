@@ -1,0 +1,73 @@
+name: upstream
+
+# The dependency set every user actually gets, which is the one combination nothing else
+# tests. Every job in `ci.yml` runs `locked: true` against a lock file that pins exact
+# versions -- deliberately, so CI tests the dependency set contributors have rather than a
+# silently re-solved one. The cost of that choice is this gap: `pixi.lock` pins cedarpy
+# 4.8.7 while `pip install sentrykit` resolves whatever is newest in `>=4.8,<5`, so a
+# behaviour change in a dependency's current release passes all thirteen jobs and reaches
+# the first person to install the package.
+#
+# This workflow closes it by resolving afresh and running the same gate. It is a separate
+# file rather than a thirteenth matrix job because its triggers are different: an upstream
+# release is not an event in this repository, so it has to be looked for on a schedule, and
+# putting a `schedule:` on `ci.yml` would run the whole matrix with it.
+on:
+  schedule:
+    # Mondays, early. Weekly rather than daily: the question is "has upstream moved under
+    # us", and a week is the granularity at which somebody will actually read the answer. A
+    # daily red badge nobody acts on is worse than a weekly one somebody does.
+    - cron: "17 5 * * 1"
+  workflow_dispatch:
+  # And on any change to what is declared or pinned, where a fresh resolution is the thing
+  # under review rather than a background question.
+  pull_request:
+    paths:
+      - "pyproject.toml"
+      - "pixi.toml"
+      - "pixi.lock"
+      - ".github/workflows/upstream.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  unlocked:
+    name: check (all, freshly resolved)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # `tests/unit/test_commit_history.py` re-checks every commit message in history, and
+          # on a shallow clone it can see one commit and skips -- a check that reports success
+          # after inspecting nothing is worse than no check.
+          fetch-depth: 0
+
+      - uses: prefix-dev/setup-pixi@v0
+        with:
+          environments: all
+          # Installed from the lock first, then updated. Solving from scratch with no cache
+          # would spend several minutes rebuilding an environment that is about to change in
+          # one or two packages, and the update below is what makes the result unlocked.
+          locked: true
+          cache: true
+
+      # The step the whole workflow exists for. `pixi update` re-resolves every dependency to
+      # the newest version the manifest allows and rewrites the lock in the runner, which is
+      # thrown away with it -- nothing is committed. Its output is a diff of what moved, which
+      # is the first thing to read when this job goes red.
+      - name: Resolve every dependency to its newest allowed version
+        run: pixi update
+
+      - name: Report what moved
+        run: git --no-pager diff --stat -- pixi.lock || true
+
+      # Not `continue-on-error`. A job that is allowed to fail renders as a pass, which is how
+      # a warning becomes a rumour -- and the repository's own standards say a warning nobody
+      # checks is one. On the schedule a red run notifies the maintainer and blocks nobody; on
+      # a dependency-touching pull request, blocking is the correct behaviour.
+      - run: pixi run -e all check

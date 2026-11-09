@@ -82,6 +82,7 @@ sphinx-markdown-builder = ">=0.6.11"
 # shipped inside the wheel, so it does not reach sentrykit's Apache-2.0 licensing. It must
 # never be added to `[project.optional-dependencies]`.
 rinohtype = ">=0.5.6"
+twine = ">=6.1"
 
 # ---- Features: interpreter versions, for reproducing the CI matrix ----------
 # Narrowed to linux-64 deliberately. These twelve environments exist so a contributor can
@@ -185,6 +186,30 @@ ci = { depends-on = ["check"] }
 build = "python -m build"
 # Needs the network: builds the artifacts and installs the wheel with each extra into a
 # throwaway venv. The offline half of this check is tests/integration/test_release_artifacts.py.
+# It also runs `twine check` on what it built, so an artifact no index would accept fails here
+# rather than at the upload.
 release-check = "python scripts/release_check.py"
+# The artifacts named explicitly rather than `dist/*`: `dist/` is gitignored and accumulates
+# whatever anybody drops in it, and twine treats an unrecognised file as a fatal unknown
+# format -- so a glob makes a stray note fail the check.
+dist-check = "twine check dist/sentrykit-*.whl dist/sentrykit-*.tar.gz"
+# Both publish tasks read the repository, the user and the token from ~/.pypirc; nothing
+# about a credential is written here or passed on a command line. `dist-check` runs first in
+# each, because an index accepts a given version exactly once and there is no second attempt
+# to fix a rejected upload with.
+#
+# Publish to the test index first. It is a real Warehouse instance with its own accounts and
+# its own namespace, so it answers the only question a local `twine check` cannot: whether
+# the thing that gets uploaded is accepted and installable. A version is spent there as
+# permanently as on the real index, so a rehearsal that needs repeating needs a new version.
+publish-test = { cmd = "twine upload --repository testpypi dist/sentrykit-*.whl dist/sentrykit-*.tar.gz", depends-on = [
+  "dist-check",
+] }
+# The real thing, and the only irreversible command in this file. A version cannot be
+# uploaded twice, and deleting a release does not free its version number. CI publishes from
+# a `v*` tag through Trusted Publishing, so this is the manual path rather than the usual one.
+publish = { cmd = "twine upload --repository pypi dist/sentrykit-*.whl dist/sentrykit-*.tar.gz", depends-on = [
+  "dist-check",
+] }
 # `rm -rf` is unavailable on win-64, which is in the platform list above.
 clean = "python scripts/clean.py"
