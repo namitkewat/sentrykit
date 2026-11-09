@@ -84,6 +84,31 @@ sphinx-markdown-builder = ">=0.6.11"
 rinohtype = ">=0.5.6"
 twine = ">=6.1"
 
+# ---- Feature: brand assets (dev-only, and nothing ships from it) ------------
+# `cairosvg` rasterises the social-preview and logo variants in `brand/` to PNG. It is a
+# conda dependency rather than a pypi one because it binds the native cairo library, which
+# pip cannot supply -- on conda-forge the binding and the library resolve together, win-64
+# included.
+#
+# Deliberately its own feature rather than a line in `dev`. `dev` is attached to sixteen
+# environments, twelve of them the CI matrix, and not one of them draws a logo; a cairo
+# stack in all of them is install time every job pays for a task no job runs.
+[feature.art.dependencies]
+python = ">=3.11,<3.14"
+cairosvg = ">=2.7"
+# A typeface, and the means to turn it into outlines. The card's text is baked to `<path>`
+# data at build time rather than left as `<text>`, so that what gets rasterised does not
+# depend on which fonts the rendering machine happens to have. The font is pinned by
+# `pixi.lock`, so the outlines are the same everywhere; nothing reads a system font.
+fonttools = ">=4.50"
+font-ttf-ubuntu = "*"
+
+[feature.art.tasks]
+# Validates every SVG in `brand/` against `brand/palette.toml`, rasterises each to
+# 1280x640, and writes the contact sheet. `--og <name>` also refreshes the site's
+# `docs/_static/og-image.png` from the named variant. Nothing here runs in CI.
+brand = "python scripts/render_brand.py"
+
 # ---- Features: interpreter versions, for reproducing the CI matrix ----------
 # Narrowed to linux-64 deliberately. These twelve environments exist so a contributor can
 # reproduce a specific CI job locally; solving them for four platforms would quadruple the
@@ -109,6 +134,11 @@ default = ["core", "demo", "dev"]
 web = ["core", "demo", "web", "dev"]
 agent = ["core", "demo", "agent", "dev"]
 all = ["core", "demo", "web", "agent", "dev"]
+# Brand assets, and nothing else: `no-default-feature` drops the editable install of
+# sentrykit and its runtime dependencies, because the renderer imports nothing from the
+# library and an environment that exists to draw pictures has no business resolving a
+# policy engine. Run it as `pixi run -e art brand`.
+art = { features = ["art"], no-default-feature = true }
 # The twelve the CI matrix runs: every feature set against every supported interpreter.
 py311-default = ["py311", "core", "demo", "dev"]
 py311-web = ["py311", "core", "demo", "web", "dev"]

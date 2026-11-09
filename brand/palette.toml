@@ -1,0 +1,49 @@
+# The brand palette. This file is the one place the colours are written down.
+#
+# Six brand colours: three roles, each with one value for a light surface and one for a dark
+# one. Every SVG in this directory, plus the logo and favicon under `docs/_static/`, restates
+# these hexes inline -- an SVG served to a browser or read by a rasteriser cannot reach out to
+# a config file, so the duplication is forced rather than chosen. What is not forced is
+# letting the copies drift, so `scripts/render_brand.py` refuses to render an SVG containing a
+# colour this file does not list. That is the same bargain as `tests/unit/test_release_version.py`
+# makes for the version: restate it where it has to be restated, and assert the agreement.
+#
+# The roles are about meaning, not decoration, which is why they are named for what they say:
+#
+#   structure  the gate itself -- reviewed policy, the thing that decides. It is never a
+#              value, so it never takes the allowed or refused colour.
+#   allowed    a value the principal may pass, and equally a default the policy supplied to
+#              replace one it refused. Those two are deliberately the same colour: after a
+#              refill the call proceeds on a value the principal is entitled to, and drawing
+#              the replacement in the refusal colour would describe a success in the
+#              vocabulary of a failure.
+#   refused    a value the policy would not allow. It marks the proposal, never the outcome.
+#
+# Two triads rather than one, for the reason recorded in `docs/conf.py`: an SVG loaded through
+# an `<img>` resolves `prefers-color-scheme` against the operating system, not against the
+# page, so a single theme-aware file shows light ink on a dark page for any reader who flipped
+# the theme by hand. A light file and a dark file, each with its own triad, is the fix.
+
+[role.structure]
+light = "#4f46e5"
+dark = "#818cf8"
+
+[role.allowed]
+light = "#0d9488"
+dark = "#2dd4bf"
+
+[role.refused]
+light = "#e11d48"
+dark = "#fb7185"
+
+# Not part of the six. A surface and an ink are what a drawing sits on and what the wordmark
+# is set in; they carry no meaning of their own and are listed here only so that the renderer
+# has a complete set to validate against, and so the single-colour variant has one ink to be
+# single in.
+[neutral.dark]
+surface = "#0b1220"
+ink = "#e2e8f0"
+
+[neutral.light]
+surface = "#f8fafc"
+ink = "#1e293b"

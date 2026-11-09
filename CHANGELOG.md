@@ -7,6 +7,26 @@ All notable changes to this project are documented here. Format follows
 
 <!-- Add an entry in the *fix & document* step of each loop iteration. -->
 
+### Added
+
+- **A social-preview card, and one place the palette is written down.** `brand/` holds the
+  cards as hand-authored SVG — a dark tile carrying the mark, a two-tone wordmark, the
+  tagline, and a rule along the bottom edge — in a light version, a dark one, and a third
+  with a simpler mark in the tile. `pixi run -e art brand` rasterises each to 1280×640 and
+  lays them out on a contact sheet. The six brand colours live in `brand/palette.toml`, and
+  the renderer refuses to draw a file carrying a colour that file does not list, for the same
+  reason the version is asserted rather than trusted: the copy that drifts is always the one
+  nobody is looking at.
+- **The cards' text is baked into outlines, not set as text.** A text element renders in
+  whatever font the rasteriser happens to find, which would make the published image a
+  property of the machine that built it. Each card declares its copy as `data-text`, and the
+  task fills it with one path per glyph from a typeface pinned in `pixi.lock`, writing the
+  result back into the file — so the committed SVG carries real paths, opens on its own, and
+  still records what it came from. The renderer refuses a file containing a text element at
+  all, so the decision cannot be quietly undone by someone who just needs a tagline.
+- **The documentation site carries Open Graph tags.** A link to any page now unfurls into a
+  card with that page's own title and address, and the mark beside it.
+
 ## [0.1.1] - 2026-11-09
 
 The first stable release, and the whole library.

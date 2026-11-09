@@ -206,6 +206,7 @@ scripts/check_commit_msg.py   ← mechanical commit-rule enforcement
 SECURITY.md                   ← disclosure contact + what sentrykit does and does not defend
 dev-docs/                     ← internal: architecture, decisions, standards, the plan
 docs/                         ← user docs (Sphinx + MyST → HTML, PDF, llms.txt, llms-full.txt)
+brand/                        ← social-preview cards + the palette (dev-only, `pixi run -e art brand`)
 src/sentrykit/                ← the library (core has NO framework imports)
   stores/                     ← PolicySource / GrantStore / AuditSink + reference impls
   policy/pack/                ← shipped Cedar policy pack + schema (data)

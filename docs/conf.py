@@ -23,6 +23,7 @@ import importlib.util
 import os
 import re
 from datetime import UTC, datetime
+from html import escape
 from typing import TYPE_CHECKING, Any, ClassVar, Final
 
 from pydantic_settings import BaseSettings
@@ -201,6 +202,69 @@ html_favicon = "_static/favicon.svg"
 html_baseurl = os.environ.get("DOCS_BASE_URL") or "https://namitkewat.github.io/sentrykit/"
 if not html_baseurl.endswith("/"):
     html_baseurl += "/"
+
+# --- Open Graph -------------------------------------------------------------
+# The card a link to these pages unfurls into, wherever Open Graph is read.
+#
+# Added through the `html-page-context` event rather than by overriding a template. furo
+# renders `metatags` into its own `<head>`, so appending there needs no copy of the theme's
+# layout — and a copied layout is a file that quietly stops matching the theme it came from.
+#
+# The image is a PNG rather than the SVG logo, because most crawlers do not rasterise SVG and
+# a card pointing at one unfurls blank. `brand/` holds the source and `pixi run -e art brand`
+# renders it; the PNG is committed, because a crawler has to fetch it from a fixed URL rather
+# than build it.
+og_image = f"{html_baseurl}_static/og-image.png"
+og_description = (
+    "Pre-action authorization for Python, built on AWS Cedar. One decorator decides, per "
+    "call, whether a principal may invoke a callable, which arguments they may pass, and "
+    "which defaults to inject when they pass none."
+)
+og_image_alt = (
+    "The sentrykit mark: two arguments passing a gate, a third refused short of it and "
+    "replaced by a default that carries on through."
+)
+
+
+def _open_graph(
+    app: Sphinx,
+    pagename: str,
+    templatename: str,
+    context: dict[str, Any],
+    doctree: Any,
+) -> None:
+    """Append this page's Open Graph tags to whatever ``metatags`` already holds.
+
+    Appends rather than assigns. ``metatags`` is where Sphinx has already collected every
+    ``meta`` directive the page itself declared, and assigning would drop them.
+
+    Args:
+        app: The Sphinx application. Unused; the signature is the event's.
+        pagename: The page's document name. Unused.
+        templatename: The template about to render. Unused.
+        context: The rendering context, which is read and written.
+        doctree: The resolved doctree, or `None` for a generated page. Unused.
+    """
+    heading = re.sub(r"<[^>]+>", "", str(context.get("title") or "")).strip() or project
+    page_url = str(context.get("pageurl") or html_baseurl)
+    properties = (
+        ("og:type", "website"),
+        ("og:site_name", project),
+        ("og:title", heading),
+        ("og:description", og_description),
+        ("og:url", page_url),
+        ("og:image", og_image),
+        ("og:image:width", "1280"),
+        ("og:image:height", "640"),
+        ("og:image:alt", og_image_alt),
+    )
+    rendered = [
+        f'<meta property="{name}" content="{escape(value, quote=True)}" />'
+        for name, value in properties
+    ]
+    rendered.append('<meta name="twitter:card" content="summary_large_image" />')
+    context["metatags"] = "\n".join([str(context.get("metatags") or ""), *rendered])
+
 
 # --- PDF (rinohtype) --------------------------------------------------------
 # Pure Python with bundled fonts, so `pixi run docs-pdf` works on a laptop and on a runner
@@ -553,5 +617,7 @@ def setup(app: Sphinx) -> dict[str, Any]:
     # `Returns:` out of text that is already reStructuredText.
     app.connect("autodoc-process-docstring", _process_docstring, priority=400)
     app.connect("autodoc-process-signature", _process_signature)
+    # HTML only; the markdown and PDF builders never emit this event.
+    app.connect("html-page-context", _open_graph)
     app.set_translator("markdown", SignatureMarkerTranslator, override=True)
     return {"parallel_read_safe": True, "parallel_write_safe": True}
