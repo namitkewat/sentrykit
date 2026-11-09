@@ -12,10 +12,18 @@ on:
         type: boolean
         default: true
 
-# `gh release create` writes to the repository, and this is the only workflow that does.
-# The default GITHUB_TOKEN carries this against a private repository, so no PAT is needed.
+# Conventions here (every `uses:` pinned to a commit SHA with the version it names, a pinned
+# runner, `persist-credentials: false`, permissions elevated per job) match `docs.yml` and the
+# sibling iceberg-ops repository, so one set of habits covers both; see
+# `dev-docs/packaging-standards.md`.
+
+# Read-only by default, with `contents: write` granted to the `release` job alone -- the only
+# job here that writes to the repository, through `gh release create`. Granting it at the top
+# level would hand the same write scope to the three publish jobs, which do nothing but
+# download an artifact and upload it to an index. The default GITHUB_TOKEN carries the write
+# scope against a private repository, so no PAT is needed.
 permissions:
-  contents: write
+  contents: read
 
 # Deliberately not cancelling in flight: a half-finished release run is worse than a
 # duplicate one, and tags do not get re-pushed often enough for the saved minutes to matter.
@@ -38,7 +46,10 @@ concurrency:
 # to tell which one a user got.
 jobs:
   release:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+
+    permissions:
+      contents: write # `gh release create` attaches the verified asset set to the tag
 
     # Exposed to the three jobs below. A step output is scoped to its own job, so without
     # these two lines `needs.release.outputs.publish` resolves to an empty string -- and an
@@ -58,7 +69,7 @@ jobs:
           echo "::error::A manual run is always a rehearsal. To publish, push a v* tag."
           exit 1
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           # The whole history, not the default depth of one. `tests/unit/test_commit_history.py`
           # re-checks every commit message against the `commit-msg` hook's own rules, because a
@@ -66,6 +77,11 @@ jobs:
           # a shallow clone that test can see one commit, so it skips -- and a check that
           # reports success after inspecting nothing is worse than no check.
           fetch-depth: 0
+          # Depth is what that test needs; the token is not. The one step that writes to the
+          # repository is `gh release create`, which authenticates from `GH_TOKEN` in its own
+          # environment rather than from `.git/config` -- so the gate, the build and the
+          # documentation build all run with no credential within reach.
+          persist-credentials: false
 
       # Runs before pixi is installed so a mismatched tag fails in seconds rather than after
       # a full environment solve and a full `check`.
@@ -112,7 +128,7 @@ jobs:
           echo "version=${pkg_version}" >> "$GITHUB_OUTPUT"
           echo "Releasing version ${pkg_version}" >> "$GITHUB_STEP_SUMMARY"
 
-      - uses: prefix-dev/setup-pixi@v0
+      - uses: prefix-dev/setup-pixi@9936258fee697aff89b3fed6ca1f80a382ef694e # v0.11.3
         with:
           # `all` is the only environment the release needs, and it is the one the docs are
           # built from: `conf.py` mocks whichever frameworks are absent, so building the
@@ -185,7 +201,7 @@ jobs:
       # uploads *every* file in the directory it is pointed at, so the distribution has to
       # travel on its own: a single artifact carrying the docs as well would have the publish
       # job trying to upload a PDF to an index.
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: sentrykit-dist-${{ steps.version.outputs.version }}
           if-no-files-found: error
@@ -193,7 +209,7 @@ jobs:
             dist/sentrykit-${{ steps.version.outputs.version }}-py3-none-any.whl
             dist/sentrykit-${{ steps.version.outputs.version }}.tar.gz
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: sentrykit-release-assets-${{ steps.version.outputs.version }}
           if-no-files-found: error
@@ -265,7 +281,7 @@ jobs:
     name: publish to TestPyPI
     needs: release
     if: ${{ needs.release.outputs.publish == 'true' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
 
     # A separate deployment environment from `pypi`, not a shared one, and the separation
     # buys two things. A required reviewer can then be attached to `pypi` alone -- a human
@@ -292,7 +308,7 @@ jobs:
       contents: read
 
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: sentrykit-dist-${{ needs.release.outputs.version }}
           path: dist
@@ -300,7 +316,7 @@ jobs:
       - name: List what will be uploaded
         run: ls -l dist
 
-      - uses: pypa/gh-action-pypi-publish@release/v1
+      - uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
         with:
           repository-url: https://test.pypi.org/legacy/
           # Here, and deliberately not on the PyPI step below. Re-running a tag is the
@@ -330,13 +346,13 @@ jobs:
     name: install from TestPyPI and exercise it
     needs: [release, publish-test]
     if: ${{ needs.release.outputs.publish == 'true' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
 
     permissions:
       contents: read
 
     steps:
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           # The declared floor from `requires-python`, not the newest interpreter. The three
           # supported interpreters are already swept against the source by `ci.yml`, and the
@@ -350,7 +366,7 @@ jobs:
       # The file this run built, to compare against the file the index hands back. Downloaded
       # before the fetch so a mismatch is reported as a mismatch rather than as a missing
       # artifact halfway through.
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: sentrykit-dist-${{ needs.release.outputs.version }}
           path: built
@@ -519,7 +535,7 @@ jobs:
     name: publish to PyPI
     needs: [release, smoke-test]
     if: ${{ needs.release.outputs.publish == 'true' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
 
     # Names a deployment environment rather than relying on the tag alone. Attaching a
     # required reviewer to `pypi` in the repository settings puts a human between pushing a
@@ -540,7 +556,7 @@ jobs:
       contents: read
 
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: sentrykit-dist-${{ needs.release.outputs.version }}
           path: dist
@@ -555,4 +571,4 @@ jobs:
       # No `skip-existing`. If PyPI already has this version, something has gone wrong --
       # a re-tag over a published release, or a version that was never bumped -- and the run
       # should stop and say so rather than report success for an upload it did not make.
-      - uses: pypa/gh-action-pypi-publish@release/v1
+      - uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3

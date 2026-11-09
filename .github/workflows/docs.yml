@@ -14,7 +14,7 @@ name: docs
 #
 # Conventions here (SHA-pinned actions, a pinned runner, `persist-credentials: false`,
 # permissions elevated per job) match the sibling iceberg-ops repository so that one set of
-# habits covers both. The other three workflows still pin by tag; see
+# habits covers both -- and every workflow in this repository now follows them; see
 # `dev-docs/packaging-standards.md`.
 on:
   push:
