@@ -107,12 +107,25 @@ release chain has been proved end to end exactly once, on the versions it is pin
 major bump is a separate commit with its own evidence — a dispatch rehearsal of `release.yml`
 at minimum — rather than a line changed in passing.
 
-That rule is why the pins are not uniform across the four files. `docs.yml` was written fresh
-against the current `actions/checkout` and `actions/setup-python`; the other three carry the
-majors their jobs have always run, so `actions/checkout` is pinned at v4 in three files and v7
-in `docs.yml`. The divergence is deliberate, not an oversight: `docs.yml` publishes a site that
-is rebuilt on every push and cheap to re-prove, while the release chain's majors are behind a
-bump nobody has yet paid the rehearsal for.
+Which is why four of the pins sit behind the current major, and stay there. `actions/checkout`,
+`actions/setup-python`, `actions/upload-artifact` and `actions/download-artifact` are each pinned
+to the commit the major already in use points at, not to the newest release: all four cross the
+Node 20 → Node 24 runtime boundary and the ESM migration, `checkout` v6 changes where the token
+is persisted, and `download-artifact` v8 makes a download digest mismatch fail the run rather
+than warn. None of that is unwelcome — the digest default is arguably what this chain wants —
+but each is a new way for a release to fail, and the release chain has been proved end to end
+once, on the versions it is pinned to now.
+
+One visible consequence, so nobody tidies it away: `actions/checkout` is pinned at v4 in
+`ci.yml`, `release.yml` and `upstream.yml`, and at v7 in `docs.yml`, which was written fresh
+against the current release. That asymmetry is deliberate and self-correcting — it closes when
+the bumps above are taken, each with the evidence the rule asks for — and `docs.yml` is the
+cheap place to be current, since it publishes a site rebuilt on every push.
+
+What no dispatch rehearsal can reach: `workflow_dispatch` resolves `publish=false`, so
+`publish-test`, `smoke-test` and `publish` are skipped. Those are the only jobs that use
+`actions/download-artifact` and `pypa/gh-action-pypi-publish`, so a rehearsal proves every pin
+except those two, which a real tag exercises first.
 
 ## Release checklist
 1. `pixi run -e all check` is green — and so are `default`, `web` and `agent`.
