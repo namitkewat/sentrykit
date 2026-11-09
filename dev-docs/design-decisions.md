@@ -298,8 +298,10 @@ original decision rested on two premises, and the ecosystem moved under both.
 That is sentrykit's own primitive, so `sentrykit[fastmcp]` had stopped reading as a borrowed
 convention and started reading as a claim about a direct competitor's integration surface. The
 second premise was that the names were committed to. They were committed to by this
-repository's own plan, entry point and docs — not by any release: 0.2.0 is unpublished, so the
-set of users whose imports a rename would break is empty.
+repository's own plan, entry point and docs — not by any release: nothing had been published
+at the time, so the set of users whose imports a rename would break was empty. The rename
+landed before 0.1.0, which is the first release, so no published spelling ever carried the old
+name.
 
 *What was decided.* The extra, the module, the class, the DSN and the entry point are spelled
 after the one distribution they name: `sentrykit[mcp]`, `sentrykit.integrations.mcp`,
@@ -1246,9 +1248,17 @@ where a workflow step would reach for `dist/*` — a gitignored directory that a
 whatever anybody drops in it, and twine treats an unrecognised file as a fatal unknown
 distribution format.
 
-**Not decided here: the project URLs.** `Homepage`, `Source` and `Changelog` point into a
-repository that is private, so every link on the project page would 404 for the reader who
-installed the package. That is a question about whether the project goes public rather than a
-packaging fault, it is the maintainer's to answer, and it blocks neither a rehearsal nor the
-machinery above. It is recorded in `CHANGELOG.md` as outstanding rather than quietly fixed in
-one direction.
+**Resolved after the fact: the project URLs.** `Homepage`, `Source` and `Changelog` point
+into this repository, which was private when this was written, so every link on the project
+page would have failed for the reader who installed the package. The question — publish the
+repository or drop the links — was the maintainer's rather than a packaging one, and they
+answered it by making the repository public. Two of the three resolve from that moment; the
+third is `blob/main/CHANGELOG.md` and additionally needs a branch on the remote, which an
+unpushed repository does not have.
+
+Worth recording how nearly that went unnoticed. Checking the three with HTTP HEAD reported
+**200 for all of them**, including the changelog, against a remote with no branches at all:
+GitHub answers a missing blob path with its own "not found" page served under status 200. The
+raw host does not — `raw.githubusercontent.com` returned a plain 404 — so a link check over
+`blob/` URLs is a check that cannot fail, and the only honest way to verify one is to fetch it
+from the raw host or read the body.

@@ -167,8 +167,11 @@ the sentence.
 
 ## 3. The docs are Sphinx, and they produce four artifacts
 
-The repository is private, so there is nowhere to host a documentation *site*. Documentation
-is therefore a set of **files attached to each release**, and the toolchain is chosen for that:
+There is no hosted documentation *site*. Documentation is a set of **files attached to each
+release**, so that a reader always has the version they installed rather than whatever is
+current, and the toolchain is chosen for that. This began as a constraint — the repository was
+private and had nowhere to host one — and outlived it: the repository is public now, a site is
+possible, and shipping the docs with the artifact they describe is still the better default.
 
 | what | how | why |
 | --- | --- | --- |

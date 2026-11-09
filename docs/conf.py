@@ -1,8 +1,8 @@
 """Sphinx configuration for the sentrykit documentation.
 
-The repository is private, so there is nowhere to host a site: the documentation ships as
-release assets instead. One source tree therefore has to feed three builders — ``html`` for
-people, ``rinoh`` for the PDF, and ``markdown`` as the intermediate that
+The documentation ships as release assets rather than as a hosted site, so that a reader
+always has the version they installed. One source tree therefore has to feed three
+builders — ``html`` for people, ``rinoh`` for the PDF, and ``markdown`` as the intermediate that
 ``scripts/build_llms_txt.py`` flattens into ``llms.txt`` and ``llms-full.txt``. Everything
 below is chosen to keep those three in agreement.
 

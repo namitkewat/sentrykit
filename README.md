@@ -47,17 +47,18 @@ them, and adds the layer above that decision: which arguments the call may carry
 defaults to supply when the caller omits them, and a record of both. If you already run a
 policy engine, that argument layer is the part you would otherwise assemble yourself.
 
-> **Status: 0.2.0 — everything below works.** `@protect`, ambient context, the Cedar gate,
-> argument filtering, policy-declared **argument ceilings**, default injection, **constraint
-> validation at the write**, signature validation and the `_authz` envelope; the three
-> pluggable stores with entry-point discovery; masking and the hash-chained audit log; the
+> **Status: 0.1.0, the first release — everything below works.** `@protect`, ambient context,
+> the Cedar gate, argument filtering, policy-declared **argument ceilings**, default
+> injection, **constraint validation at the write**, signature validation and the `_authz`
+> envelope; the three pluggable stores with entry-point discovery; masking and the
+> hash-chained audit log; the
 > **FastAPI, Flask, MCP and Pydantic-AI** providers with one runnable example app each, plus
 > an attack/defence suite that runs nine named attacks twice — once past the policy and once
 > around it; the **shipped policy pack**; and the `sentrykit` command line. Not yet shipped:
 > the durable WORM audit backends (S3 Object Lock, Iceberg) — those are a `Protocol` away
 > rather than built.
 
-## Install (once published)
+## Install
 
 ```bash
 pip install sentrykit                 # core
@@ -474,8 +475,8 @@ The user docs cover [policies and grants](docs/policies.md),
 [audit and masking](docs/audit.md), and [writing a plugin](docs/plugins.md).
 
 `pixi run docs` builds them into HTML, a PDF, and `llms.txt` / `llms-full.txt` — the four
-documentation artifacts every release attaches, since the repository is private and there is
-no site to host.
+documentation artifacts every release attaches. There is no hosted site: the documentation
+travels with the release it describes, so a reader always has the version they installed.
 
 ## Security
 

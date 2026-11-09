@@ -16,7 +16,7 @@ expanded — and reading that output is also what buys control of page **order**
 other thing the extension cannot give. Concepts belong before the API reference; alphabetical
 is not a reading order.
 
-Because the repository is private, the documentation ships as release assets and there is no
+The documentation ships as release assets rather than as a hosted site, so there is no
 site to link to. Link targets therefore name **sibling assets on the same release**:
 `llms-full.txt` plus a fragment for the prose, and the HTML archive for anyone who would
 rather read a rendered page. Nothing here points at a URL that does not exist.
@@ -383,8 +383,8 @@ def build_index(contents: dict[str, str], titles: dict[str, str], version: str) 
         "defaults to inject, with every decision written to a masked, hash-chained audit "
         "trail. The caller proposes; the Cedar policy decides.",
         "",
-        "This project is developed in a private repository, so its documentation is published "
-        "as release assets rather than on a website. Every link below names a **sibling asset "
+        "This project publishes its documentation as release assets rather than on a website. "
+        "Every link below names a **sibling asset "
         "of this file on the same release**: the guide and reference entries point into "
         "`llms-full.txt`, which carries the complete text; the entries under Optional name "
         f"the rendered HTML archive (`{archive}`, paths given after the archive name) and the "
