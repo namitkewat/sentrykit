@@ -202,7 +202,7 @@ dispatch covers. The test-index step itself is rehearsed locally and deliberatel
 
 ```bash
 pixi run publish-test
-pip download --index-url https://test.pypi.org/simple/ --no-deps \
+pip download --no-cache-dir --index-url https://test.pypi.org/simple/ --no-deps \
              --only-binary :all: -d /tmp/rehearsal "sentrykit==<version>"
 pip install "/tmp/rehearsal/sentrykit-<version>-py3-none-any.whl[all]"
 ```

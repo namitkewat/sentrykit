@@ -386,19 +386,32 @@ jobs:
           # resolves every dependency from PyPI in the ordinary way. What is under test is
           # the uploaded artifact's own metadata rather than an index race.
           #
-          # Retried rather than slept on. Warehouse serves a new file within seconds of
-          # accepting it but not within zero seconds -- the simple index sits behind a cache,
-          # and a fetch issued immediately after the upload can be answered from a copy that
-          # predates it. A fixed `sleep` is the wrong fix twice: too short and the job fails
-          # anyway, too long and every release pays for it.
+          # `--no-cache-dir` below, and it is the difference between this loop working and
+          # this loop being decorative. pip caches index *responses*, so a fetch issued
+          # moments after the upload can be answered from a copy that predates it -- and then
+          # every retry re-reads that same cached page, from the same cache, and the loop
+          # cannot succeed however long it waits. It burns its whole window and fails the
+          # release for a reason that is not a problem with the release.
+          #
+          # Measured rather than reasoned about: a rehearsal retried eight times across
+          # roughly 160 seconds and never saw a version the index had been serving the whole
+          # time. Fetching the simple index directly, outside pip, listed it. One
+          # `--no-cache-dir` download then succeeded on the first attempt.
+          #
+          # The retry stays, because a genuine propagation delay is still possible and a
+          # fixed `sleep` is the wrong shape for one -- too short and the job fails anyway,
+          # too long and every release pays for it. It is the second line of defence, not
+          # the first.
           mkdir -p "${RUNNER_TEMP}/served"
           attempt=1
           until "${RUNNER_TEMP}/smoke/bin/python" -m pip download \
+                  --no-cache-dir \
                   --index-url https://test.pypi.org/simple/ \
                   --no-deps --only-binary :all: \
                   -d "${RUNNER_TEMP}/served" "sentrykit==${VERSION}"; do
-            if [ "${attempt}" -ge 6 ]; then
+            if [ "${attempt}" -ge 8 ]; then
               echo "::error::TestPyPI did not serve sentrykit ${VERSION} after ${attempt} attempts. The upload is not retrievable; do not publish to PyPI."
+              echo "::error::Check https://test.pypi.org/simple/sentrykit/ directly before concluding the upload failed."
               exit 1
             fi
             echo "attempt ${attempt}: not served yet, waiting 20s"

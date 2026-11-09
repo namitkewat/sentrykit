@@ -76,9 +76,19 @@ appear in `[project.optional-dependencies]`.
    back out in **two steps**, never one.
 
    ```bash
-   pip download --index-url https://test.pypi.org/simple/ --no-deps                 --only-binary :all: -d /tmp/rehearsal "sentrykit==<version>"
+   pip download --no-cache-dir --index-url https://test.pypi.org/simple/ \
+                --no-deps --only-binary :all: \
+                -d /tmp/rehearsal "sentrykit==<version>"
    pip install "/tmp/rehearsal/sentrykit-<version>-py3-none-any.whl[all]"
    ```
+
+   **`--no-cache-dir` is not decoration.** pip caches index *responses*. A download issued
+   moments after the upload can be served from a copy that predates it, and every retry then
+   re-reads that same cached page — so retrying cannot help, however long you wait. Observed:
+   eight attempts over about 160 seconds all failed while the simple index was in fact
+   serving the version the whole time; fetching `https://test.pypi.org/simple/sentrykit/`
+   directly listed it, and one `--no-cache-dir` download then succeeded immediately. If a
+   rehearsal ever appears not to have uploaded, check that URL before believing it.
 
    **Do not use a two-index `pip install` here, in either order.** The commonly posted form
    is `--index-url https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple/`,
