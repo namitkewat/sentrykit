@@ -11,6 +11,10 @@ dist/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+# Hypothesis writes its own `.hypothesis/.gitignore` containing `*`, so git has always
+# skipped this -- which is why it is easy to miss that nothing else does. The sdist builder
+# does not read nested ignore files, and shipped 328 cache files until it was named here.
+.hypothesis/
 .coverage
 coverage.xml
 htmlcov/

@@ -37,8 +37,8 @@ A release goes to two places. The **distribution** goes to PyPI, published by th
 workflow's own `publish` job from a `v*` tag — see ADR-037 for why that job is separate, why it
 authenticates by Trusted Publishing rather than a stored token, and what has to be configured
 on PyPI once for it to work. Everything a reader needs that PyPI has no place for — the HTML,
-the PDF and both `llms.txt` files — is attached to the **GitHub release**, because the
-repository is private and there is no hosted documentation site.
+the PDF and both `llms.txt` files — is attached to the **GitHub release**, since there is no
+hosted documentation site and the docs travel with the release they describe.
 
 Six assets go on the release, and every one of them is attached:
 
@@ -100,21 +100,41 @@ appear in `[project.optional-dependencies]`.
    that has to be repeated needs a new version — rehearse once, late, on the artifact you
    intend to ship.
 7. Tag the release with a plain version tag; the release commit follows the commit rule (no
-   tooling attribution). `workflow_dispatch` on the release workflow is a dry run: it builds
-   and uploads every asset as a workflow artifact without creating a release, and the
-   `publish` job is unreachable from it.
+   tooling attribution). From there the workflow runs the chain itself — GitHub release, then
+   TestPyPI, then an install of the published artifact back out of TestPyPI, and only then
+   PyPI. **`dev-docs/release-process.md` is the description of that chain**: what each gate
+   proves, what it cannot, and what to do when one fails — including the case that matters,
+   where a failure after TestPyPI has accepted the version means that version is spent and the
+   retry needs a new one.
+
+   `workflow_dispatch` on the release workflow is a dry run: it builds and uploads every asset
+   as a workflow artifact without creating a release, and **no** publish job is reachable from
+   it. That is deliberate and worth not changing casually — a dispatch has no tag, so it
+   resolves the version from `src/sentrykit/__init__.py`, which is the *next* release's number.
+   A dispatch that rehearsed to TestPyPI would spend exactly that number, and `skip-existing`
+   would then turn the real tag's upload into a no-op: the gate would stay green while
+   verifying the rehearsal's artifact rather than the one being released.
 
 ### What is upstream of the first release
 Two things that are nobody's commit to make:
 
-- **A Trusted Publisher on PyPI**, naming this repository, `release.yml` and the `pypi`
-  environment. Until it exists the publish job fails closed with PyPI's own error, which is
-  the right failure but is not a green release.
-- **The project URLs resolve.** `Homepage`, `Source` and `Changelog` point into this
-  repository, so while it is private every link on the PyPI project page fails for the reader
-  who installed the package. Either the repository becomes public or those URLs go; it is a
-  decision about the project rather than a packaging fault, which is why it is listed here
-  and not fixed in `pyproject.toml`.
+- **Two Trusted Publishers, not one.** PyPI and TestPyPI are separate Warehouse instances with
+  separate accounts, and the release chain uploads to both — so each needs its own publisher,
+  each naming this repository, `release.yml`, and the environment that job runs in: `pypi` and
+  `testpypi` respectively. Create them as **pending publishers**: that is the form for a
+  project name that does not exist on the index yet, which is exactly the first release's
+  situation, and the publisher converts to an ordinary one when the first upload lands. Until
+  both exist the corresponding job fails closed with the index's own error — the right failure,
+  and not a green release. Optionally attach a required reviewer to `pypi` alone: it is the
+  irreversible step, and `testpypi` is better left unattended so the gate in front of PyPI
+  runs without a human in it.
+- **The project URLs resolve, which now needs only the push.** `Homepage`, `Source` and
+  `Changelog` point into this repository. It is public, so the first two resolve; `Changelog`
+  is `blob/main/CHANGELOG.md` and needs `main` to exist on the remote, which it does not until
+  somebody pushes. Check it with the **raw** URL, never the `blob/` one: GitHub answers a
+  missing blob path with a soft-404 page under status **200**, so a `blob/` link that is
+  completely broken looks healthy to anything that reads status codes.
+  `https://raw.githubusercontent.com/<owner>/<repo>/main/CHANGELOG.md` answers honestly.
 
 ### Keeping the published dependency range honest
 `ci.yml` runs every job `locked: true`, so CI tests the dependency set contributors have. The

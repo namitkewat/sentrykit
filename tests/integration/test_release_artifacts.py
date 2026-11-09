@@ -19,6 +19,7 @@ import configparser
 import importlib.util
 import subprocess
 import sys
+import tarfile
 import zipfile
 from collections.abc import Iterator
 from pathlib import Path
@@ -81,6 +82,39 @@ def wheel(tmp_path_factory: pytest.TempPathFactory) -> Iterator[zipfile.ZipFile]
     assert len(built) == 1, f"expected exactly one wheel, got {[path.name for path in built]}"
     with zipfile.ZipFile(built[0]) as archive:
         yield archive
+
+
+@pytest.fixture(scope="module")
+def sdist_names(tmp_path_factory: pytest.TempPathFactory) -> list[str]:
+    """Build the sdist once and return every path inside it, relative to its root directory.
+
+    A second build rather than a second target of the first, because `python -m build` with
+    both targets builds the wheel *from* the sdist, and that is not the wheel a release ships.
+    Keeping them independent keeps each assertion about the artifact it names.
+
+    Args:
+        tmp_path_factory: Where the artifact is written — never ``dist/``.
+
+    Returns:
+        Paths with the leading ``sentrykit-<version>/`` component stripped, so an assertion
+        reads the way the repository does.
+    """
+    if importlib.util.find_spec("build") is None:
+        pytest.skip("`build` is not installed in this environment")
+
+    outdir = tmp_path_factory.mktemp("sdist")
+    command = [sys.executable, "-m", "build", "--sdist", "--outdir", str(outdir), str(ROOT)]
+    if importlib.util.find_spec("hatchling") is not None:
+        command.insert(4, "--no-isolation")
+
+    completed = subprocess.run(command, capture_output=True, text=True, check=False, timeout=600)
+    if completed.returncode != 0:
+        pytest.skip(f"`python -m build --sdist` failed (no index?):\n{completed.stderr[-2000:]}")
+
+    built = sorted(outdir.glob("*.tar.gz"))
+    assert len(built) == 1, f"expected exactly one sdist, got {[path.name for path in built]}"
+    with tarfile.open(built[0]) as archive:
+        return [name.split("/", 1)[-1] for name in archive.getnames()]
 
 
 @pytest.fixture(scope="module")
@@ -228,3 +262,38 @@ def test_the_wheel_declares_its_licence_exactly_once(metadata: bytes) -> None:
 
     assert expressions == ["License-Expression: Apache-2.0"]
     assert not classifiers, f"PEP 639 forbids these beside the expression: {classifiers}"
+
+
+# --- the sdist, which is built from the working tree and therefore picks up its litter -------
+
+
+@pytest.mark.integration
+def test_the_sdist_carries_what_a_rebuild_needs(sdist_names: list[str]) -> None:
+    """The package, its tests and its licence, so somebody else can rebuild and check it."""
+    assert any(name.startswith("src/sentrykit/") for name in sdist_names)
+    assert any(name.startswith("tests/") for name in sdist_names)
+    for required in ("pyproject.toml", "README.md", "LICENSE", "CHANGELOG.md"):
+        assert required in sdist_names, f"the sdist is missing {required}"
+
+
+@pytest.mark.integration
+def test_the_sdist_carries_no_development_cache(sdist_names: list[str]) -> None:
+    """No cache directory, which is the leak this test was written for.
+
+    The sdist builder's rule is "everything git does not ignore", and that is *close* to
+    git's rule rather than the same one: it does not read nested ignore files. Hypothesis
+    writes a `.gitignore` containing `*` inside its own `.hypothesis/`, so git had always
+    skipped it and nothing else did -- and 328 files of a local example database shipped to
+    every consumer, silently, because no check looked inside the sdist.
+
+    Asserted as a family rather than as one directory name. The next tool to invent a
+    self-ignoring cache will do the same thing, and the point is to catch that one too.
+    """
+    caches = [
+        name
+        for name in sdist_names
+        if name.startswith((".hypothesis", ".pytest_cache", ".mypy_cache", ".ruff_cache"))
+        or "/__pycache__/" in f"/{name}"
+    ]
+
+    assert not caches, f"the sdist ships {len(caches)} cache file(s), e.g. {caches[:3]}"

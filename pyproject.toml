@@ -68,9 +68,9 @@ flask = "sentrykit.integrations.flask:FlaskProvider"
 mcp = "sentrykit.integrations.mcp:MCPProvider"
 pydantic-ai = "sentrykit.integrations.pydantic_ai:PydanticAIProvider"
 
-# The repository is private, so the documentation is shipped as release assets -- HTML,
-# PDF, llms.txt and llms-full.txt -- rather than hosted. Documentation therefore points at
-# the releases page, which is where those assets actually are.
+# The documentation ships as release assets -- HTML, PDF, llms.txt and llms-full.txt --
+# rather than as a hosted site, so that a reader always has the version they installed.
+# Documentation therefore points at the releases page, which is where those assets are.
 [project.urls]
 Homepage = "https://github.com/namitkewat/sentrykit"
 Documentation = "https://github.com/namitkewat/sentrykit/releases"
@@ -94,6 +94,36 @@ packages = ["src/sentrykit"]
 
 [tool.hatch.build.targets.sdist]
 core-metadata-version = "2.4"
+# An sdist should carry what somebody needs to rebuild and test this package, and nothing
+# that merely happens to be in the working tree. The builder's default is "everything git
+# does not ignore", which is close but not the same rule: it does not read *nested* ignore
+# files, and `.hypothesis/` is excluded from git only by a `.gitignore` that Hypothesis
+# writes inside it. The result was 328 files of a local test-example cache shipped to every
+# downstream consumer, which nothing would ever have reported.
+#
+# `tests/`, `docs/`, `dev-docs/` and `examples/` stay: a distributor rebuilding this should
+# be able to run the suite, and the ADRs are the reasoning behind what they are packaging.
+# What goes is caches, repository plumbing that means nothing outside a checkout, and
+# `CLAUDE.md`, which is an operating guide for working *in* this repository rather than a
+# part of what it distributes.
+exclude = [
+  ".hypothesis",
+  ".pytest_cache",
+  ".mypy_cache",
+  ".ruff_cache",
+  ".github",
+  ".gitattributes",
+  ".gitignore",
+  ".pre-commit-config.yaml",
+  "CLAUDE.md",
+  # The single largest thing in the artifact by a wide margin -- about a megabyte, which was
+  # most of the sdist. It pins sixteen *development* environments across four platforms,
+  # including the Sphinx and PDF toolchain, none of which anybody rebuilding this package
+  # uses: a build backend reads `pyproject.toml`, and a distributor resolves against their
+  # own index. `pixi.toml` stays, because it is small and declarative and shows how the
+  # project is developed; the resolved lock for that is a checkout's business.
+  "pixi.lock",
+]
 
 # --- Ruff -------------------------------------------------------------------
 [tool.ruff]

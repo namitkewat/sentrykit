@@ -23,14 +23,27 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: false
 
+# Four jobs in one chain, and the order is the point: the single irreversible step sits last,
+# behind a gate that has already passed against the exact file that step will upload.
+#
+#   release       gate, build, verify the asset set, create the GitHub release
+#   publish-test  upload that distribution to the test index
+#   smoke-test    fetch it back out of the test index and use it the way an installer would
+#   publish       upload the same distribution to PyPI
+#
+# Nothing is rebuilt after `release`. Each later job downloads the `sentrykit-dist-<version>`
+# artifact, so the file on PyPI, the file the smoke test installed and the file attached to
+# the release are one file. A rebuild in a later job would produce a second artifact that
+# nothing had checked and nobody had attached, and the copies could then disagree with no way
+# to tell which one a user got.
 jobs:
   release:
     runs-on: ubuntu-latest
 
-    # Exposed to the `publish` job below. A step output is scoped to its own job, so without
+    # Exposed to the three jobs below. A step output is scoped to its own job, so without
     # these two lines `needs.release.outputs.publish` resolves to an empty string -- and an
-    # `if` comparing an empty string to 'true' is false, which means the publish job would be
-    # skipped on every release and nothing would say why.
+    # `if` comparing an empty string to 'true' is false, which means every job downstream
+    # would be skipped on every release and nothing would say why.
     outputs:
       version: ${{ steps.version.outputs.version }}
       publish: ${{ steps.version.outputs.publish }}
@@ -237,34 +250,44 @@ jobs:
 
           gh release create "${GITHUB_REF_NAME}" "${args[@]}" "${assets[@]}"
 
-  # A separate job, for one reason: it is the only thing here that cannot be undone. A
-  # GitHub release can be deleted and re-created; an index will not accept a version twice,
-  # even after the file is removed. So publishing is isolated, runs only after the gate, the
-  # build and the asset check have all passed, and is reachable only from a `v*` tag --
-  # `publish` is false for every manual dispatch, which the first step of the job above
-  # refuses outright anyway.
-  publish:
-    name: publish to PyPI
+  # The test index first, because it is the only thing that answers the question a local
+  # `twine check` structurally cannot: whether what gets uploaded is *accepted* by a
+  # Warehouse instance and *retrievable* from one afterwards. It is the same software as
+  # PyPI with its own accounts and its own namespace, so an upload that works here is strong
+  # evidence the real one will, and an upload that is rejected here costs nothing.
+  #
+  # One thing it is not: cheap to repeat. A version is spent on the test index exactly as
+  # permanently as on PyPI -- deleting a release does not free its number, and there is no
+  # API for deletion at all, only a web-UI action. That single fact shapes the rest of this
+  # chain: `skip-existing` below, the digest comparison in `smoke-test`, and the rule that a
+  # dispatch never reaches this job.
+  publish-test:
+    name: publish to TestPyPI
     needs: release
     if: ${{ needs.release.outputs.publish == 'true' }}
     runs-on: ubuntu-latest
 
-    # Names a deployment environment rather than relying on the tag alone. Attaching a
-    # required reviewer to `pypi` in the repository settings puts a human between pushing a
-    # tag and an irreversible upload, which is the cheapest possible safeguard for the one
-    # action in this repository that has no undo. Nothing here depends on that reviewer
-    # existing -- it is a setting the maintainer can add without touching this file.
+    # A separate deployment environment from `pypi`, not a shared one, and the separation
+    # buys two things. A required reviewer can then be attached to `pypi` alone -- a human
+    # between pushing a tag and the one action in this repository that has no undo -- while
+    # the rehearsal leg stays unattended and the chain still runs end to end on its own.
+    # And a Trusted Publisher names the environment it trusts, so distinct environments are
+    # what keep the test index's credential from being usable against the real one.
     environment:
-      name: pypi
-      url: https://pypi.org/p/sentrykit
+      name: testpypi
+      url: https://test.pypi.org/p/sentrykit
 
     permissions:
-      # Trusted Publishing: the runner mints a short-lived OIDC token that PyPI exchanges
-      # for upload rights. No API token is stored in repository secrets, so there is nothing
-      # to leak, nothing to rotate, and no long-lived credential that outlives the job.
-      # Requires a one-time publisher configured on PyPI for this repository, workflow
-      # filename and environment name; until that exists this job fails closed with a clear
-      # error from PyPI rather than uploading anything.
+      # Trusted Publishing: the runner mints a short-lived OIDC token that the index
+      # exchanges for upload rights. No API token is stored in repository secrets, so there
+      # is nothing to leak, nothing to rotate, and no long-lived credential that outlives
+      # the job.
+      #
+      # TestPyPI needs its *own* publisher, configured once, naming this repository,
+      # `release.yml` and the `testpypi` environment. The one configured on PyPI does not
+      # carry here and cannot: they are separate Warehouse instances with separate accounts.
+      # Until both exist the corresponding job fails closed with the index's own error
+      # rather than uploading anything, which is the right failure.
       id-token: write
       contents: read
 
@@ -274,10 +297,249 @@ jobs:
           name: sentrykit-dist-${{ needs.release.outputs.version }}
           path: dist
 
-      # Built once, in the job above, and published here. Re-building would produce a second
-      # artifact that nothing had checked and that nobody attached to the release, so the
-      # file on the index and the file on the release page could differ.
       - name: List what will be uploaded
         run: ls -l dist
 
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+          # Here, and deliberately not on the PyPI step below. Re-running a tag is the
+          # ordinary way a release is retried when something downstream broke, and without
+          # this flag the retry would die on its first upload for the one reason that is not
+          # a problem: the file it was about to send is already there, identical, from the
+          # attempt that got this far last time. On PyPI the same flag would turn "this
+          # version is already published" from a stop into a shrug, and that condition means
+          # something has gone wrong and should stop the run. What stops a skipped upload
+          # from quietly blessing somebody else's build of this version is the digest
+          # comparison in the next job.
+          skip-existing: true
+
+  # The gate the two uploads exist to straddle. An accepted upload answers "did the index
+  # take it", which is not the question anybody installing the package has; this job asks
+  # whether the thing now sitting on the index installs and works. A distribution that is
+  # accepted and broken therefore stops here instead of reaching PyPI.
+  #
+  # No `actions/checkout`. Every path a source tree would put within reach -- the policy pack
+  # on disk, an editable install, a conftest, pixi's environments with every framework
+  # already present -- is a path the person who ran `pip install sentrykit[all]` does not
+  # have, and standing where they stand is the entire value of this job. It is the same
+  # reasoning `scripts/release_check.py` records for working out of throwaway virtual
+  # environments, applied one step further out: that script checks a wheel built locally,
+  # this one checks the wheel an index served back.
+  smoke-test:
+    name: install from TestPyPI and exercise it
+    needs: [release, publish-test]
+    if: ${{ needs.release.outputs.publish == 'true' }}
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          # The declared floor from `requires-python`, not the newest interpreter. The three
+          # supported interpreters are already swept against the source by `ci.yml`, and the
+          # seven extras against a locally built wheel by `release-check`; what is left for
+          # this job to prove is that the floor the published metadata advertises is a floor
+          # a real resolution can actually land on. That is the claim a dependency quietly
+          # raising its own `requires-python` breaks, and it breaks for the oldest
+          # interpreter first.
+          python-version: "3.11"
+
+      # The file this run built, to compare against the file the index hands back. Downloaded
+      # before the fetch so a mismatch is reported as a mismatch rather than as a missing
+      # artifact halfway through.
+      - uses: actions/download-artifact@v4
+        with:
+          name: sentrykit-dist-${{ needs.release.outputs.version }}
+          path: built
+
+      - name: Fetch the published wheel back out of TestPyPI
+        env:
+          VERSION: ${{ needs.release.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          python -m venv "${RUNNER_TEMP}/smoke"
+          # The pip that `venv` bundles comes from `ensurepip` and can be several releases
+          # behind the one a user would be installing with. Upgrading it keeps this job a
+          # test of the artifact rather than a test of an old resolver.
+          "${RUNNER_TEMP}/smoke/bin/python" -m pip install --quiet --upgrade pip
+
+          # Two steps, never one, and the single-command form is a trap worth naming. The
+          # commonly posted recipe is
+          #
+          #   pip install --index-url https://test.pypi.org/simple/ \
+          #               --extra-index-url https://pypi.org/simple/ "sentrykit[all]==<v>"
+          #
+          # and it does not work. The test index carries an abandoned placeholder `fastapi`
+          # whose sdist does not build; pip selects it, and `sentrykit[all]` fails for
+          # reasons that have nothing to do with sentrykit. Swapping the two flags does not
+          # help either -- an extra index is not a fallback. pip unions the candidates from
+          # every index it is handed and picks by version, so whichever copy carries the
+          # higher version wins no matter which flag named it. Both orders were tried; both
+          # failed the same way.
+          #
+          # So: one reach for sentrykit alone, which is what proves the upload is
+          # retrievable, and then an install of the downloaded *file* in a later step, which
+          # resolves every dependency from PyPI in the ordinary way. What is under test is
+          # the uploaded artifact's own metadata rather than an index race.
+          #
+          # Retried rather than slept on. Warehouse serves a new file within seconds of
+          # accepting it but not within zero seconds -- the simple index sits behind a cache,
+          # and a fetch issued immediately after the upload can be answered from a copy that
+          # predates it. A fixed `sleep` is the wrong fix twice: too short and the job fails
+          # anyway, too long and every release pays for it.
+          mkdir -p "${RUNNER_TEMP}/served"
+          attempt=1
+          until "${RUNNER_TEMP}/smoke/bin/python" -m pip download \
+                  --index-url https://test.pypi.org/simple/ \
+                  --no-deps --only-binary :all: \
+                  -d "${RUNNER_TEMP}/served" "sentrykit==${VERSION}"; do
+            if [ "${attempt}" -ge 6 ]; then
+              echo "::error::TestPyPI did not serve sentrykit ${VERSION} after ${attempt} attempts. The upload is not retrievable; do not publish to PyPI."
+              exit 1
+            fi
+            echo "attempt ${attempt}: not served yet, waiting 20s"
+            attempt=$((attempt + 1))
+            sleep 20
+          done
+
+          ls -l "${RUNNER_TEMP}/served"
+
+      # The step that makes `skip-existing` safe. Without it, a skipped upload would leave
+      # this job testing whatever build of this version happens to be on the index -- an
+      # earlier attempt's, from a commit that has since been amended -- and reporting it as a
+      # pass for the artifact this run produced. A version cannot be re-uploaded, so a
+      # mismatch here is terminal for the version rather than for the run: the number is
+      # spent, and the fix is to bump it.
+      #
+      # Comparing digests only distinguishes "a different build" from "the same build"
+      # because hatchling builds reproducibly by default -- fixed archive timestamps, sorted
+      # entries -- and `locked: true` pins the builder, so a re-run of the same tag at the
+      # same commit produces a byte-identical wheel and passes. Re-pointing a tag at an
+      # amended commit does not, which is the case this is here to catch.
+      - name: Compare what the index served with what this run built
+        env:
+          VERSION: ${{ needs.release.outputs.version }}
+        run: |
+          set -euo pipefail
+          wheel="sentrykit-${VERSION}-py3-none-any.whl"
+
+          built_sha="$(sha256sum "built/${wheel}" | cut -d' ' -f1)"
+          served_sha="$(sha256sum "${RUNNER_TEMP}/served/${wheel}" | cut -d' ' -f1)"
+
+          echo "built  ${built_sha}"
+          echo "served ${served_sha}"
+
+          if [ "${built_sha}" != "${served_sha}" ]; then
+            echo "::error::TestPyPI is serving a different build of ${VERSION} than this run produced. That version is spent on the test index and cannot be replaced; bump the version, re-tag, and run again."
+            exit 1
+          fi
+          echo "the index is serving this run's artifact" >> "$GITHUB_STEP_SUMMARY"
+
+      # The served copy, not the built one. The digests match by the step above, so the
+      # choice changes nothing mechanically -- and it is still the honest one, because the
+      # file whose retrievability and metadata are under test is the file that came off the
+      # index.
+      - name: Install the downloaded file with every extra
+        env:
+          VERSION: ${{ needs.release.outputs.version }}
+        run: |
+          set -euo pipefail
+          "${RUNNER_TEMP}/smoke/bin/python" -m pip install \
+            "${RUNNER_TEMP}/served/sentrykit-${VERSION}-py3-none-any.whl[all]"
+
+      - name: Exercise the installed package
+        env:
+          VERSION: ${{ needs.release.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          # Four assertions, and the second is the one that earns the job. The shipped Cedar
+          # pack is package *data* -- `.cedar`, `.cedarschema`, `.json`, `.cedartemplate`
+          # files -- so a build rule that ships only `*.py` produces a wheel that imports
+          # perfectly and then fails the first time anybody addresses `pack://`. An import
+          # check alone would pass that wheel. Asking for the policy text is what does not.
+          "${RUNNER_TEMP}/smoke/bin/python" - <<'PY'
+          import os
+
+          import sentrykit
+          import sentrykit.integrations.fastapi
+          import sentrykit.integrations.flask
+          import sentrykit.integrations.mcp
+          import sentrykit.integrations.pydantic_ai
+          from sentrykit import load_pack
+
+          expected = os.environ["VERSION"]
+          if sentrykit.__version__ != expected:
+              raise SystemExit(f"installed sentrykit {sentrykit.__version__}, expected {expected}")
+
+          policies = load_pack().policies
+          if not policies.strip():
+              raise SystemExit(
+                  "the installed wheel carries no policy pack: load_pack().policies is empty, "
+                  "so the Cedar data files did not ship"
+              )
+
+          print(f"version       {sentrykit.__version__}")
+          print(f"policy pack   {len(policies)} characters of Cedar text")
+          print("integrations  fastapi, flask, mcp, pydantic_ai")
+          PY
+
+          # A declared entry point that does not execute is a broken command rather than a
+          # missing one, and nothing above would notice: the module it points at imports
+          # fine either way.
+          "${RUNNER_TEMP}/smoke/bin/sentrykit" --version
+
+  # Last, because it is the only thing in this repository that cannot be undone. A GitHub
+  # release can be deleted and re-created; an index will not accept a version twice, even
+  # after the file is removed. So it runs only once the gate, the build, the asset check, the
+  # test-index upload and the install-and-exercise have all passed, and it is reachable only
+  # from a `v*` tag -- `publish` is false for every manual dispatch, which the first step of
+  # the `release` job refuses outright anyway.
+  #
+  # `publish-test` is not repeated in `needs:`. The edge runs through `smoke-test`, which
+  # cannot succeed without it, and a duplicated edge is a thing that goes stale silently.
+  publish:
+    name: publish to PyPI
+    needs: [release, smoke-test]
+    if: ${{ needs.release.outputs.publish == 'true' }}
+    runs-on: ubuntu-latest
+
+    # Names a deployment environment rather than relying on the tag alone. Attaching a
+    # required reviewer to `pypi` in the repository settings puts a human between pushing a
+    # tag and an irreversible upload, which is the cheapest possible safeguard for the one
+    # action in this repository that has no undo -- and by then the reviewer is approving
+    # something whose smoke test has already passed, which is the point of putting the
+    # approval here rather than earlier. Nothing in this file depends on that reviewer
+    # existing: it is a setting the maintainer can add without touching this workflow.
+    environment:
+      name: pypi
+      url: https://pypi.org/p/sentrykit
+
+    permissions:
+      # A publisher of its own on PyPI, naming this repository, `release.yml` and the `pypi`
+      # environment. See the note on the `publish-test` job: the two indexes are separate
+      # Warehouse instances and neither publisher authorizes anything on the other.
+      id-token: write
+      contents: read
+
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: sentrykit-dist-${{ needs.release.outputs.version }}
+          path: dist
+
+      # Built once, in the `release` job, published to the test index, installed back out of
+      # it and exercised -- and only then uploaded here, from the same artifact. Re-building
+      # at any point in that chain would break the one property that makes the chain mean
+      # anything: that the artifact published is the artifact tested.
+      - name: List what will be uploaded
+        run: ls -l dist
+
+      # No `skip-existing`. If PyPI already has this version, something has gone wrong --
+      # a re-tag over a published release, or a version that was never bumped -- and the run
+      # should stop and say so rather than report success for an upload it did not make.
       - uses: pypa/gh-action-pypi-publish@release/v1
